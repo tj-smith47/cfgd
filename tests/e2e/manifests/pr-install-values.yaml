@@ -1,11 +1,17 @@
 agent: {enabled: false}
-deviceGateway: {enabled: false}
+# The gateway suites drive this install's own gateway. Its store is an
+# emptyDir: the chart keeps a persistent store to one replica, and OP-LC-03
+# needs two.
+deviceGateway: {enabled: true, persistence: {enabled: false}}
 podDisruptionBudget: {enabled: false}
 networkPolicy: {enabled: false}
 metrics: {serviceMonitor: {enabled: false}}
 webhook: {failurePolicy: Fail}
 mutatingWebhook: {failurePolicy: Fail}
+# Other jobs of the run apply through this install's webhook while OP-LC-03
+# deletes the leader; the standby keeps the webhook Service an endpoint.
 operator:
+  replicaCount: 2
   image: {pullPolicy: Always}
   imagePullSecrets: [{name: registry-credentials}]
   extraVolumes:

@@ -2,7 +2,6 @@ use serde::Serialize;
 
 use crate::config::{EnvScope, ResolvedProfile};
 use crate::errors::Result;
-use crate::expand_tilde;
 use crate::modules::ResolvedModule;
 use crate::providers::ProviderRegistry;
 use crate::state::StateStore;
@@ -187,7 +186,7 @@ pub fn verify(
         &LayeredEnv::of(resolved, modules),
         resolved.merged.env_scope,
         &path_dirs,
-    ));
+    )?);
 
     Ok(VerifyReport {
         results,
@@ -964,19 +963,19 @@ pub fn env_verify_results(
     layered: &LayeredEnv,
     scope: EnvScope,
     path_dirs: &[ManagerPathDir],
-) -> Vec<VerifyResult> {
+) -> Result<Vec<VerifyResult>> {
     let mut results = Vec::new();
     let merged = &layered.merged;
     let merged_aliases = &layered.merged_aliases;
     let origins = &layered.origins;
 
     if merged.is_empty() && merged_aliases.is_empty() && path_dirs.is_empty() {
-        return results;
+        return Ok(results);
     }
 
     // Re-derive the exact target set the planner wrote, so verify never reports
     // a file the current scope intentionally left unwritten as drift.
-    let home = expand_tilde(std::path::Path::new("~"));
+    let home = crate::home_dir()?;
     let probe = EnvHostProbe::detect(&home);
     let platform = EnvPlatform::current();
     // `env_targets` always pushes the primary managed file (bash/zsh's
@@ -984,14 +983,14 @@ pub fn env_verify_results(
     // to write, so the first `ManagedFile` this loop sees is the one file
     // whose dialect `verify_env_items` is built to read.
     let mut primary_checked = false;
-    let fold = super::env_engine::primary_folded_path(merged, path_dirs, origins, &home, platform);
+    let fold = super::env_engine::primary_folded_path(merged, path_dirs, origins, &home, platform)?;
     for target in env_targets(
         EnvContent::of(layered, path_dirs),
         scope,
         &home,
         &probe,
         platform,
-    ) {
+    )? {
         match target {
             EnvTarget::ManagedFile { path, content, .. } => {
                 if !primary_checked {
@@ -1003,7 +1002,7 @@ pub fn env_verify_results(
                         platform,
                         fold.as_ref(),
                         &mut results,
-                    );
+                    )?;
                 }
                 verify_env_file(&path, &content, &mut results);
             }
@@ -1030,7 +1029,7 @@ pub fn env_verify_results(
             EnvTarget::LiveSession { .. } => {}
         }
     }
-    results
+    Ok(results)
 }
 
 /// What a module-scoped env check answered: the per-item rows it could judge,
@@ -1065,7 +1064,12 @@ pub struct EnvItemCheck {
 /// DIRECTORY at the path fails the read with something other than `NotFound`
 /// everywhere, root included. There is no per-platform carve-out to state
 /// here: the contract is the same three answers on all four.
-pub fn env_item_verify_results(layered: &LayeredEnv) -> EnvItemCheck {
+///
+/// # Errors
+///
+/// [`StateError::HomeUnset`](crate::errors::StateError::HomeUnset) when no home
+/// directory is set, and a declared value's `~` that no home resolves.
+pub fn env_item_verify_results(layered: &LayeredEnv) -> Result<EnvItemCheck> {
     let merged: Vec<&crate::config::EnvVar> = layered
         .merged
         .iter()
@@ -1077,9 +1081,9 @@ pub fn env_item_verify_results(layered: &LayeredEnv) -> EnvItemCheck {
         check_error: None,
     };
     if merged.is_empty() && merged_aliases.is_empty() {
-        return check;
+        return Ok(check);
     }
-    let home = expand_tilde(std::path::Path::new("~"));
+    let home = crate::home_dir()?;
     let platform = EnvPlatform::current();
     let path = super::env_engine::primary_env_file_path(&home, platform);
     let actual = match std::fs::read_to_string(&path) {
@@ -1090,7 +1094,7 @@ pub fn env_item_verify_results(layered: &LayeredEnv) -> EnvItemCheck {
                 key: to_posix_string(&path),
                 error: e.to_string(),
             });
-            return check;
+            return Ok(check);
         }
     };
     // `fold` is only ever consulted for a `PATH` row, and `PATH` was retained
@@ -1102,8 +1106,8 @@ pub fn env_item_verify_results(layered: &LayeredEnv) -> EnvItemCheck {
         platform,
         None,
         &mut check.results,
-    );
-    check
+    )?;
+    Ok(check)
 }
 
 /// Per-declared-item drift for the primary managed env file: whether the
@@ -1122,12 +1126,12 @@ fn verify_env_items(
     platform: EnvPlatform,
     fold: Option<&super::env_engine::FoldedPath>,
     results: &mut Vec<VerifyResult>,
-) {
+) -> Result<()> {
     let Ok(actual) = std::fs::read_to_string(path) else {
-        return;
+        return Ok(());
     };
     let env: Vec<&crate::config::EnvVar> = env.iter().collect();
-    verify_env_items_in(&actual, &env, aliases, platform, fold, results);
+    verify_env_items_in(&actual, &env, aliases, platform, fold, results)
 }
 
 /// The item loop of [`verify_env_items`] over content the caller already
@@ -1141,11 +1145,11 @@ fn verify_env_items_in(
     platform: EnvPlatform,
     fold: Option<&super::env_engine::FoldedPath>,
     results: &mut Vec<VerifyResult>,
-) {
+) -> Result<()> {
     let actual_lines: std::collections::HashSet<&str> = actual.lines().collect();
 
     for ev in env {
-        let Some(line) = super::env_files::primary_env_var_line(ev, platform, fold) else {
+        let Some(line) = super::env_files::primary_env_var_line(ev, platform, fold)? else {
             continue;
         };
         // Line-anchored, not a substring search: `actual.contains(&line)` would
@@ -1190,6 +1194,7 @@ fn verify_env_items_in(
             unmanaged: false,
         });
     }
+    Ok(())
 }
 
 /// The profile-plus-modules env/alias merge, resolved ONCE and then asked per
@@ -1217,20 +1222,25 @@ impl<'a> MergedEnvItems<'a> {
     /// `env_verify_results` is given. Without it a `PATH` row would be shown a
     /// line assembled from half the producers, which is not a line the file
     /// holds.
-    pub fn new(layered: &'a LayeredEnv, path_dirs: &[ManagerPathDir]) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// [`StateError::HomeUnset`](crate::errors::StateError::HomeUnset) when no
+    /// home directory is set: the `PATH` line is folded against it.
+    pub fn new(layered: &'a LayeredEnv, path_dirs: &[ManagerPathDir]) -> Result<Self> {
         let path = super::env_engine::primary_folded_path(
             &layered.merged,
             path_dirs,
             &layered.origins,
-            &expand_tilde(std::path::Path::new("~")),
+            &crate::home_dir()?,
             EnvPlatform::current(),
-        );
-        Self {
+        )?;
+        Ok(Self {
             layered,
             path,
             #[cfg(any(test, feature = "test-helpers"))]
             path_dirs: path_dirs.to_vec(),
-        }
+        })
     }
 
     /// Every managed env FILE this host's engine writes for `scope`, as
@@ -1258,8 +1268,9 @@ impl<'a> MergedEnvItems<'a> {
         &self,
         home: &std::path::Path,
         scope: crate::config::EnvScope,
-    ) -> Vec<(std::path::PathBuf, String)> {
-        self.env_targets_for(home, scope)
+    ) -> Result<Vec<(std::path::PathBuf, String)>> {
+        Ok(self
+            .env_targets_for(home, scope)?
             .into_iter()
             .filter_map(|t| match t {
                 super::env_engine::EnvTarget::ManagedFile { path, content, .. } => {
@@ -1267,7 +1278,7 @@ impl<'a> MergedEnvItems<'a> {
                 }
                 _ => None,
             })
-            .collect()
+            .collect())
     }
 
     /// Every rc SOURCE LINE this host's engine appends for `scope`, as
@@ -1286,14 +1297,15 @@ impl<'a> MergedEnvItems<'a> {
         &self,
         home: &std::path::Path,
         scope: crate::config::EnvScope,
-    ) -> Vec<(std::path::PathBuf, String)> {
-        self.env_targets_for(home, scope)
+    ) -> Result<Vec<(std::path::PathBuf, String)>> {
+        Ok(self
+            .env_targets_for(home, scope)?
             .into_iter()
             .filter_map(|t| match t {
                 super::env_engine::EnvTarget::SourceLine { rc_path, line } => Some((rc_path, line)),
                 _ => None,
             })
-            .collect()
+            .collect())
     }
 
     /// The one target list both accessors above read, so a fixture planting
@@ -1304,7 +1316,7 @@ impl<'a> MergedEnvItems<'a> {
         &self,
         home: &std::path::Path,
         scope: crate::config::EnvScope,
-    ) -> Vec<super::env_engine::EnvTarget> {
+    ) -> Result<Vec<super::env_engine::EnvTarget>> {
         super::env_engine::env_targets(
             super::env_engine::EnvContent::of(self.layered, &self.path_dirs),
             scope,
@@ -1328,17 +1340,22 @@ impl<'a> MergedEnvItems<'a> {
     /// something the file does not hold. The merge is still what holds the
     /// entry — a module's entries are not in the profile's own `env`/`aliases`
     /// at all, so without it a module-owned row could only ever answer `None`.
-    pub fn declared_line(&self, resource_type: &str, resource_id: &str) -> Option<String> {
+    ///
+    /// # Errors
+    ///
+    /// [`StateError::HomeUnresolved`](crate::errors::StateError::HomeUnresolved)
+    /// when the declared value carries a `~` and no home directory is set.
+    pub fn declared_line(&self, resource_type: &str, resource_id: &str) -> Result<Option<String>> {
         let platform = EnvPlatform::current();
-        match resource_type {
-            super::ENV_VAR_RESOURCE_TYPE => self
-                .layered
-                .merged
-                .iter()
-                .find(|e| e.name == resource_id)
-                .and_then(|e| {
-                    super::env_files::primary_env_var_line(e, platform, self.path.as_ref())
-                }),
+        Ok(match resource_type {
+            super::ENV_VAR_RESOURCE_TYPE => {
+                match self.layered.merged.iter().find(|e| e.name == resource_id) {
+                    Some(e) => {
+                        super::env_files::primary_env_var_line(e, platform, self.path.as_ref())?
+                    }
+                    None => None,
+                }
+            }
             super::ALIAS_RESOURCE_TYPE => self
                 .layered
                 .merged_aliases
@@ -1346,7 +1363,7 @@ impl<'a> MergedEnvItems<'a> {
                 .find(|a| a.name == resource_id)
                 .and_then(|a| super::env_files::primary_alias_line(a, platform)),
             _ => None,
-        }
+        })
     }
 
     /// The env var this merge declares under `name`, as a caller COPYING the
@@ -1386,6 +1403,7 @@ impl<'a> MergedEnvItems<'a> {
 fn deployed_env_item_line(
     resource_type: &str,
     resource_id: &str,
+    home: &std::path::Path,
 ) -> std::io::Result<Option<String>> {
     let platform = EnvPlatform::current();
     let claims: Vec<String> = match resource_type {
@@ -1397,9 +1415,8 @@ fn deployed_env_item_line(
         super::ALIAS_RESOURCE_TYPE => super::env_files::alias_line_prefixes(resource_id, platform),
         _ => return Ok(None),
     };
-    let home = expand_tilde(std::path::Path::new("~"));
     let content =
-        match std::fs::read_to_string(super::env_engine::primary_env_file_path(&home, platform)) {
+        match std::fs::read_to_string(super::env_engine::primary_env_file_path(home, platform)) {
             Ok(content) => content,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e),
@@ -1428,18 +1445,27 @@ impl MergedEnvItems<'_> {
     /// gateway" rule as [`Self::declared_line`]: both halves are real values,
     /// which is exactly what the opaque `current` / `missing or changed`
     /// markers exist to keep out of `drift_events`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::declared_line`], and
+    /// [`StateError::HomeUnset`](crate::errors::StateError::HomeUnset)
+    /// when no home directory locates the managed file.
     pub fn display_values(
         &self,
         resource_type: &str,
         resource_id: &str,
-    ) -> Option<(String, String)> {
-        let declared = self.declared_line(resource_type, resource_id)?;
-        let deployed = match deployed_env_item_line(resource_type, resource_id) {
+    ) -> Result<Option<(String, String)>> {
+        let Some(declared) = self.declared_line(resource_type, resource_id)? else {
+            return Ok(None);
+        };
+        let deployed = match deployed_env_item_line(resource_type, resource_id, &crate::home_dir()?)
+        {
             Ok(Some(line)) => line,
             Ok(None) => crate::Absence::Missing.as_str().to_string(),
-            Err(_) => return None,
+            Err(_) => return Ok(None),
         };
-        Some((declared, deployed))
+        Ok(Some((declared, deployed)))
     }
 }
 

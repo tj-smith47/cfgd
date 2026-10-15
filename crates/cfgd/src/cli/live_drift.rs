@@ -104,11 +104,11 @@ pub fn standing_section(
 pub(super) fn drift_event_from(
     r: &VerifyResult,
     merged_env_items: &cfgd_core::reconciler::MergedEnvItems,
-) -> cfgd_core::state::DriftEvent {
+) -> cfgd_core::errors::Result<cfgd_core::state::DriftEvent> {
     let (expected, actual) = merged_env_items
-        .display_values(&r.resource_type, &r.resource_id)
+        .display_values(&r.resource_type, &r.resource_id)?
         .unwrap_or_else(|| (r.expected.clone(), r.actual.clone()));
-    cfgd_core::state::DriftEvent {
+    Ok(cfgd_core::state::DriftEvent {
         id: 0,
         timestamp: cfgd_core::utc_now_iso8601(),
         resource_type: r.resource_type.clone(),
@@ -123,7 +123,7 @@ pub(super) fn drift_event_from(
         // keep describing the row that was stored.
         want: None,
         have: None,
-    }
+    })
 }
 
 /// Record ONE live finding as a `drift_events` row, warning instead of
@@ -207,8 +207,8 @@ fn full_check_cannot_refind(
         // legacy-id-ok: a BARE `<module>` is the whole-module row a tick
         // recorded before per-file rows became the one grammar; that nothing
         // mints one now is what `every_module_drift_id_names_the_file_it_stands_for`
-        // enforces, and it is kept rather than healed because this check never
-        // looked at whatever it stood for.
+        // enforces. It is kept as it is because this check never looked at
+        // whatever it stood for.
         "module" => !cfgd_core::reconciler::module_row_names_a_file(&e.resource_id),
         // legacy-id-ok: a comma-joined `<mgr>:<a>,<b>` is the batch spelling a
         // tick recorded before `action_drift_rows` became the one producer;
@@ -216,7 +216,7 @@ fn full_check_cannot_refind(
         // `every_core_minted_package_drift_id_comes_from_its_composer` enforces,
         // and the per-package identities that replaced it carry no comma
         // (FreeBSD `pkg`'s `-1.2.0,1` suffix is stripped by
-        // `package_identity`). A bare id names a manager, not a package.
+        // `package_identity`). A bare id names a manager and no package.
         "package" => e.resource_id.contains(',') || !e.resource_id.contains(':'),
         "system" => !evaluated_system.iter().any(|c| {
             e.resource_id
@@ -513,14 +513,13 @@ pub(super) fn file_verify_results(
         modules,
         config_dir,
         default_strategy,
-    );
+    )?;
     Ok(drift
         .into_iter()
         .map(|mut d| {
             // "content differs" describes a file cfgd owns; a target cfgd never
             // wrote is a decision to make, not a write to repeat.
-            let strategy =
-                strategies.for_target(&cfgd_core::expand_tilde(std::path::Path::new(&d.target)));
+            let strategy = strategies.for_target(std::path::Path::new(&d.target));
             cfgd_core::reconciler::mark_unmanaged_drift(
                 &mut d,
                 strategy,
@@ -566,7 +565,7 @@ pub(super) fn module_file_verify_results(
         modules,
         config_dir,
         default_strategy,
-    );
+    )?;
     let mut results = Vec::new();
     for module in modules {
         for file in &module.files {
@@ -574,14 +573,13 @@ pub(super) fn module_file_verify_results(
             // manager's own comparison read one answer. A globally declared
             // `Patch` reaches `effective_strategy`'s short-circuit here where
             // an unresolved `None` used to fall through to the tera rule.
-            let strategy =
-                strategies.for_target(&cfgd_core::expand_tilde(std::path::Path::new(&file.target)));
+            let strategy = strategies.for_target(&file.target);
             let mut drift = match &file.patch {
                 // A `Patch` file has no source to compare against: it has
                 // converged when re-running its merge over the target's current
                 // content would change nothing.
                 Some(spec) => {
-                    let binding = module_patch_binding(config_dir, resolved, module);
+                    let binding = module_patch_binding(config_dir, resolved, module)?;
                     let evaluated = cfgd_core::reconciler::evaluate_patch(
                         spec,
                         &file.target,
@@ -889,7 +887,7 @@ fn live_drift_results_inner(
             &cfgd_core::reconciler::LayeredEnv::of(resolved, modules),
             resolved.merged.env_scope,
             &path_dirs,
-        )
+        )?
         .into_iter()
         .filter(|r| !r.matches),
     );
@@ -1409,7 +1407,9 @@ mod tests {
             ),
             &[],
         )
+        .unwrap()
         .declared_line("alias", "ll")
+        .unwrap()
         .expect("alias renders a declared line");
         std::fs::write(
             cfgd_core::reconciler::primary_env_file(tmp_home.path()),
@@ -1664,8 +1664,8 @@ mod tests {
     /// The spec composer and the live check mint one id for a `~`-spelled
     /// target, whichever strategy it carries.
     ///
-    /// `module_file_spec_resource_id` answers from the DECLARED file — the one
-    /// place the `Patch`/expanded split is decided — while the check names the
+    /// `module_file_spec_resource_id` answers from the resolved file, whose
+    /// target module resolution already expanded, while the check names the
     /// target its drift result carries. A `~` target is where the two can
     /// disagree without either looking wrong: a probe would then miss the
     /// finding it went looking for, and an apply would resolve a row nobody
@@ -1675,6 +1675,10 @@ mod tests {
     fn the_spec_composer_and_the_live_check_spell_one_id_for_a_tilde_target() {
         let tmp_home = tempfile::tempdir().unwrap();
         let _home = cfgd_core::with_test_home_guard(tmp_home.path());
+        let resolved_target = |declared: &str| {
+            cfgd_core::expand_tilde(std::path::Path::new(declared), cfgd_core::FILE_TARGET_ROLE)
+                .unwrap()
+        };
         let dir = tempfile::tempdir().unwrap();
 
         let patched = tmp_home.path().join("patched.json");
@@ -1688,7 +1692,7 @@ mod tests {
         let mut modules = vec![module_with_file(
             "accmod",
             std::path::PathBuf::new(),
-            std::path::PathBuf::from("~/patched.json"),
+            resolved_target("~/patched.json"),
         )];
         modules[0].files[0].strategy = Some(FileStrategy::Patch);
         modules[0].files[0].patch = Some(cfgd_core::config::PatchSpec {
@@ -1699,7 +1703,7 @@ mod tests {
         });
         modules[0].files.push(cfgd_core::modules::ResolvedFile {
             source,
-            target: std::path::PathBuf::from("~/copied.txt"),
+            target: resolved_target("~/copied.txt"),
             is_git_source: false,
             strategy: Some(FileStrategy::Copy),
             encryption: None,
@@ -2328,7 +2332,7 @@ mod tests {
         // no machine carries, so no host's PATH can satisfy the cascade.
         // A manager the plan cannot self-heal (no path to its prerequisite
         // tool) must still register as drift, distinguishable from the
-        // provisionable case by its reason rather than being silently dropped.
+        // provisionable case by its reason; it is never silently dropped.
         let dir = tempfile::tempdir().unwrap();
         let resolved = resolved_no_files();
 

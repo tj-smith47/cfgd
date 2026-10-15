@@ -85,17 +85,17 @@ fn plant_env_surface_without_aliases(
         aliases,
         &[],
     );
-    let merged = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]);
+    let merged = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]).unwrap();
     let scope = cfgd_core::config::EnvScope::default();
     let withheld: Vec<String> = aliases
         .iter()
-        .filter_map(|a| merged.declared_line("alias", &a.name))
+        .filter_map(|a| merged.declared_line("alias", &a.name).unwrap())
         .collect();
     let write = |path: &Path, body: String| {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, body).unwrap();
     };
-    for (path, content) in merged.managed_env_files(home, scope) {
+    for (path, content) in merged.managed_env_files(home, scope).unwrap() {
         let body: String = content
             .lines()
             .filter(|l| !withheld.iter().any(|w| w == l))
@@ -103,7 +103,7 @@ fn plant_env_surface_without_aliases(
             .collect();
         write(&path, body);
     }
-    for (rc_path, line) in merged.managed_env_source_lines(home, scope) {
+    for (rc_path, line) in merged.managed_env_source_lines(home, scope).unwrap() {
         write(&rc_path, format!("{line}\n"));
     }
     withheld

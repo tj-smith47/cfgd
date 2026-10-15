@@ -28,14 +28,20 @@ on:
 permissions:
   contents: read
 
-# Repo-global, not per-ref: the suites share one real cluster. Namespaces are
-# run-scoped, but the CRDs, the cfgd-system operator/webhook/server and the CSI
-# release are singletons. setup-cluster.sh's Lease only serializes setup against
-# setup — it is released when that job exits, so a second run's setup would
-# redeploy those singletons underneath a first run's still-executing tests.
-# cancel-in-progress stays false so a concurrent run queues instead of killing
-# the run holding the cluster; the cost is that a newer queued run supersedes an
-# older queued one, which surfaces as a cancelled run rather than a false green.
+# The group is repo-wide because the suites share one real cluster. Namespaces
+# are run-scoped, but setup also writes cluster singletons, in this order: the
+# webhook TLS Issuer and Certificate in cfgd-system (the CA the release
+# webhooks trust), then the CSIDriver every PR install registers under one
+# name, and past that point the release's webhook configurations and webhook
+# Service in cfgd-system and the cfgd-system operator Deployment on a cluster
+# ArgoCD does not manage. setup-cluster.sh's Lease only serializes setup
+# against setup and is released when that job exits, so a second run's setup
+# would reapply the webhook TLS manifest underneath a first run's
+# still-executing tests (a changed copy reissues the CA), then be refused at
+# the first run's live CSIDriver and go red.
+# cancel-in-progress stays false so a concurrent run queues and the run holding
+# the cluster keeps it; the cost is that a newer queued run supersedes an older
+# queued one, which shows up as a cancelled run.
 concurrency:
   group: e2e-${{ github.repository }}
   cancel-in-progress: false
@@ -117,10 +123,23 @@ jobs:
         run: task e2e:node:server
 
   # ---------- Operator tests ----------
+  # OP-LC-03 deletes the operator leader, and the gateway runs in the leader
+  # pod, so this job waits for every job that talks to the install's gateway.
+  # It runs whatever those jobs concluded, since only a failed setup leaves
+  # nothing to test.
   operator-tests:
     name: "Operator Tests"
     runs-on: arc-cfgd
-    needs: [setup]
+    needs:
+      [
+        setup,
+        gateway-tests,
+        full-stack-tests,
+        node-tests,
+        server-tests,
+        helm-tests,
+      ]
+    if: ${{ !cancelled() && needs.setup.result == 'success' }}
     timeout-minutes: 20
     # test-oci.sh drives a real cfgd binary, so this job cargo-builds the
     # release cfgd through ensure_cfgd_binary instead of riding the setup job's
@@ -272,18 +291,20 @@ jobs:
         gateway-tests,
       ]
     if: always() && needs.setup.result != 'skipped'
-    timeout-minutes: 10
+    # pr-install-down.sh can wait 660s (four 90s deletes, the 180s run-namespace
+    # wait, the 120s helm uninstall); recheck this when one of those waits changes.
+    timeout-minutes: 15
     env:
       IMAGE_TAG: ${{ needs.setup.outputs.image-tag }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Install go-task
-        uses: go-task/setup-task@v2
-
+      # The script runs directly, as the setup job runs setup-cluster.sh: a
+      # tool install that times out here leaves the install on the cluster,
+      # where it blocks the next run's setup.
       - name: Remove the PR install
-        run: task e2e:pr-install:down
+        run: bash tests/e2e/pr-install-down.sh
 
   # ---------- CLI: exhaustive native tests (no k8s needed) ----------
   cli-tests:

@@ -193,8 +193,8 @@ pub fn cmd_source_list(run: &RunContext<'_>) -> anyhow::Result<()> {
     let state = open_state_store(cli.state_dir.as_deref(), cli.scope())?;
     // declared-lock-ok: the pinned ref and commit reach the `-o json` payload
     // alone; no column renders either, so the table stays declared plus its one
-    // recorded status column. An unreadable lockfile leaves both absent rather
-    // than failing a listing that does not depend on them.
+    // recorded status column. An unreadable lockfile leaves both absent, and
+    // the listing, which does not depend on them, still succeeds.
     let lock = cfgd_core::load_sources_lockfile(&config_dir(cli)).unwrap_or_default();
     let entries = configured_source_entries(cfg, &state, &lock);
 

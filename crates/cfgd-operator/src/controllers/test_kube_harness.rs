@@ -28,7 +28,8 @@ use tokio::task::JoinHandle;
 use tower_test::mock;
 
 use crate::controllers::{
-    ArtifactFactsReader, ArtifactVerifier, ControllerContext, ControllerStores, RegistryBackoff,
+    ArtifactFactsReader, ArtifactVerifier, Clock, ControllerContext, ControllerStores,
+    RegistryBackoff,
 };
 use crate::metrics::Metrics;
 use cfgd_core::oci::SignatureCheck;
@@ -489,6 +490,7 @@ impl MockKubeHarness {
             artifact_facts,
             artifact_verifier,
             registry_backoff: RegistryBackoff::default(),
+            clock: Clock::default(),
         });
 
         (ctx, registry, Self { driver, stop })

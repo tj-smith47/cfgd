@@ -116,7 +116,7 @@ fn field_heading_anchor(schema: &ResourceSchema, field_path: &[&str]) -> Option<
 /// same reason.
 fn doc_body(rel: &str) -> Option<&'static str> {
     match rel {
-        // docs-pointer-ok: a match key equal to schema.docs's own path, not a rendered pointer.
+        // docs-pointer-ok: a match key equal to schema.docs's own path; nothing renders it.
         "docs/spec/module.md" => Some(include_str!("../../../tests/fixtures/docs-spec/module.md")),
         // docs-pointer-ok: match key, see the arm above.
         "docs/spec/profile.md" => {

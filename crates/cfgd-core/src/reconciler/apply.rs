@@ -1931,52 +1931,63 @@ impl<'a> super::Reconciler<'a> {
         if self.withhold_env_surface {
             tracing::debug!("env surface withheld: skipping post-phase regeneration");
         } else if !secret_env_collector.is_empty() || path_dirs_changed {
-            let env_plan = self.plan_env(
-                super::LayeredEnv::of(resolved, module_actions),
-                resolved.merged.env_scope,
-                &secret_env_collector,
-                &path_dirs_now,
-                &super::env::recorded_managed_env_files(self.state),
-            );
-            for env_action in &env_plan.actions {
-                if let Action::Env(ea) = env_action {
-                    // No phase section is open here and nothing will drain a
-                    // sink, so a session-refresh warning settles on its own line
-                    // — beside the failure line below it, which does the same.
-                    match Self::apply_env_action(ea, printer, NoteSink::discarded()) {
-                        Ok(desc) => {
-                            let changed = !env_result_unchanged(&desc);
-                            merge_env_result(
-                                &mut results,
-                                env_action,
-                                self.registry,
-                                desc,
-                                changed,
-                            );
-                        }
-                        Err(e) => {
-                            printer
-                                .status(Role::Fail, "regenerate shell env files")
-                                .detail(e.to_string());
-                            results.push(ActionResult {
-                                phase: PhaseName::Bootstrap.as_str().to_string(),
-                                description: format!(
-                                    "env:{}:regenerate",
-                                    super::env_engine::ENV_VERB_WRITE
-                                ),
-                                success: false,
-                                error: Some(e.to_string()),
-                                changed: false,
-                                skipped: false,
-                                not_attempted: None,
-                                installed: None,
-                                versions: Default::default(),
-                                drift_rows: Vec::new(),
-                                origin: None,
-                                manager: None,
-                                after_plan: Some(AfterPlan::EnvSurface),
-                            });
-                        }
+            // The plan refuses the env work it can see when no home resolves;
+            // a regeneration it could not foresee settles that refusal as the
+            // failed row an unwritable env file gets.
+            let regenerated = self
+                .plan_env(
+                    super::LayeredEnv::of(resolved, module_actions),
+                    resolved.merged.env_scope,
+                    &secret_env_collector,
+                    &path_dirs_now,
+                    &super::env::recorded_managed_env_files(self.state),
+                )
+                .map(|plan| plan.actions);
+            let outcomes: Vec<std::result::Result<(&Action, String), String>> = match &regenerated {
+                Ok(actions) => actions
+                    .iter()
+                    .filter_map(|env_action| match env_action {
+                        // No phase section is open here and nothing will drain a
+                        // sink, so a session-refresh warning settles on its own line
+                        // — beside the failure line below it, which does the same.
+                        Action::Env(ea) => Some(
+                            Self::apply_env_action(ea, printer, NoteSink::discarded())
+                                .map(|desc| (env_action, desc))
+                                .map_err(|e| e.to_string()),
+                        ),
+                        _ => None,
+                    })
+                    .collect(),
+                Err(e) => vec![Err(e.to_string())],
+            };
+            for outcome in outcomes {
+                match outcome {
+                    Ok((env_action, desc)) => {
+                        let changed = !env_result_unchanged(&desc);
+                        merge_env_result(&mut results, env_action, self.registry, desc, changed);
+                    }
+                    Err(e) => {
+                        printer
+                            .status(Role::Fail, "regenerate shell env files")
+                            .detail(e.clone());
+                        results.push(ActionResult {
+                            phase: PhaseName::Bootstrap.as_str().to_string(),
+                            description: format!(
+                                "env:{}:regenerate",
+                                super::env_engine::ENV_VERB_WRITE
+                            ),
+                            success: false,
+                            error: Some(e),
+                            changed: false,
+                            skipped: false,
+                            not_attempted: None,
+                            installed: None,
+                            versions: Default::default(),
+                            drift_rows: Vec::new(),
+                            origin: None,
+                            manager: None,
+                            after_plan: Some(AfterPlan::EnvSurface),
+                        });
                     }
                 }
             }
@@ -2131,7 +2142,7 @@ impl<'a> super::Reconciler<'a> {
                         path_dirs: &path_dirs,
                     },
                     &module.env,
-                );
+                )?;
                 let working = script_default_workdir(config_dir);
                 for entry in &module.on_change_scripts {
                     match execute_script(
@@ -2301,7 +2312,7 @@ impl<'a> super::Reconciler<'a> {
             .iter()
             .flat_map(|module| module.files.iter().map(|f| &f.target));
         for target in managed_targets.chain(module_targets) {
-            let target = crate::expand_tilde(target);
+            let target = crate::expand_tilde(target, crate::FILE_TARGET_ROLE)?;
             let key = crate::to_posix_fs_key(&target);
             if !touched.contains(&key) || !snapshot_paths.insert(key.clone()) {
                 continue;
@@ -2530,7 +2541,9 @@ impl<'a> super::Reconciler<'a> {
     /// Whether `rid` names the primary env file, the one surface the per-item
     /// `env-var` and `alias` checks read.
     fn is_primary_env_file(&self, rid: &str) -> bool {
-        rid == to_posix_string(super::primary_env_file(&self.home))
+        self.home
+            .as_deref()
+            .is_some_and(|home| rid == to_posix_string(super::primary_env_file(home)))
     }
 
     /// Whether an action result names that surface, asked of a result the

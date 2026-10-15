@@ -3376,9 +3376,10 @@ fn posix_path_fold(env: &[crate::config::EnvVar]) -> Option<super::FoldedPath> {
         env,
         &[],
         &Default::default(),
-        &crate::expand_tilde(std::path::Path::new("~")),
+        &crate::expand_tilde(std::path::Path::new("~"), "test").unwrap(),
         super::EnvPlatform::Linux,
     )
+    .unwrap()
 }
 
 /// The same for a fixture whose declared value uses the Windows separator.
@@ -3387,9 +3388,10 @@ fn windows_path_fold(env: &[crate::config::EnvVar]) -> Option<super::FoldedPath>
         env,
         &[],
         &Default::default(),
-        &crate::expand_tilde(std::path::Path::new("~")),
+        &crate::expand_tilde(std::path::Path::new("~"), "test").unwrap(),
         super::EnvPlatform::Windows,
     )
+    .unwrap()
 }
 
 /// The same for fish, whose entries are quoted so hard that no reference in
@@ -3399,10 +3401,11 @@ fn fish_path_fold(env: &[crate::config::EnvVar]) -> Option<super::FoldedPath> {
         env,
         &[],
         &Default::default(),
-        &crate::expand_tilde(std::path::Path::new("~")),
+        &crate::expand_tilde(std::path::Path::new("~"), "test").unwrap(),
         super::EnvPlatform::Linux,
         None,
     )
+    .unwrap()
 }
 
 #[test]
@@ -3422,7 +3425,8 @@ fn generate_env_file_quoted_and_unquoted() {
     let content = super::generate_env_file_content(
         &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
         posix_path_fold(&env).as_ref(),
-    );
+    )
+    .unwrap();
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("export EDITOR=\"nvim\""));
     // PATH contains $, so double-quoted to allow expansion
@@ -3446,7 +3450,8 @@ fn generate_fish_env_splits_path() {
     let content = super::generate_fish_env_content(
         &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
         fish_path_fold(&env).as_ref(),
-    );
+    )
+    .unwrap();
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("set -gx EDITOR 'nvim'"));
     // A bare `$PATH` splices fish's own list; a quoted one would be a literal.
@@ -3477,21 +3482,24 @@ fn generate_env_files_expand_leading_tilde() {
         let bash = super::generate_env_file_content(
             &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
             posix_path_fold(&env).as_ref(),
-        );
+        )
+        .unwrap();
         assert!(bash.contains(&format!("export CLIFT_DIR=\"{h}/.local/share/clift\"")));
         assert!(bash.contains(&format!("export PATH=\"{h}/bin:/usr/bin\"")));
 
         let fish = super::generate_fish_env_content(
             &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
             fish_path_fold(&env).as_ref(),
-        );
+        )
+        .unwrap();
         assert!(fish.contains(&format!("set -gx CLIFT_DIR '{h}/.local/share/clift'")));
         assert!(fish.contains(&format!("set -gx PATH '{h}/bin' '/usr/bin'")));
 
         let ps = super::generate_powershell_env_content(
             &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
             posix_path_fold(&env).as_ref(),
-        );
+        )
+        .unwrap();
         assert!(ps.contains(&format!("$env:CLIFT_DIR = '{h}/.local/share/clift'")));
     });
 }
@@ -3522,7 +3530,8 @@ fn generate_fish_path_keeps_colon_containing_home_intact() {
         let fish = super::generate_fish_env_content(
             &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
             fish_path_fold(&env).as_ref(),
-        );
+        )
+        .unwrap();
         assert!(
             fish.contains(&format!("set -gx PATH '{h}/bin' '/usr/bin'")),
             "drive/colon-containing home must stay one PATH part, got: {fish}"
@@ -3541,6 +3550,7 @@ fn plan_env_empty_when_no_env() {
         &[],
         tmp.path(),
     )
+    .unwrap()
     .actions;
     assert!(actions.is_empty());
 }
@@ -3587,6 +3597,7 @@ fn plan_env_module_wins_on_conflict() {
         &[],
         tmp.path(),
     )
+    .unwrap()
     .actions;
     // With non-empty env, there should be at least a WriteEnvFile action
     let has_write = actions
@@ -3609,7 +3620,8 @@ fn plan_env_generates_file_matching_expected() {
     let expected = super::generate_env_file_content(
         &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
         None,
-    );
+    )
+    .unwrap();
     assert!(expected.contains("export EDITOR=\"nvim\""));
     assert!(expected.contains("# managed by cfgd"));
 }
@@ -3652,7 +3664,8 @@ fn generate_env_file_with_aliases() {
     let content = super::generate_env_file_content(
         &crate::reconciler::LayeredEnv::for_test(&env, &aliases, &Default::default()),
         None,
-    );
+    )
+    .unwrap();
     assert!(content.contains("export EDITOR=\"nvim\""));
     assert!(content.contains("alias vim=\"nvim\""));
     assert!(content.contains("alias ll=\"ls -la\""));
@@ -3673,7 +3686,8 @@ fn generate_fish_env_with_aliases() {
     let content = super::generate_fish_env_content(
         &crate::reconciler::LayeredEnv::for_test(&env, &aliases, &Default::default()),
         None,
-    );
+    )
+    .unwrap();
     assert!(content.contains("set -gx EDITOR 'nvim'"));
     assert!(content.contains("abbr -a vim 'nvim'"));
 }
@@ -3694,6 +3708,7 @@ fn plan_env_aliases_only() {
         &[],
         tmp.path(),
     )
+    .unwrap()
     .actions;
     let has_write = actions
         .iter()
@@ -3747,6 +3762,7 @@ fn plan_env_module_alias_wins_on_conflict() {
         &[],
         tmp.path(),
     )
+    .unwrap()
     .actions;
     // Find the WriteEnvFile action and check it has "nvim" not "vi"
     for action in &actions {
@@ -3784,7 +3800,8 @@ fn generate_env_file_alias_escapes_quotes() {
     let content = super::generate_env_file_content(
         &crate::reconciler::LayeredEnv::for_test(&[], &aliases, &Default::default()),
         None,
-    );
+    )
+    .unwrap();
     assert!(content.contains("alias greet=\"echo \\\"hello world\\\"\""));
 }
 
@@ -3808,7 +3825,7 @@ fn plan_secrets_envs_only_produces_resolve_env() {
         envs: Some(vec!["GITHUB_TOKEN".to_string()]),
     });
 
-    let actions = reconciler.plan_secrets(&profile);
+    let actions = reconciler.plan_secrets(&profile).unwrap();
     // Should produce exactly one ResolveEnv action
     assert_eq!(actions.len(), 1);
     match &actions[0] {
@@ -3838,7 +3855,7 @@ fn plan_secrets_target_and_envs_produces_both_actions() {
         envs: Some(vec!["GITHUB_TOKEN".to_string()]),
     });
 
-    let actions = reconciler.plan_secrets(&profile);
+    let actions = reconciler.plan_secrets(&profile).unwrap();
     // Should produce both a Resolve and a ResolveEnv action
     assert_eq!(actions.len(), 2);
     assert!(
@@ -3868,6 +3885,7 @@ fn plan_env_with_secret_envs_includes_them() {
         &[],
         tmp.path(),
     )
+    .unwrap()
     .actions;
     // With non-empty secret envs, there should be at least a WriteEnvFile action
     let has_write = actions
@@ -3894,6 +3912,7 @@ fn plan_env_secret_envs_appear_in_generated_content() {
         &[],
         tmp.path(),
     )
+    .unwrap()
     .actions;
 
     // Find the WriteEnvFile action and check its content
@@ -4059,7 +4078,8 @@ fn generate_powershell_env_basic() {
     let content = super::generate_powershell_env_content(
         &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
         windows_path_fold(&env).as_ref(),
-    );
+    )
+    .unwrap();
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("$env:EDITOR = 'code'"));
     // PATH references $env: so double-quoted to allow expansion
@@ -4083,7 +4103,8 @@ fn generate_powershell_env_with_aliases() {
     let content = super::generate_powershell_env_content(
         &crate::reconciler::LayeredEnv::for_test(&[], &aliases, &Default::default()),
         None,
-    );
+    )
+    .unwrap();
     assert!(content.contains("Set-Alias -Name g -Value 'git'"));
     assert!(content.contains("function ll {"));
     assert!(content.contains("Get-ChildItem -Force @args"));
@@ -4099,7 +4120,8 @@ fn generate_powershell_env_escapes_quotes() {
     let content = super::generate_powershell_env_content(
         &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
         None,
-    );
+    )
+    .unwrap();
     // No $env: reference, so single-quoted (PS single quotes don't need escaping except ')
     assert!(content.contains("$env:GREETING = 'say \"hello\"'"));
 }
@@ -4109,7 +4131,8 @@ fn generate_powershell_env_empty() {
     let content = super::generate_powershell_env_content(
         &crate::reconciler::LayeredEnv::for_test(&[], &[], &Default::default()),
         None,
-    );
+    )
+    .unwrap();
     // The banner and nothing else, in its block-free form: no declaration
     // means no block to head, and the two sentences about blocks would name
     // something this file does not hold. Written out by hand: composing it
@@ -4790,7 +4813,8 @@ fn apply_env_write_env_file_to_tempdir() {
     let content = super::generate_env_file_content(
         &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
         None,
-    );
+    )
+    .unwrap();
 
     let action = EnvAction::WriteEnvFile {
         path: env_path.clone(),
@@ -4825,7 +4849,8 @@ fn apply_env_write_skips_when_content_matches() {
     let content = super::generate_env_file_content(
         &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
         None,
-    );
+    )
+    .unwrap();
 
     // Pre-write identical content
     std::fs::write(&env_path, &content).unwrap();
@@ -5671,7 +5696,8 @@ fn apply_env_write_with_aliases_produces_correct_file() {
     let content = super::generate_env_file_content(
         &crate::reconciler::LayeredEnv::for_test(&env, &aliases, &Default::default()),
         None,
-    );
+    )
+    .unwrap();
 
     let action = EnvAction::WriteEnvFile {
         path: env_path.clone(),
@@ -8114,7 +8140,9 @@ fn a_refused_env_regeneration_is_recorded_as_an_after_plan_failure() {
         &super::LayeredEnv::from_parts("profile:test", &resolved.merged.env, &[], &[]),
         &[],
     )
+    .unwrap()
     .managed_env_files(tmp.path(), resolved.merged.env_scope)
+    .unwrap()
     .into_iter()
     .map(|(path, _)| path)
     .collect();
@@ -9383,7 +9411,7 @@ fn plan_secrets_sops_file_target() {
         envs: None,
     });
 
-    let actions = reconciler.plan_secrets(&profile);
+    let actions = reconciler.plan_secrets(&profile).unwrap();
     assert_eq!(actions.len(), 1);
     match &actions[0] {
         Action::Secret(SecretAction::Decrypt {
@@ -9411,7 +9439,7 @@ fn plan_secrets_no_backend_skips() {
         envs: None,
     });
 
-    let actions = reconciler.plan_secrets(&profile);
+    let actions = reconciler.plan_secrets(&profile).unwrap();
     assert_eq!(actions.len(), 1);
     match &actions[0] {
         Action::Secret(SecretAction::Skip { reason, .. }) => {
@@ -9439,7 +9467,7 @@ fn plan_secrets_envs_only_without_provider_skips() {
         envs: Some(vec!["MY_SECRET".to_string()]),
     });
 
-    let actions = reconciler.plan_secrets(&profile);
+    let actions = reconciler.plan_secrets(&profile).unwrap();
     assert_eq!(actions.len(), 1);
     match &actions[0] {
         Action::Secret(SecretAction::Skip { reason, .. }) => {
@@ -9467,7 +9495,7 @@ fn plan_secrets_provider_not_available_skips() {
         envs: None,
     });
 
-    let actions = reconciler.plan_secrets(&profile);
+    let actions = reconciler.plan_secrets(&profile).unwrap();
     assert_eq!(actions.len(), 1);
     match &actions[0] {
         Action::Secret(SecretAction::Skip { reason, .. }) => {
@@ -9496,7 +9524,7 @@ fn plan_secrets_sops_with_envs_generates_skip_for_envs() {
         envs: Some(vec!["TOKEN".to_string()]),
     });
 
-    let actions = reconciler.plan_secrets(&profile);
+    let actions = reconciler.plan_secrets(&profile).unwrap();
     // Should produce a Decrypt action for the file target AND a Skip for env injection
     assert_eq!(actions.len(), 2);
     assert!(matches!(
@@ -9532,7 +9560,7 @@ fn plan_secrets_provider_no_target_no_envs_skips() {
         envs: None,
     });
 
-    let actions = reconciler.plan_secrets(&profile);
+    let actions = reconciler.plan_secrets(&profile).unwrap();
     assert_eq!(actions.len(), 1);
     match &actions[0] {
         Action::Secret(SecretAction::Skip { reason, .. }) => {
@@ -9573,6 +9601,7 @@ fn plan_modules_reconcile_context_uses_pre_post_reconcile() {
     // Reconcile context should use pre/post reconcile scripts, not apply scripts
     let actions = reconciler
         .plan_modules(&modules, "test", ReconcileContext::Reconcile)
+        .unwrap()
         .0;
     assert_eq!(actions.len(), 2); // pre-reconcile + post-reconcile
 
@@ -9942,7 +9971,8 @@ fn generate_powershell_env_escapes_single_quotes() {
     let content = super::generate_powershell_env_content(
         &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
         None,
-    );
+    )
+    .unwrap();
     // Single quotes in values are doubled in PS
     assert!(content.contains("$env:MSG = 'it''s a test'"));
 }
@@ -9957,7 +9987,8 @@ fn generate_fish_env_escapes_single_quotes() {
     let content = super::generate_fish_env_content(
         &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
         None,
-    );
+    )
+    .unwrap();
     assert!(content.contains("set -gx MSG 'it\\'s a test'"));
 }
 
@@ -11256,7 +11287,7 @@ fn plan_secret_decrypt_target_is_tilde_expanded() {
         envs: None,
     });
 
-    let actions = reconciler.plan_secrets(&profile);
+    let actions = reconciler.plan_secrets(&profile).unwrap();
     let target = actions
         .iter()
         .find_map(|a| match a {
@@ -11475,7 +11506,7 @@ fn apply_secret_resolve_unknown_provider_errors() {
 fn apply_secret_resolve_env_collects_env_vars() {
     // Unit test the collector-population behaviour directly via
     // `apply_secret_action`. The full `Reconciler::apply` path calls
-    // `plan_env()` which resolves `~` to the real `$HOME` and writes
+    // `plan_env().unwrap()` which resolves `~` to the real `$HOME` and writes
     // `~/.cfgd.env` + injects a source line into `~/.bashrc` — tests must
     // never touch the user's home.
     let state = test_state();
@@ -15242,6 +15273,7 @@ fn plan_modules_encryption_always_with_symlink_skips() {
 
     let actions = reconciler
         .plan_modules(&modules, "test", ReconcileContext::Apply)
+        .unwrap()
         .0;
     // Should produce a Skip action because encryption=Always + symlink is incompatible
     assert_eq!(actions.len(), 1);
@@ -15302,6 +15334,7 @@ fn plan_modules_platform_skipped_emits_single_skip_and_no_other_actions() {
 
     let actions = reconciler
         .plan_modules(&modules, "test", ReconcileContext::Apply)
+        .unwrap()
         .0;
     assert_eq!(actions.len(), 1, "expected exactly one action: {actions:?}");
     match &actions[0].1 {
@@ -15369,6 +15402,7 @@ fn plan_modules_encryption_always_with_copy_proceeds() {
 
     let actions = reconciler
         .plan_modules(&modules, "test", ReconcileContext::Apply)
+        .unwrap()
         .0;
     // Should produce DeployFiles (encryption=Always + copy is OK, and file has sops marker)
     assert_eq!(actions.len(), 1);
@@ -15432,6 +15466,7 @@ fn plan_modules_encryption_check_err_skips_with_error_reason() {
 
     let actions = reconciler
         .plan_modules(&modules, "test", ReconcileContext::Apply)
+        .unwrap()
         .0;
     assert_eq!(actions.len(), 1);
     match &actions[0].1 {
@@ -15506,6 +15541,7 @@ fn plan_modules_encryption_check_err_breaks_after_first_file() {
 
     let actions = reconciler
         .plan_modules(&modules, "test", ReconcileContext::Apply)
+        .unwrap()
         .0;
     // After the failing encryption check, planner does NOT emit DeployFiles —
     // single Skip is the only module action emitted.
@@ -15577,6 +15613,7 @@ fn plan_modules_encryption_file_not_encrypted_skips() {
 
     let actions = reconciler
         .plan_modules(&modules, "test", ReconcileContext::Apply)
+        .unwrap()
         .0;
     // Should skip because file requires encryption but isn't encrypted
     assert_eq!(actions.len(), 1);
@@ -15750,7 +15787,8 @@ fn generate_fish_env_content_basic() {
     let content = super::generate_fish_env_content(
         &crate::reconciler::LayeredEnv::for_test(&env, &aliases, &Default::default()),
         None,
-    );
+    )
+    .unwrap();
     assert!(content.starts_with("# managed by cfgd"));
     assert!(content.contains("set -gx EDITOR 'nvim'"));
     assert!(content.contains("set -gx CARGO_HOME '/home/user/.cargo'"));
@@ -15767,7 +15805,8 @@ fn generate_powershell_env_content_with_env_ref() {
     let content = super::generate_powershell_env_content(
         &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
         None,
-    );
+    )
+    .unwrap();
     // Contains $env: so should be double-quoted
     assert!(
         content.contains(r#"$env:MY_PATH = "C:\tools;$env:PATH""#),
@@ -15787,7 +15826,8 @@ fn generate_powershell_env_function_alias() {
     let content = super::generate_powershell_env_content(
         &crate::reconciler::LayeredEnv::for_test(&[], &aliases, &Default::default()),
         None,
-    );
+    )
+    .unwrap();
     assert!(content.contains("function ll {"));
     assert!(content.contains("Get-ChildItem -Force @args"));
 }
@@ -15803,7 +15843,8 @@ fn generate_fish_env_path_splitting() {
     let content = super::generate_fish_env_content(
         &crate::reconciler::LayeredEnv::for_test(&env, &[], &Default::default()),
         fish_path_fold(&env).as_ref(),
-    );
+    )
+    .unwrap();
     assert!(
         content.contains("set -gx PATH '/usr/bin' '/usr/local/bin' $PATH"),
         "content: {}",
@@ -16437,6 +16478,7 @@ fn primary_managed_env_target(home: &Path, layered: &super::LayeredEnv) -> (Path
         &probe,
         platform,
     )
+    .unwrap()
     .into_iter()
     .find_map(|t| match t {
         EnvTarget::ManagedFile { path, content, .. } => Some((path, content)),
@@ -16474,7 +16516,8 @@ fn env_verify_results_reports_matching_alias_and_env_var_as_current() {
         &super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
         EnvScope::All,
         &[],
-    );
+    )
+    .unwrap();
 
     let alias_row = results
         .iter()
@@ -16539,7 +16582,8 @@ fn env_verify_results_detects_hand_edited_alias_as_drift_without_flagging_untouc
         &super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
         EnvScope::All,
         &[],
-    );
+    )
+    .unwrap();
 
     let alias_row = results
         .iter()
@@ -16606,7 +16650,8 @@ fn env_verify_results_carry_only_the_opaque_markers_never_the_declared_value() {
         &super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]),
         EnvScope::All,
         &[],
-    );
+    )
+    .unwrap();
 
     for (rtype, rid) in [("env-var", "API_TOKEN"), ("alias", "deploy")] {
         let row = results
@@ -16652,7 +16697,9 @@ fn a_drifted_env_row_shows_the_line_the_file_holds_against_the_declared_one() {
         &super::LayeredEnv::from_parts("profile:test", &edited, &[], &[]),
         &[],
     )
+    .unwrap()
     .declared_line("env-var", "EDITOR")
+    .unwrap()
     .expect("the edited var renders a line");
     let (path, _) = primary_managed_env_target(
         tmp_home.path(),
@@ -16664,7 +16711,9 @@ fn a_drifted_env_row_shows_the_line_the_file_holds_against_the_declared_one() {
         &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
         &[],
     )
+    .unwrap()
     .display_values("env-var", "EDITOR")
+    .unwrap()
     .expect("a declared env var recomputes both operands");
     assert_eq!(
         want,
@@ -16672,7 +16721,9 @@ fn a_drifted_env_row_shows_the_line_the_file_holds_against_the_declared_one() {
             &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
             &[]
         )
+        .unwrap()
         .declared_line("env-var", "EDITOR")
+        .unwrap()
         .unwrap(),
         "want is the line the declaration renders as"
     );
@@ -16702,8 +16753,11 @@ fn an_env_var_several_blocks_assign_reads_back_as_the_last_line_that_claims_it()
     // through the engine's own targets.
     let (layered, path_dirs) =
         crate::test_helpers::layered_fixture(&crate::to_posix_string(tmp_home.path()));
-    let view = super::verify::MergedEnvItems::new(&layered, &path_dirs);
-    for (path, content) in view.managed_env_files(tmp_home.path(), EnvScope::All) {
+    let view = super::verify::MergedEnvItems::new(&layered, &path_dirs).unwrap();
+    for (path, content) in view
+        .managed_env_files(tmp_home.path(), EnvScope::All)
+        .unwrap()
+    {
         crate::ensure_parent_dir(&path).unwrap();
         std::fs::write(&path, content).unwrap();
     }
@@ -16728,9 +16782,10 @@ fn an_env_var_several_blocks_assign_reads_back_as_the_last_line_that_claims_it()
 
     let declared = view
         .declared_line("env-var", "PAGER")
+        .unwrap()
         .expect("a declared var renders its declared line");
     assert_eq!(
-        view.display_values("env-var", "PAGER"),
+        view.display_values("env-var", "PAGER").unwrap(),
         Some((declared.clone(), declared.clone())),
         "a converged file agrees with its own declaration:\n{written}"
     );
@@ -16746,7 +16801,9 @@ fn an_env_var_several_blocks_assign_reads_back_as_the_last_line_that_claims_it()
         &super::LayeredEnv::from_parts("profile:test", &edited, &[], &[]),
         &[],
     )
+    .unwrap()
     .declared_line("env-var", "PAGER")
+    .unwrap()
     .expect("the edited var renders a line");
     let rewrite = |nth: usize| {
         let mut seen = 0;
@@ -16767,14 +16824,14 @@ fn an_env_var_several_blocks_assign_reads_back_as_the_last_line_that_claims_it()
 
     std::fs::write(&primary, rewrite(0)).unwrap();
     assert_eq!(
-        view.display_values("env-var", "PAGER"),
+        view.display_values("env-var", "PAGER").unwrap(),
         Some((declared.clone(), declared.clone())),
         "editing the outranked layer's line changes nothing a shell resolves"
     );
 
     std::fs::write(&primary, rewrite(1)).unwrap();
     assert_eq!(
-        view.display_values("env-var", "PAGER"),
+        view.display_values("env-var", "PAGER").unwrap(),
         Some((declared, edited_line)),
         "the last line claiming the name is what the machine holds"
     );
@@ -16800,20 +16857,22 @@ fn one_merged_env_view_answers_every_row_of_a_report() {
         platforms: vec![],
     }];
     let layered = super::LayeredEnv::from_parts("profile:test", &env, &aliases, &[]);
-    let view = super::verify::MergedEnvItems::new(&layered, &[]);
+    let view = super::verify::MergedEnvItems::new(&layered, &[]).unwrap();
 
     let editor = view
         .declared_line("env-var", "EDITOR")
+        .unwrap()
         .expect("the env var renders a line");
     let ll = view
         .declared_line("alias", "ll")
+        .unwrap()
         .expect("the alias renders a line from the same view");
     assert!(
         editor.contains("EDITOR") && ll.contains("ll"),
         "{editor} / {ll}"
     );
     assert_eq!(
-        view.declared_line("file", "/etc/hosts"),
+        view.declared_line("file", "/etc/hosts").unwrap(),
         None,
         "a kind with no managed line answers None from the same view"
     );
@@ -16843,7 +16902,9 @@ fn an_env_item_the_file_does_not_hold_reads_as_the_shared_absence_word() {
         &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
         &[],
     )
+    .unwrap()
     .display_values("env-var", "EDITOR")
+    .unwrap()
     .expect("a declared env var recomputes both operands");
     assert_eq!(have, crate::Absence::Missing.as_str());
 
@@ -16852,7 +16913,9 @@ fn an_env_item_the_file_does_not_hold_reads_as_the_shared_absence_word() {
             &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
             &[]
         )
+        .unwrap()
         .display_values("file", "~/.zshrc")
+        .unwrap()
         .is_none(),
         "a kind with no managed env line recomputes nothing"
     );
@@ -16861,7 +16924,9 @@ fn an_env_item_the_file_does_not_hold_reads_as_the_shared_absence_word() {
             &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
             &[]
         )
+        .unwrap()
         .display_values("env-var", "PAGER")
+        .unwrap()
         .is_none(),
         "an item no longer declared recomputes nothing"
     );
@@ -16902,7 +16967,9 @@ fn an_unreadable_managed_env_file_recomputes_nothing_rather_than_claiming_absenc
         &super::LayeredEnv::from_parts("profile:test", &declared, &[], &[]),
         &[],
     )
-    .display_values("env-var", "EDITOR");
+    .unwrap()
+    .display_values("env-var", "EDITOR")
+    .unwrap();
 
     // Restore before asserting so a failure does not leave the tempdir
     // undeletable.
@@ -17077,9 +17144,10 @@ fn two_layers_of_one_subscription_at_one_rank_share_one_block() {
     // The rendered file says the same: one header, and ONE assignment per name
     // inside it — two `export PAGER=` lines under one header would read as the
     // file setting it twice.
-    let content = super::generate_env_file_content(&layered, None);
+    let content = super::generate_env_file_content(&layered, None).unwrap();
     let blocks =
-        super::env_files::generate_blocks(super::env_files::Dialect::Posix, &layered, None);
+        super::env_files::generate_blocks(super::env_files::Dialect::Posix, &layered, None)
+            .unwrap();
     assert_eq!(
         block_headers(&blocks),
         ["# source: team (priority 500)"],
@@ -17138,9 +17206,10 @@ fn two_adjacent_tiers_of_one_subscription_each_keep_their_own_block() {
         "one owner at two ranks is two blocks, each stating its own",
     );
 
-    let content = super::generate_env_file_content(&layered, None);
+    let content = super::generate_env_file_content(&layered, None).unwrap();
     let blocks =
-        super::env_files::generate_blocks(super::env_files::Dialect::Posix, &layered, None);
+        super::env_files::generate_blocks(super::env_files::Dialect::Posix, &layered, None)
+            .unwrap();
     assert_eq!(
         block_headers(&blocks),
         [
@@ -17214,9 +17283,10 @@ fn an_entry_no_layer_declares_lands_in_its_owners_declaring_block() {
         [("source:team", Some(500))],
         "the tier that declares nothing must not be kept alive to hold the entry",
     );
-    let content = super::generate_env_file_content(&layered, None);
+    let content = super::generate_env_file_content(&layered, None).unwrap();
     let blocks =
-        super::env_files::generate_blocks(super::env_files::Dialect::Posix, &layered, None);
+        super::env_files::generate_blocks(super::env_files::Dialect::Posix, &layered, None)
+            .unwrap();
     assert_eq!(
         block_of(&blocks, "export CFGD_CLIPBOARD=\"wl-copy\""),
         Some("# source: team (priority 500)"),
@@ -20690,7 +20760,8 @@ fn env_targets_folded_path_dirs_render_into_the_fish_managed_file() {
         home,
         &probe,
         EnvPlatform::Linux,
-    );
+    )
+    .unwrap();
     let fish_content = t
         .iter()
         .find_map(|target| match target {
@@ -20726,7 +20797,8 @@ fn env_targets_folded_path_dirs_render_into_the_powershell_managed_file() {
         home,
         &env_probe(""),
         EnvPlatform::Windows,
-    );
+    )
+    .unwrap();
     let ps_content = t
         .iter()
         .find_map(|target| match target {
@@ -20790,6 +20862,7 @@ fn every_managed_env_file_counts_its_own_lines() {
         &env_probe(""),
         EnvPlatform::Linux,
     )
+    .unwrap()
     .into_iter()
     .filter_map(|t| match t {
         EnvTarget::ManagedFile { path, rendered, .. } => Some((
@@ -22240,6 +22313,7 @@ fn plan_modules_sorts_bootstrappable_managers_after_native_ones() {
 
     let actions = reconciler
         .plan_modules(&[module], "test", ReconcileContext::Apply)
+        .unwrap()
         .0;
     // Order in actions reflects the sorted manager order: apt (0), brew (1), unknown (2).
     let install_managers: Vec<String> = actions
@@ -23423,7 +23497,8 @@ fn env_targets_empty_yields_nothing() {
         home,
         &env_probe("/bin/bash"),
         EnvPlatform::Linux,
-    );
+    )
+    .unwrap();
     assert!(t.is_empty());
 }
 
@@ -23439,7 +23514,8 @@ fn env_targets_interactive_is_env_file_plus_interactive_rc() {
         home,
         &env_probe("/bin/bash"),
         EnvPlatform::Linux,
-    );
+    )
+    .unwrap();
     assert_eq!(target_keys(&t), vec!["file:/h/.cfgd.env", "src:/h/.bashrc"]);
 }
 
@@ -23455,7 +23531,8 @@ fn env_targets_interactive_zsh_uses_zshrc() {
         home,
         &env_probe("/usr/bin/zsh"),
         EnvPlatform::Linux,
-    );
+    )
+    .unwrap();
     assert_eq!(target_keys(&t), vec!["file:/h/.cfgd.env", "src:/h/.zshrc"]);
 }
 
@@ -23472,7 +23549,8 @@ fn env_targets_login_adds_zshenv_only_when_zsh_present() {
         home,
         &env_probe("/bin/zsh"),
         EnvPlatform::Linux,
-    );
+    )
+    .unwrap();
     let keys = target_keys(&t);
     assert_eq!(
         keys,
@@ -23494,7 +23572,8 @@ fn env_targets_login_adds_zshenv_only_when_zsh_present() {
         home,
         &env_probe("/bin/bash"),
         EnvPlatform::Linux,
-    );
+    )
+    .unwrap();
     let keys = target_keys(&t);
     assert_eq!(
         keys,
@@ -23522,7 +23601,8 @@ fn env_targets_login_injects_existing_bash_profile() {
         home,
         &probe,
         EnvPlatform::Linux,
-    );
+    )
+    .unwrap();
     let keys = target_keys(&t);
     assert!(keys.contains(&"src:/h/.bash_profile".to_string()));
     assert!(!keys.iter().any(|k| k.ends_with(".bash_login")));
@@ -23542,7 +23622,8 @@ fn env_targets_login_falls_back_to_bash_login_when_only_it_exists() {
         home,
         &probe,
         EnvPlatform::Linux,
-    );
+    )
+    .unwrap();
     let keys = target_keys(&t);
     assert!(keys.contains(&"src:/h/.bash_login".to_string()));
     assert!(!keys.iter().any(|k| k.ends_with(".bash_profile")));
@@ -23560,7 +23641,8 @@ fn env_targets_all_linux_adds_environment_d_and_session() {
         home,
         &env_probe("/bin/bash"),
         EnvPlatform::Linux,
-    );
+    )
+    .unwrap();
     let keys = target_keys(&t);
     assert!(keys.contains(&"file:/h/.config/environment.d/cfgd.conf".to_string()));
     assert_eq!(keys.last().map(String::as_str), Some("session"));
@@ -23580,7 +23662,8 @@ fn env_targets_all_macos_adds_launchagent_not_environment_d() {
         home,
         &env_probe("/bin/zsh"),
         EnvPlatform::MacOs,
-    );
+    )
+    .unwrap();
     let keys = target_keys(&t);
     assert!(
         keys.iter()
@@ -23605,7 +23688,8 @@ fn env_targets_all_freebsd_omits_environment_d_and_launchagent() {
         home,
         &env_probe("/bin/sh"),
         EnvPlatform::FreeBsd,
-    );
+    )
+    .unwrap();
     let keys = target_keys(&t);
     assert!(keys.contains(&"file:/h/.cfgd.env".to_string()));
     assert!(!keys.iter().any(|k| k.contains("environment.d")));
@@ -23627,7 +23711,8 @@ fn env_targets_windows_is_ps_profiles_plus_session_on_all() {
         home,
         &env_probe(""),
         EnvPlatform::Windows,
-    );
+    )
+    .unwrap();
     let keys = target_keys(&t);
     assert!(keys.contains(&"file:/h/.cfgd-env.ps1".to_string()));
     assert_eq!(
@@ -23654,7 +23739,8 @@ fn env_targets_match_what_verify_rederives() {
         home,
         &probe,
         EnvPlatform::Linux,
-    );
+    )
+    .unwrap();
     let b = env_targets(
         EnvContent::of(
             &crate::reconciler::LayeredEnv::for_test(&one_env(), &[], &Default::default()),
@@ -23664,7 +23750,8 @@ fn env_targets_match_what_verify_rederives() {
         home,
         &probe,
         EnvPlatform::Linux,
-    );
+    )
+    .unwrap();
     assert_eq!(target_keys(&a), target_keys(&b));
 }
 
@@ -23804,6 +23891,7 @@ fn plan_env_all_scope_emits_live_session_action() {
         &[],
         tmp.path(),
     )
+    .unwrap()
     .actions;
     assert!(
         actions
@@ -23824,6 +23912,7 @@ fn plan_env_interactive_scope_has_no_live_session_action() {
         &[],
         tmp.path(),
     )
+    .unwrap()
     .actions;
     assert!(
         !actions
@@ -24116,7 +24205,8 @@ fn env_targets_windows_with_git_bash_adds_unix_env_file_and_bashrc() {
         home,
         &probe,
         EnvPlatform::Windows,
-    );
+    )
+    .unwrap();
     let keys = target_keys(&t);
     assert!(
         keys.contains(&"file:/h/.cfgd.env".to_string()),
@@ -24150,7 +24240,8 @@ fn env_targets_fish_present_adds_managed_fish_file() {
         home,
         &probe,
         EnvPlatform::Linux,
-    );
+    )
+    .unwrap();
     let keys = target_keys(&t);
     assert!(
         keys.contains(&"file:/h/.config/fish/conf.d/cfgd-env.fish".to_string()),
@@ -24621,6 +24712,7 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
         &managed,
         home.path(),
     )
+    .unwrap()
     .actions;
 
     assert_eq!(actions.len(), 1, "{actions:?}");
@@ -24648,6 +24740,7 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
         &managed,
         home.path(),
     )
+    .unwrap()
     .actions;
     assert_eq!(actions.len(), 1, "{actions:?}");
     match &actions[0] {
@@ -24665,6 +24758,7 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
         &managed,
         home.path(),
     )
+    .unwrap()
     .actions;
     assert!(actions.is_empty(), "{actions:?}");
 
@@ -24678,6 +24772,7 @@ fn plan_env_neutralizes_a_stale_managed_file_when_the_desired_env_empties() {
         &managed,
         home.path(),
     )
+    .unwrap()
     .actions;
     assert!(actions.is_empty(), "{actions:?}");
 }
@@ -24701,6 +24796,7 @@ fn plan_env_leaves_a_generated_file_this_state_store_never_recorded() {
         &[],
         home.path(),
     )
+    .unwrap()
     .actions;
 
     assert!(actions.is_empty(), "{actions:?}");
@@ -24731,6 +24827,7 @@ fn reconciler_env_surfaces_resolve_against_the_home_it_was_built_with() {
             &[],
             &[],
         )
+        .unwrap()
         .actions;
 
     assert!(!actions.is_empty(), "the env plan must not be empty");
@@ -26252,7 +26349,7 @@ fn a_lane_worker_blocks_behind_an_exclusively_held_path_lock() {
         .with_modules(modules)
         .run(move || {
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // sleep-ok: correctness here comes from the still-held write guard, not the duration — this only gives a correctly-guarded worker room to reach and block on it
+            // sleep-ok: correctness here comes from the still-held write guard; the duration only gives a correctly-guarded worker room to reach and block on it
             std::thread::sleep(std::time::Duration::from_millis(150));
             assert!(
                 dispatch_log(&drive_log).is_empty(),
@@ -28815,6 +28912,10 @@ struct ReconcilerExecutor<'a> {
 }
 
 impl crate::reconciler::RunExecutor for ReconcilerExecutor<'_> {
+    fn module_checkouts(&self) -> crate::reconciler::ModuleCheckouts<'_> {
+        crate::reconciler::ModuleCheckouts::NotOwned
+    }
+
     fn apply(&mut self, plan: &Plan, printer: &Printer) -> Result<ApplyResult> {
         self.reconciler.apply(
             plan,
@@ -30609,7 +30710,9 @@ impl crate::providers::SystemConfigurator for NarratingConfigurator {
             crate::output::Role::Info,
             format!(
                 "wrote {}",
-                crate::expand_tilde(std::path::Path::new("~/.ssh/config")).display_posix()
+                crate::expand_tilde(std::path::Path::new("~/.ssh/config"), "test")
+                    .unwrap()
+                    .display_posix()
             ),
         );
         Ok(())
@@ -30743,23 +30846,27 @@ fn decision_store_ownership_matches_only_the_runs_own_scope() {
     // store with the system picture's subscription list.
     let staging = tempfile::tempdir().unwrap();
     let _home = crate::with_test_home_guard(staging.path());
-    let user_cfg = crate::default_config_dir_for(crate::Scope::User).join("cfgd.yaml");
-    let system_cfg = crate::default_config_dir_for(crate::Scope::System).join("cfgd.yaml");
+    let user_cfg = crate::default_config_dir_for(crate::Scope::User)
+        .unwrap()
+        .join("cfgd.yaml");
+    let system_cfg = crate::default_config_dir_for(crate::Scope::System)
+        .unwrap()
+        .join("cfgd.yaml");
 
     assert!(
-        owns_decision_store(&user_cfg, false, crate::Scope::User),
+        owns_decision_store(&user_cfg, false, crate::Scope::User).unwrap(),
         "the user scope's own default config owns the user store"
     );
     assert!(
-        !owns_decision_store(&system_cfg, false, crate::Scope::User),
+        !owns_decision_store(&system_cfg, false, crate::Scope::User).unwrap(),
         "the system config is a different machine picture to the user store"
     );
     assert!(
-        owns_decision_store(&system_cfg, false, crate::Scope::System),
+        owns_decision_store(&system_cfg, false, crate::Scope::System).unwrap(),
         "the system scope's own default config owns the system store"
     );
     assert!(
-        !owns_decision_store(&user_cfg, false, crate::Scope::System),
+        !owns_decision_store(&user_cfg, false, crate::Scope::System).unwrap(),
         "and the user config does not own the system store"
     );
     assert!(
@@ -30767,7 +30874,8 @@ fn decision_store_ownership_matches_only_the_runs_own_scope() {
             Path::new("/somewhere/else/cfgd.yaml"),
             true,
             crate::Scope::User
-        ),
+        )
+        .unwrap(),
         "a --state-dir override grants ownership regardless: the swept store is the one the config was aimed at"
     );
 }
@@ -32829,11 +32937,13 @@ fn a_converged_env_declaring_modules_hooks_are_deferred_not_dropped() {
         value: "bar".to_string(),
         platforms: vec![],
     });
-    let (actions, gated) = reconciler.plan_modules(
-        std::slice::from_ref(&module),
-        "test",
-        ReconcileContext::Apply,
-    );
+    let (actions, gated) = reconciler
+        .plan_modules(
+            std::slice::from_ref(&module),
+            "test",
+            ReconcileContext::Apply,
+        )
+        .unwrap();
     assert!(
         actions.is_empty(),
         "nothing survives elision, got: {actions:?}"
@@ -32856,7 +32966,9 @@ fn a_converged_env_declaring_modules_hooks_are_deferred_not_dropped() {
     // The same module with no env declared is simply converged: no hooks
     // anywhere.
     module.env.clear();
-    let (actions, gated) = reconciler.plan_modules(&[module], "test", ReconcileContext::Apply);
+    let (actions, gated) = reconciler
+        .plan_modules(&[module], "test", ReconcileContext::Apply)
+        .unwrap();
     assert!(
         actions.is_empty() && gated.is_empty(),
         "a fully converged module defers nothing, got: {actions:?} / {gated:?}"
@@ -32889,6 +33001,7 @@ fn a_converged_env_surface_plans_no_env_actions() {
             &[],
             tmp.path(),
         )
+        .unwrap()
     };
 
     let first = plan().actions;
@@ -33330,11 +33443,13 @@ fn a_script_and_env_module_keeps_its_hooks_unconditionally() {
         platforms: vec![],
     });
 
-    let (actions, gated) = reconciler.plan_modules(
-        std::slice::from_ref(&module),
-        "test",
-        ReconcileContext::Apply,
-    );
+    let (actions, gated) = reconciler
+        .plan_modules(
+            std::slice::from_ref(&module),
+            "test",
+            ReconcileContext::Apply,
+        )
+        .unwrap();
     assert_eq!(
         actions.len(),
         2,
@@ -33593,6 +33708,7 @@ fn host_env_blocks(
         layered,
         path,
     )
+    .unwrap()
 }
 
 /// EVERY line of a generated env file sits in the block of the layer that
@@ -33666,18 +33782,18 @@ fn every_generated_env_line_sits_in_the_block_that_declared_it() {
     for (dialect, content) in [
         (
             super::env_files::Dialect::Posix,
-            super::generate_env_file_content(&layered, Some(&fold)),
+            super::generate_env_file_content(&layered, Some(&fold)).unwrap(),
         ),
         (
             super::env_files::Dialect::Fish,
-            super::generate_fish_env_content(&layered, Some(&fold)),
+            super::generate_fish_env_content(&layered, Some(&fold)).unwrap(),
         ),
         (
             super::env_files::Dialect::PowerShell,
-            super::env_files::generate_powershell_env_content(&layered, Some(&fold)),
+            super::env_files::generate_powershell_env_content(&layered, Some(&fold)).unwrap(),
         ),
     ] {
-        let blocks = super::env_files::generate_blocks(dialect, &layered, Some(&fold));
+        let blocks = super::env_files::generate_blocks(dialect, &layered, Some(&fold)).unwrap();
         assert_eq!(
             block_headers(&blocks),
             [
@@ -33735,9 +33851,10 @@ fn every_generated_env_line_sits_in_the_block_that_declared_it() {
 fn the_primary_env_file_holds_one_block_per_layer_in_precedence_order() {
     let (layered, path_dirs) = crate::test_helpers::layered_fixture("/home/tj");
     let fold = FoldedPath::derived(&path_dirs);
-    let content = super::generate_env_file_content(&layered, Some(&fold));
+    let content = super::generate_env_file_content(&layered, Some(&fold)).unwrap();
     let blocks =
-        super::env_files::generate_blocks(super::env_files::Dialect::Posix, &layered, Some(&fold));
+        super::env_files::generate_blocks(super::env_files::Dialect::Posix, &layered, Some(&fold))
+            .unwrap();
     assert_eq!(
         block_headers(&blocks),
         [
@@ -33802,9 +33919,10 @@ fn the_primary_env_file_holds_one_block_per_layer_in_precedence_order() {
 fn a_straddling_owners_two_blocks_each_state_their_own_priority() {
     let resolved = straddling_source_profile();
     let layered = super::LayeredEnv::of(&resolved, &[]);
-    let content = super::generate_env_file_content(&layered, None);
+    let content = super::generate_env_file_content(&layered, None).unwrap();
     let blocks =
-        super::env_files::generate_blocks(super::env_files::Dialect::Posix, &layered, None);
+        super::env_files::generate_blocks(super::env_files::Dialect::Posix, &layered, None)
+            .unwrap();
     assert_eq!(
         block_headers(&blocks),
         [
@@ -33902,11 +34020,13 @@ fn every_surviving_path_declaration_reaches_the_one_generated_line() {
             super::env_engine::EnvPlatform::Linux
         },
     )
+    .unwrap()
     .expect("a declared PATH folds into a line");
     let content = super::generate_env_file_content(
         &crate::reconciler::LayeredEnv::for_test(&env, &aliases, &origins),
         Some(&folded),
-    );
+    )
+    .unwrap();
 
     let line = content
         .lines()
@@ -33983,6 +34103,7 @@ fn every_line_the_planner_wrote_verifies_as_current() {
         &[],
         tmp_home.path(),
     )
+    .unwrap()
     .actions
     {
         if let Action::Env(EnvAction::WriteEnvFile { path, content, .. }) = action {
@@ -33998,7 +34119,8 @@ fn every_line_the_planner_wrote_verifies_as_current() {
         &super::LayeredEnv::from_parts("profile:base", &profile_env, &[], &modules),
         crate::config::EnvScope::Interactive,
         &path_dirs,
-    );
+    )
+    .unwrap();
     // Only the seeded managed file is under test; the rc source line the test
     // deliberately never injected is a different surface.
     let drifted: Vec<_> = results
@@ -34027,7 +34149,9 @@ fn every_line_the_planner_wrote_verifies_as_current() {
         ("PAGER", "# profile: base (priority 1000)"),
     ] {
         let shown = super::verify::MergedEnvItems::new(&layered, &[])
+            .unwrap()
             .declared_line("env-var", id)
+            .unwrap()
             .expect("a declared var renders its declared line");
         assert!(
             !shown.contains(" # "),
@@ -35310,5 +35434,739 @@ fn an_apply_records_each_row_under_the_layer_that_delivered_it() {
             "package" | "file" | "system" | "secret" | "script"
         )),
         "nothing the source delivered is also claimed by the operator: {local:?}"
+    );
+}
+
+#[test]
+fn a_decrypted_secret_source_is_stamped_as_a_config_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("secrets").join("token.enc");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "ENC[...]").unwrap();
+    let state = test_state();
+    let mut registry = ProviderRegistry::new();
+    registry.secret_backend = Some(Box::new(MockSecretBackend::new("sops")));
+    let reconciler = Reconciler::new(&registry, &state).with_config_dir(dir.path());
+    let mut profile = MergedProfile::default();
+    profile.secrets.push(crate::config::SecretSpec {
+        source: "secrets/token.enc".to_string(),
+        target: Some(dir.path().join("out")),
+        template: None,
+        backend: None,
+        envs: None,
+    });
+
+    let rec = crate::ConfigInputRecorder::start();
+    let actions = reconciler.plan_secrets(&profile).unwrap();
+    let inputs = rec.finish();
+
+    assert!(
+        matches!(&actions[..], [Action::Secret(SecretAction::Decrypt { .. })]),
+        "the fixture plans one decrypt: {actions:?}"
+    );
+    assert_eq!(inputs.paths().collect::<Vec<_>>(), [source.as_path()]);
+}
+
+#[test]
+fn every_lifecycle_script_file_a_plan_names_is_stamped_as_a_config_input() {
+    let dir = tempfile::tempdir().unwrap();
+    let config_dir = dir.path().join("config");
+    let module_dir = dir.path().join("module");
+    let pre = config_dir.join("scripts").join("pre.sh");
+    let hook = module_dir.join("hook.sh");
+    for file in [&pre, &hook] {
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(file, "#!/bin/sh\n").unwrap();
+    }
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let reconciler = Reconciler::new(&registry, &state).with_config_dir(&config_dir);
+    let mut resolved = make_empty_resolved();
+    resolved.merged.scripts.pre_apply = vec![ScriptEntry::Simple("scripts/pre.sh".to_string())];
+    let mut module = resolved_module_with_package("tools", "jq", "apt");
+    module.dir = module_dir.clone();
+    module.pre_apply_scripts = vec![ScriptEntry::Simple("hook.sh".to_string())];
+
+    let rec = crate::ConfigInputRecorder::start();
+    let plan = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            vec![module],
+            ReconcileContext::Apply,
+        )
+        .unwrap();
+    let inputs = rec.finish();
+
+    assert!(
+        plan.phases
+            .iter()
+            .flat_map(|p| p.actions())
+            .any(|a| matches!(
+                a,
+                Action::Module(m) if matches!(m.kind, ModuleActionKind::RunScript { .. })
+            )),
+        "the fixture plans the module's hook"
+    );
+    let stamped: Vec<&Path> = inputs.paths().collect();
+    for script in [&pre, &hook] {
+        assert!(
+            stamped.contains(&crate::absolutize_path(script).as_path()),
+            "{} is stamped: {stamped:?}",
+            script.display()
+        );
+    }
+}
+
+/// No home on any OS: both variables `home_dir_var` reads, set empty.
+fn no_home_env() -> [crate::test_helpers::EnvVarGuard; 2] {
+    [
+        crate::test_helpers::EnvVarGuard::set("HOME", ""),
+        crate::test_helpers::EnvVarGuard::set("USERPROFILE", ""),
+    ]
+}
+
+fn module_with_target(name: &str, target: &str) -> ResolvedModule {
+    let mut module = make_resolved_module(name);
+    module.files.push(crate::modules::ResolvedFile {
+        source: PathBuf::from("files/x"),
+        target: PathBuf::from(target),
+        is_git_source: false,
+        strategy: None,
+        encryption: None,
+        permissions: None,
+        patch: None,
+    });
+    module
+}
+
+fn env_var(name: &str) -> crate::config::EnvVar {
+    crate::config::EnvVar {
+        name: name.into(),
+        value: "v".into(),
+        platforms: vec![],
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn a_desired_state_asks_for_a_home_exactly_when_it_writes_under_one() {
+    let _env = no_home_env();
+    let state = test_state();
+    let empty = make_empty_resolved();
+    assert!(
+        super::unresolved_home_refusal(
+            Some(&state),
+            &empty.merged,
+            super::ReconcileContext::Apply,
+            [],
+            None
+        )
+        .is_none(),
+        "nothing declared under `~/` needs no home"
+    );
+
+    let mut with_target = make_empty_resolved();
+    with_target
+        .merged
+        .files
+        .managed
+        .push(serde_yaml::from_str("source: files/gitconfig\ntarget: ~/.gitconfig").unwrap());
+    assert!(matches!(
+        super::unresolved_home_refusal(
+            None,
+            &with_target.merged,
+            super::ReconcileContext::Apply,
+            [],
+            None
+        ),
+        Some(crate::errors::StateError::HomeUnresolved { .. })
+    ));
+
+    let module = module_with_target("nvim", "~/.config/nvim/init.lua");
+    assert!(matches!(
+        super::unresolved_home_refusal(
+            None,
+            &empty.merged,
+            super::ReconcileContext::Apply,
+            [super::ModuleHomeUse::from(&module)],
+            None
+        ),
+        Some(crate::errors::StateError::HomeUnresolved { .. })
+    ));
+    let absolute = module_with_target("etc", "/etc/motd");
+    assert!(
+        super::unresolved_home_refusal(
+            None,
+            &empty.merged,
+            super::ReconcileContext::Apply,
+            [super::ModuleHomeUse::from(&absolute)],
+            None
+        )
+        .is_none(),
+        "an absolute target needs no home"
+    );
+
+    let mut with_env = make_empty_resolved();
+    with_env.merged.env.push(env_var("EDITOR"));
+    assert!(matches!(
+        super::unresolved_home_refusal(
+            None,
+            &with_env.merged,
+            super::ReconcileContext::Apply,
+            [],
+            None
+        ),
+        Some(crate::errors::StateError::EnvHomeUnresolved { .. })
+    ));
+
+    let backup = |yaml: &str| {
+        let mut resolved = make_empty_resolved();
+        resolved
+            .merged
+            .backups
+            .push(serde_yaml::from_str(yaml).unwrap());
+        super::unresolved_home_refusal(
+            None,
+            &resolved.merged,
+            super::ReconcileContext::Apply,
+            [],
+            None,
+        )
+    };
+    assert!(
+        matches!(
+            backup("name: dots\nsource: ~/dotfiles\ndestination: /srv/bk"),
+            Some(crate::errors::StateError::HomeUnresolved { .. })
+        ),
+        "a backup `apply` snapshots expands its `~` source"
+    );
+    assert!(
+        matches!(
+            backup("name: dots\nsource: /srv/dotfiles\ndestination: ~/bk"),
+            Some(crate::errors::StateError::HomeUnresolved { .. })
+        ),
+        "a backup `apply` snapshots expands its `~` destination"
+    );
+    assert!(
+        backup("name: dots\nsource: ~/dotfiles\ndestination: /srv/bk\nschedule: \"0 3 * * *\"")
+            .is_none(),
+        "a scheduled backup is the daemon's, and `apply` never expands it"
+    );
+    assert!(
+        backup("name: dots\nsource: /srv/dotfiles\ndestination: /srv/bk").is_none(),
+        "absolute backup paths need no home"
+    );
+
+    let mut module_env = make_resolved_module("tools");
+    module_env.env.push(env_var("EDITOR"));
+    assert!(matches!(
+        super::unresolved_home_refusal(
+            None,
+            &empty.merged,
+            super::ReconcileContext::Apply,
+            [super::ModuleHomeUse::from(&module_env)],
+            None
+        ),
+        Some(crate::errors::StateError::EnvHomeUnresolved { .. })
+    ));
+
+    state
+        .record_bootstrapped_path_dirs("npm", &["/opt/npm/bin".to_string()])
+        .unwrap();
+    assert!(
+        matches!(
+            super::unresolved_home_refusal(
+                Some(&state),
+                &empty.merged,
+                super::ReconcileContext::Apply,
+                [],
+                None
+            ),
+            Some(crate::errors::StateError::EnvHomeUnresolved { .. })
+        ),
+        "a recorded manager PATH entry lives in the env file too"
+    );
+}
+
+/// A backend whose key sits under the missing home, the way the binary's
+/// homeless backend answers.
+struct HomelessKeyTestBackend;
+
+impl crate::providers::SecretBackend for HomelessKeyTestBackend {
+    fn name(&self) -> &str {
+        "sops"
+    }
+    fn is_available(&self) -> bool {
+        false
+    }
+    fn encrypt_file(&self, _path: &std::path::Path) -> Result<()> {
+        Ok(())
+    }
+    fn decrypt_file(&self, _path: &std::path::Path) -> Result<secrecy::SecretString> {
+        Ok(secrecy::SecretString::from(String::new()))
+    }
+    fn edit_file(&self, _path: &std::path::Path) -> Result<()> {
+        Ok(())
+    }
+    fn home_refusal(&self) -> Option<crate::errors::StateError> {
+        Some(crate::errors::StateError::HomeUnresolved {
+            role: "age key",
+            path: std::path::PathBuf::from("~/.config/cfgd/age-key.txt"),
+        })
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn a_secret_decrypted_with_a_key_under_the_missing_home_refuses() {
+    let _env = no_home_env();
+    let secret = |source: &str| crate::config::SecretSpec {
+        source: source.to_string(),
+        target: Some(std::path::PathBuf::from("/etc/cfgd-token")),
+        template: None,
+        backend: None,
+        envs: None,
+    };
+    let mut homeless_key = ProviderRegistry::new();
+    homeless_key.secret_backend = Some(Box::new(HomelessKeyTestBackend));
+    let mut decrypted = make_empty_resolved();
+    decrypted.merged.secrets.push(secret("secrets/token.enc"));
+    assert!(
+        matches!(
+            super::unresolved_home_refusal(
+                None,
+                &decrypted.merged,
+                super::ReconcileContext::Apply,
+                [],
+                Some(&homeless_key)
+            ),
+            Some(crate::errors::StateError::HomeUnresolved {
+                role: "age key",
+                ..
+            })
+        ),
+        "a decryption reads the key the backend cannot place"
+    );
+    assert!(
+        super::unresolved_home_refusal(
+            None,
+            &decrypted.merged,
+            super::ReconcileContext::Apply,
+            [],
+            None
+        )
+        .is_none(),
+        "with no backend nothing is decrypted"
+    );
+
+    let mut resolved_by_provider = make_empty_resolved();
+    resolved_by_provider
+        .merged
+        .secrets
+        .push(secret("vault://secret/data/github#token"));
+    assert!(
+        super::unresolved_home_refusal(
+            None,
+            &resolved_by_provider.merged,
+            super::ReconcileContext::Apply,
+            [],
+            Some(&homeless_key)
+        )
+        .is_none(),
+        "a provider reference never reaches the backend's key"
+    );
+}
+
+fn script(yaml: &str) -> crate::config::ScriptEntry {
+    serde_yaml::from_str(yaml).unwrap()
+}
+
+#[test]
+#[serial_test::serial]
+fn a_script_the_apply_runs_refuses_a_home_workdir_or_creates_guard() {
+    let _env = no_home_env();
+    let refusal_of = |resolved: &ResolvedProfile, modules: &[ResolvedModule]| {
+        super::unresolved_home_refusal(
+            None,
+            &resolved.merged,
+            super::ReconcileContext::Apply,
+            modules.iter().map(super::ModuleHomeUse::from),
+            None,
+        )
+    };
+    let role_of = |refusal| match refusal {
+        Some(crate::errors::StateError::HomeUnresolved { role, .. }) => Some(role),
+        _ => None,
+    };
+    type Hook = fn(&mut crate::config::ScriptSpec) -> &mut Vec<crate::config::ScriptEntry>;
+    let apply_hooks: [(&str, Hook); 3] = [
+        ("preApply", |s| &mut s.pre_apply),
+        ("postApply", |s| &mut s.post_apply),
+        ("onChange", |s| &mut s.on_change),
+    ];
+    for (hook, entries) in apply_hooks {
+        for (field, role) in [
+            ("workdir", crate::SCRIPT_WORKDIR_ROLE),
+            ("creates", crate::CREATES_GUARD_ROLE),
+        ] {
+            let entry = script(&format!("run: \"true\"\n{field}: ~/x"));
+            let mut profile = make_empty_resolved();
+            entries(&mut profile.merged.scripts).push(entry.clone());
+            assert_eq!(
+                role_of(refusal_of(&profile, &[])),
+                Some(role),
+                "a profile {hook} entry's `~` {field}"
+            );
+            let mut module = make_resolved_module("tools");
+            match hook {
+                "preApply" => module.pre_apply_scripts.push(entry),
+                "postApply" => module.post_apply_scripts.push(entry),
+                _ => module.on_change_scripts.push(entry),
+            }
+            assert_eq!(
+                role_of(refusal_of(&make_empty_resolved(), &[module])),
+                Some(role),
+                "a module {hook} entry's `~` {field}"
+            );
+        }
+    }
+
+    let mut reconcile_only = make_empty_resolved();
+    for entries in [
+        &mut reconcile_only.merged.scripts.pre_reconcile,
+        &mut reconcile_only.merged.scripts.post_reconcile,
+        &mut reconcile_only.merged.scripts.on_drift,
+    ] {
+        entries.push(script("run: \"true\"\nworkdir: ~/x"));
+    }
+    assert!(
+        refusal_of(&reconcile_only, &[]).is_none(),
+        "an apply never runs a reconcile hook"
+    );
+    let mut settled = make_empty_resolved();
+    settled.merged.scripts.post_apply.extend([
+        script("\"true\""),
+        script("run: \"true\"\nworkdir: /srv\ncreates: /srv/done"),
+    ]);
+    assert!(
+        refusal_of(&settled, &[]).is_none(),
+        "a bare entry and absolute paths need no home"
+    );
+
+    let mut installs = make_resolved_module("tools");
+    installs.packages.push(crate::modules::ResolvedPackage {
+        canonical_name: "thing".into(),
+        resolved_name: "thing".into(),
+        manager: crate::SCRIPT_SENTINEL.into(),
+        manager_declared: true,
+        version: None,
+        script: Some("true".into()),
+        creates: Some("~/.local/bin/thing".into()),
+        only_if: None,
+        unless: None,
+        min_version: None,
+    });
+    assert_eq!(
+        role_of(refusal_of(&make_empty_resolved(), &[installs])),
+        Some(crate::CREATES_GUARD_ROLE),
+        "a module package's install script checks its `creates` guard"
+    );
+}
+
+/// The plan a daemon reconcile tick builds asks no hook: which of them the
+/// tick runs turns on its drift policy and module scope, so the tick asks
+/// [`super::script_home_refusal`] of those itself. Its other questions stand,
+/// a module package's install `creates:` guard among them.
+#[test]
+#[serial_test::serial]
+fn a_reconcile_plan_asks_no_hook_the_home_question() {
+    let _env = no_home_env();
+    let refusal_of = |resolved: &ResolvedProfile, modules: &[ResolvedModule]| {
+        super::unresolved_home_refusal(
+            None,
+            &resolved.merged,
+            super::ReconcileContext::Reconcile,
+            modules.iter().map(super::ModuleHomeUse::from),
+            None,
+        )
+    };
+    type Hook = fn(&mut crate::config::ScriptSpec) -> &mut Vec<crate::config::ScriptEntry>;
+    type ModuleHook = fn(&mut ResolvedModule) -> &mut Vec<crate::config::ScriptEntry>;
+    let hooks: [(Hook, ModuleHook); 6] = [
+        (|s| &mut s.pre_apply, |m| &mut m.pre_apply_scripts),
+        (|s| &mut s.post_apply, |m| &mut m.post_apply_scripts),
+        (|s| &mut s.pre_reconcile, |m| &mut m.pre_reconcile_scripts),
+        (|s| &mut s.post_reconcile, |m| &mut m.post_reconcile_scripts),
+        (|s| &mut s.on_drift, |m| &mut m.on_drift_scripts),
+        (|s| &mut s.on_change, |m| &mut m.on_change_scripts),
+    ];
+    let mut profile = make_empty_resolved();
+    let mut module = make_resolved_module("tools");
+    for field in ["workdir", "creates"] {
+        let entry = script(&format!("run: \"true\"\n{field}: ~/x"));
+        for (profile_entries, module_entries) in hooks {
+            profile_entries(&mut profile.merged.scripts).push(entry.clone());
+            module_entries(&mut module).push(entry.clone());
+        }
+    }
+    assert!(
+        refusal_of(&profile, std::slice::from_ref(&module)).is_none(),
+        "a reconcile plan asks no hook"
+    );
+
+    module.packages.push(crate::modules::ResolvedPackage {
+        canonical_name: "thing".into(),
+        resolved_name: "thing".into(),
+        manager: crate::SCRIPT_SENTINEL.into(),
+        manager_declared: true,
+        version: None,
+        script: Some("true".into()),
+        creates: Some("~/.local/bin/thing".into()),
+        only_if: None,
+        unless: None,
+        min_version: None,
+    });
+    assert!(
+        matches!(
+            refusal_of(&profile, &[module]),
+            Some(crate::errors::StateError::HomeUnresolved { role, .. })
+                if role == crate::CREATES_GUARD_ROLE
+        ),
+        "a reconcile plan still asks a module package's install guard"
+    );
+}
+
+/// A module read off disk counts a package's install `creates:` guard
+/// whenever `script` is one of the managers it prefers, wherever it stands
+/// in the list, since which entry resolution settles on depends on the host.
+#[test]
+fn an_unresolved_module_counts_the_creates_guard_of_any_package_preferring_its_script() {
+    let platform = crate::platform::Platform::current();
+    let loaded = |prefer: &str| {
+        crate::modules::LoadedModule {
+        version: None,
+        name: "tools".into(),
+        spec: serde_yaml::from_str(&format!(
+            "packages:\n  - name: thing\n    prefer: {prefer}\n    script: \"true\"\n    creates: ~/.local/bin/thing\n"
+        ))
+        .unwrap(),
+        dir: std::path::PathBuf::from("/fake/tools"),
+        origin: None,
+    }
+    };
+    for prefer in ["[script]", "[brew, script]", "[apt, brew, script]"] {
+        let module = loaded(prefer);
+        assert_eq!(
+            super::ModuleHomeUse::of_loaded(&module, platform).install_creates,
+            vec!["~/.local/bin/thing"],
+            "prefer: {prefer}"
+        );
+    }
+    let module = loaded("[brew, apt]");
+    assert!(
+        super::ModuleHomeUse::of_loaded(&module, platform)
+            .install_creates
+            .is_empty(),
+        "a package that never prefers its script installs through a manager"
+    );
+}
+
+/// A configurator whose declared paths sit under the missing home.
+struct HomelessPathConfigurator {
+    available: bool,
+    tool: Option<&'static str>,
+}
+
+impl crate::providers::SystemConfigurator for HomelessPathConfigurator {
+    fn name(&self) -> &str {
+        "homelessPaths"
+    }
+    fn is_available(&self) -> bool {
+        self.available
+    }
+    fn required_tool(&self) -> Option<&'static str> {
+        self.tool
+    }
+    fn current_state(&self) -> Result<serde_yaml::Value> {
+        Ok(serde_yaml::Value::Null)
+    }
+    fn diff(&self, _desired: &serde_yaml::Value) -> Result<Vec<crate::providers::SystemDrift>> {
+        Ok(Vec::new())
+    }
+    fn apply(
+        &self,
+        _desired: &serde_yaml::Value,
+        _cx: &crate::providers::SystemContext<'_>,
+    ) -> Result<()> {
+        Ok(())
+    }
+    fn home_refusal(&self, desired: &serde_yaml::Value) -> Option<crate::errors::StateError> {
+        crate::home_refusal_of(crate::expand_tilde(
+            std::path::Path::new(desired.as_str()?),
+            "test path",
+        ))
+    }
+}
+
+#[test]
+#[serial_test::serial]
+fn a_system_configurator_the_run_drives_refuses_its_home_paths() {
+    let _env = no_home_env();
+    let registry_of = |available: bool, tool: Option<&'static str>| {
+        let mut registry = ProviderRegistry::new();
+        registry.add_system_configurator(Box::new(HomelessPathConfigurator { available, tool }));
+        registry
+    };
+    let mut profile = make_empty_resolved();
+    profile
+        .merged
+        .system
+        .insert("homelessPaths".into(), serde_yaml::Value::from("~/x"));
+    let refuses =
+        |registry: &ProviderRegistry, resolved: &ResolvedProfile, modules: &[ResolvedModule]| {
+            matches!(
+                super::unresolved_home_refusal(
+                    None,
+                    &resolved.merged,
+                    super::ReconcileContext::Apply,
+                    modules.iter().map(super::ModuleHomeUse::from),
+                    Some(registry),
+                ),
+                Some(crate::errors::StateError::HomeUnresolved {
+                    role: "test path",
+                    ..
+                })
+            )
+        };
+    assert!(
+        refuses(&registry_of(true, None), &profile, &[]),
+        "an available configurator"
+    );
+    assert!(
+        refuses(&registry_of(false, Some("tool")), &profile, &[]),
+        "a configurator whose tool the bootstrap installs first"
+    );
+    assert!(
+        !refuses(&registry_of(false, None), &profile, &[]),
+        "a configurator this host can never run plans a skip"
+    );
+    let mut module = make_resolved_module("tools");
+    module
+        .system
+        .insert("homelessPaths".into(), serde_yaml::Value::from("~/x"));
+    assert!(
+        refuses(
+            &registry_of(true, None),
+            &make_empty_resolved(),
+            &[module.clone()]
+        ),
+        "a module's own settings"
+    );
+    let mut absolute = make_empty_resolved();
+    absolute
+        .merged
+        .system
+        .insert("homelessPaths".into(), serde_yaml::Value::from("~/x"));
+    module
+        .system
+        .insert("homelessPaths".into(), serde_yaml::Value::from("/srv/x"));
+    assert!(
+        !refuses(&registry_of(true, None), &absolute, &[module]),
+        "a module value overrides the profile's the way the planner merges them"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn a_plan_with_no_home_refuses_home_work_before_planning_anything() {
+    let _env = no_home_env();
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let mut reconciler = Reconciler::new(&registry, &state);
+    reconciler.home = None;
+
+    let mut resolved = make_empty_resolved();
+    resolved.merged.env.push(env_var("EDITOR"));
+    let err = reconciler
+        .plan(
+            &resolved,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            ReconcileContext::Apply,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            crate::errors::CfgdError::State(crate::errors::StateError::EnvHomeUnresolved { .. })
+        ),
+        "got: {err}"
+    );
+
+    let err = reconciler
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![module_with_target("nvim", "~/.config/nvim/init.lua")],
+            ReconcileContext::Apply,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            crate::errors::CfgdError::State(crate::errors::StateError::HomeUnresolved { .. })
+        ),
+        "got: {err}"
+    );
+
+    reconciler
+        .plan(
+            &make_empty_resolved(),
+            Vec::new(),
+            Vec::new(),
+            vec![make_resolved_module("plain")],
+            ReconcileContext::Apply,
+        )
+        .expect("a module asking nothing of the home plans without one");
+}
+
+#[test]
+fn an_env_plan_with_no_home_refuses_a_write_and_plans_nothing_to_neutralize() {
+    let state = test_state();
+    let registry = ProviderRegistry::new();
+    let mut reconciler = Reconciler::new(&registry, &state);
+    reconciler.home = None;
+
+    let outcome = reconciler
+        .plan_env(
+            super::LayeredEnv::from_parts("profile:test", &[], &[], &[]),
+            EnvScope::Interactive,
+            &[],
+            &[],
+            &["/home/u/.cfgd.env".to_string()],
+        )
+        .expect("an empty env layer writes nothing");
+    assert!(outcome.actions.is_empty());
+
+    let err = reconciler
+        .plan_env(
+            super::LayeredEnv::from_parts("profile:test", &[env_var("EDITOR")], &[], &[]),
+            EnvScope::Interactive,
+            &[],
+            &[],
+            &[],
+        )
+        .err()
+        .expect("an env var with no home to write it under refuses");
+    assert!(
+        matches!(
+            err,
+            crate::errors::CfgdError::State(crate::errors::StateError::EnvHomeUnresolved { .. })
+        ),
+        "got: {err}"
     );
 }

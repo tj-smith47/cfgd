@@ -9,8 +9,8 @@
 //! over a probe that never answered reports a verdict the scan never
 //! reached. Plain drift with every check answered still exits 5.
 //!
-//! These run the real binary via `assert_cmd` because the commands end in
-//! `std::process::exit` — calling them in-process would kill the harness.
+//! These run the real binary because the commands' exit codes are set in
+//! `main`, which no in-process call reaches.
 
 use std::path::Path;
 

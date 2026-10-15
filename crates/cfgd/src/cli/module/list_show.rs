@@ -70,7 +70,7 @@ fn source_role(source: &str) -> Option<Role> {
 /// the vocabulary, instead of a `Synced` no check earned.
 fn status_cell(status: &str, checked: bool) -> (String, Option<Role>) {
     // list-status-ok: this IS the listing's one recorded status column, and the
-    // word it renders is the vocabulary's, never a second derivation.
+    // word it renders is the vocabulary's own, derived once.
     let (word, role) = cfgd_core::state::module_listing_display(status, recorded_verdict(checked));
     (word.to_string(), Some(role))
 }
@@ -397,8 +397,8 @@ pub(crate) fn cmd_module_list(run: &RunContext<'_>) -> anyhow::Result<()> {
     let cache_base = module_cache_dir(cli)?;
     let all_modules = modules::load_all_modules(&config_dir, &cache_base, &[], printer)?;
     // declared-lock-ok: which modules are remote, and where from, is declared
-    // in the lockfile and nowhere else — the Source column states that, not
-    // anything a past run did on this machine.
+    // in the lockfile and nowhere else; the Source column states that, and
+    // says nothing about what a past run did on this machine.
     let lockfile = modules::load_lockfile(&config_dir)?;
 
     if all_modules.is_empty() {

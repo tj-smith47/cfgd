@@ -19,6 +19,8 @@
 //! - `CFGD_FAKE_COSIGN_STDERR`: written verbatim to this process's stderr on
 //!   every invocation.
 //! - `CFGD_FAKE_COSIGN_EXIT`: parsed as the process exit code (default `0`).
+//! - `CFGD_FAKE_COSIGN_SLEEP_MS`: when set, sleep this many milliseconds
+//!   before exiting, so a caller's run bound can be crossed.
 //!
 //! The binary never inspects which cosign subcommand it was handed beyond the
 //! `generate-key-pair` keygen branch — exactly like the script it replaces.
@@ -29,6 +31,7 @@ const LOG_ENV: &str = "CFGD_FAKE_COSIGN_LOG";
 const KEYGEN_ENV: &str = "CFGD_FAKE_COSIGN_KEYGEN";
 const STDERR_ENV: &str = "CFGD_FAKE_COSIGN_STDERR";
 const EXIT_ENV: &str = "CFGD_FAKE_COSIGN_EXIT";
+const SLEEP_MS_ENV: &str = "CFGD_FAKE_COSIGN_SLEEP_MS";
 
 fn main() {
     // Drop argv[0] (the binary path); keep only the cosign-style arguments,
@@ -55,6 +58,14 @@ fn main() {
     // Configured stderr on every invocation (empty by default).
     if let Ok(stderr) = std::env::var(STDERR_ENV) {
         let _ = std::io::stderr().write_all(stderr.as_bytes());
+    }
+
+    if let Some(ms) = std::env::var(SLEEP_MS_ENV)
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        // sleep-ok: the run being slow is the behaviour under test; a caller's bound kills it.
+        std::thread::sleep(std::time::Duration::from_millis(ms));
     }
 
     let code = std::env::var(EXIT_ENV)

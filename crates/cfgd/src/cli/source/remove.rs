@@ -145,7 +145,7 @@ fn keep_entry_declarations(
         &cfgd_core::modules::refuse_floor_bootstrap,
     )?;
     let layered = cfgd_core::reconciler::LayeredEnv::of(&desired.resolved, &desired.modules);
-    let items = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]);
+    let items = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[])?;
     let (own_env, own_aliases) = declared_by_source(&desired.resolved, &desired.modules, name);
 
     let profiles_dir = ctx.config_dir().join("profiles");
@@ -194,7 +194,7 @@ fn cancelled_doc(name: &str, managed_count: usize) -> Doc {
 #[allow(clippy::too_many_arguments)]
 // no-header-ok: this verb removes a subscription and reports what happened to
 // the rows it owned; the composition its Keep arm reads is a lookup of one
-// declaration, not a configuration this report measures anything against.
+// declaration, and this report measures nothing against it.
 pub fn cmd_source_remove(
     run: &RunContext<'_>,
     name: &str,

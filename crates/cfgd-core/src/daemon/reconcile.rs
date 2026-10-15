@@ -89,7 +89,6 @@ pub(crate) fn setup_file_watcher(
 pub(crate) fn discover_managed_paths(
     config_path: &Path,
     profile_override: Option<&str>,
-    hooks: &dyn DaemonHooks,
 ) -> Vec<PathBuf> {
     let cfg = match config::load_config(config_path) {
         Ok(c) => c,
@@ -121,8 +120,14 @@ pub(crate) fn discover_managed_paths(
         .files
         .managed
         .iter()
-        .map(|f| hooks.expand_tilde(&f.target))
-        .collect()
+        .map(|f| crate::expand_tilde(&f.target, crate::FILE_TARGET_ROLE))
+        .collect::<crate::errors::Result<Vec<_>>>()
+        .unwrap_or_else(|e| {
+            // long-line-ok: a hatch is read off its own line, so it cannot wrap
+            // tracing-ok: the watch set is advisory; the reconcile tick that follows refuses the same target with this error
+            tracing::warn!(error = %e, "watch: cannot resolve a managed file for file discovery");
+            Vec::new()
+        })
 }
 
 // --- Reconciliation Handler ---
@@ -199,9 +204,22 @@ struct TickExecutor<'a> {
     config_dir: &'a Path,
     modules: &'a [crate::modules::ResolvedModule],
     abort: &'a crate::AbortFlag,
+    /// The module cache root the tick resolved its modules under.
+    module_cache: &'a Path,
+    registries: &'a [crate::config::ModuleRegistryEntry],
 }
 
 impl crate::reconciler::RunExecutor for TickExecutor<'_> {
+    fn module_checkouts(&self) -> crate::reconciler::ModuleCheckouts<'_> {
+        crate::reconciler::ModuleCheckouts::Sweep(crate::reconciler::ModuleCache {
+            state: self.reconciler.state_store(),
+            config_dir: self.config_dir,
+            root: self.module_cache,
+            modules: self.modules,
+            registries: self.registries,
+        })
+    }
+
     fn apply(
         &mut self,
         plan: &crate::reconciler::Plan,
@@ -303,6 +321,17 @@ fn reconcile_tick(
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
+
+    // The root the plan's modules deploy into and the unmanaged-file sweep
+    // judges against; `cfgd apply` refuses to start without it, so the tick
+    // does too.
+    let module_cache = match super::tick_module_cache(scope, cache_dir_override) {
+        Ok(root) => root,
+        Err(e) => {
+            tracing::error!(error = %e, "reconcile: cannot resolve the module cache");
+            return None;
+        }
+    };
 
     // Everything derived from the config FILES, reused for as long as none of
     // the files the last derivation read has moved. Nothing in here observes the
@@ -446,7 +475,13 @@ fn reconcile_tick(
     // `cfgd daemon --config /foreign.yaml` would sweep and mint the default
     // store's rows.
     let owns_the_store =
-        crate::reconciler::owns_decision_store(config_path, explicit_state_dir, scope);
+        match crate::reconciler::owns_decision_store(config_path, explicit_state_dir, scope) {
+            Ok(owns) => owns,
+            Err(e) => {
+                tracing::error!(error = %e, "reconcile: cannot judge decision store ownership");
+                return None;
+            }
+        };
     let subscribed: Vec<String> = cfg.spec.sources.iter().map(|s| s.name.clone()).collect();
     if owns_the_store && let Err(e) = store.discard_decisions_not_in(&subscribed) {
         tracing::warn!(error = %e, "reconcile: failed to discard decisions of removed sources");
@@ -573,20 +608,24 @@ fn reconcile_tick(
     // behaviour, but honouring one that already exists is not. A tick that read
     // them only under auto-apply would report drift for a resource `cfgd plan`
     // hides, on the same machine and the same rows.
-    let decision_scope = crate::reconciler::DecisionScope::new(
-        subscribed,
-        &crate::reconciler::local_profile(resolved),
-    );
+    let local = crate::reconciler::local_profile(resolved);
     // `with_unrecorded` closes the write-failure window: a mint the store
     // rejected has no row for `read` to return, and the unattended tick is the
     // one path that would install it with nobody watching. For every row that
     // DID record, it is a no-op — `read` already returned it.
-    let withheld = match crate::reconciler::WithheldDecisions::read(store, &decision_scope) {
-        Ok(w) => w
-            .with_policy_declined(review.declined)
-            .with_unrecorded(&review.to_mint, &decision_scope)
-            .with_undecidable(review.undecidable)
-            .with_auto_accepted(&review.auto_accepted),
+    let pending_exclusions = match crate::reconciler::DecisionScope::new(subscribed, &local)
+        .and_then(|decision_scope| {
+            crate::reconciler::WithheldDecisions::read(store, &decision_scope)?
+                .with_policy_declined(review.declined)
+                .with_unrecorded(&review.to_mint, &decision_scope)
+        })
+        .map(|w| {
+            w.with_undecidable(review.undecidable)
+                .with_auto_accepted(&review.auto_accepted)
+        })
+        .and_then(|withheld| DecisionExclusions::from_withheld(&withheld))
+    {
+        Ok(exclusions) => exclusions,
         Err(e) => {
             tracing::error!(error = %e, "reconcile: cannot read source decisions");
             notifier.notify(
@@ -598,8 +637,6 @@ fn reconcile_tick(
             return None;
         }
     };
-    let pending_exclusions =
-        DecisionExclusions::from_withheld_with(&withheld, |p| hooks.expand_tilde(p));
 
     // The env arm withholds the surface as a unit, and apply rebuilds that
     // surface after the phases run from the declared set rather than from the
@@ -661,6 +698,11 @@ fn reconcile_tick(
     ) {
         Ok(p) => p,
         Err(e) => {
+            if let crate::errors::CfgdError::State(refusal) = &e
+                && warn_home_refusal(refusal)
+            {
+                return None;
+            }
             tracing::error!(error = %e, "reconcile: plan generation failed");
             return None;
         }
@@ -701,6 +743,22 @@ fn reconcile_tick(
             .clone()
     });
 
+    // Which hooks the tick runs turns on its drift policy and its module scope,
+    // neither of which the plan sees, so the home question for them is asked
+    // here, before the tick writes anything: a notify-only tick runs no
+    // onChange hook and must keep reporting drift whatever that hook names.
+    if let Some(refusal) = crate::reconciler::script_home_refusal(tick_hooks(
+        &plan,
+        &resolved.merged.scripts,
+        resolved_modules_ref.as_slice(),
+        module_filter,
+        matches!(drift_policy, config::DriftPolicy::Auto),
+        registry,
+    )) && warn_home_refusal(&refusal)
+    {
+        return None;
+    }
+
     // A tick has nobody to ask, so it settles every unmanaged target the way
     // `--yes` does: keep a copy. Without this pass the daemon displaced a
     // user's own file with no copy kept, while `cfgd apply` over the identical
@@ -708,27 +766,30 @@ fn reconcile_tick(
     // process got there first. Only an APPLYING tick sweeps: a report-only tick
     // displaces nothing, so a sidecar it took would be a copy of a file nobody
     // was about to overwrite.
+    // The same root `resolve_daemon_modules` resolved the plan's own modules
+    // from — a tick given `--cache-dir` symlinks its module files there, and
+    // answering from the per-user default instead would read every one of
+    // them as a stranger's file on this tick alone.
     let reconciler = if matches!(drift_policy, config::DriftPolicy::Auto) {
-        // The same root `resolve_daemon_modules` resolved the plan's own
-        // modules from — a tick given `--cache-dir` symlinks its module files
-        // there, and answering from the per-user default instead would read
-        // every one of them as a stranger's file on this tick alone.
-        let module_cache = super::tick_module_cache(&config_dir, scope, cache_dir_override);
-        match crate::reconciler::sweep_unmanaged_file_targets(
-            &mut plan,
+        match crate::effective::effective_file_strategies(
+            &resolved.merged,
+            resolved_modules_ref.as_slice(),
             &config_dir,
-            &module_cache,
-            store,
-            printer,
-            &crate::effective::effective_file_strategies(
-                &resolved.merged,
-                resolved_modules_ref.as_slice(),
+            registry.default_file_strategy,
+        )
+        .and_then(|strategies| {
+            crate::reconciler::sweep_unmanaged_file_targets(
+                &mut plan,
                 &config_dir,
-                registry.default_file_strategy,
-            ),
-            None,
-            &mut |_, _| Ok(crate::reconciler::ResolvedConflict::Backup),
-        ) {
+                &module_cache,
+                store,
+                printer,
+                &strategies,
+                None,
+                &mut |_, _| Ok(crate::reconciler::ResolvedConflict::Backup),
+            )
+            .map_err(Into::into)
+        }) {
             Ok(backups) => reconciler.backing_up(backups),
             Err(e) => {
                 tracing::error!(error = %e, "reconcile: unmanaged-file pass failed");
@@ -1085,7 +1146,7 @@ fn reconcile_tick(
                 );
                 let owner = crate::reconciler::Owner::module(&module.name);
                 let _group = hooks_phase.owner(&owner, hook_width);
-                let script_env = crate::reconciler::build_module_script_env(
+                let script_env = match crate::reconciler::build_module_script_env(
                     &crate::reconciler::ScriptEnvContext {
                         config_dir: &config_dir,
                         profile_name,
@@ -1096,7 +1157,13 @@ fn reconcile_tick(
                         path_dirs: &drift_script_path_dirs,
                     },
                     &module.env,
-                );
+                ) {
+                    Ok(env) => env,
+                    Err(e) => {
+                        tracing::error!(module = %module.name, error = %e, "reconcile: module onDrift scripts skipped");
+                        continue;
+                    }
+                };
                 let working = crate::reconciler::script_default_workdir(&config_dir);
                 for entry in &module.on_drift_scripts {
                     match crate::reconciler::execute_script(
@@ -1146,7 +1213,21 @@ fn reconcile_tick(
         config::DriftPolicy::Auto => work_total > 0,
         config::DriftPolicy::NotifyOnly | config::DriftPolicy::Prompt => drift_total > 0,
     };
+    let mut exec = TickExecutor {
+        reconciler: &reconciler,
+        resolved,
+        config_dir: &config_dir,
+        modules: &resolved_modules_ref,
+        abort,
+        module_cache: &module_cache,
+        registries: &cfg.spec.modules_effective().registries,
+    };
     let outcome = if !acts {
+        // A converged tick renders no header, so it takes the sweep alone; a
+        // reporting policy applies nothing and leaves the cache to `cfgd apply`.
+        if matches!(drift_policy, config::DriftPolicy::Auto) {
+            crate::reconciler::settle_converged(&exec);
+        }
         Some("nothing to do".to_string())
     } else {
         // The rows every arm below prints above its own body: a tick reports
@@ -1177,13 +1258,6 @@ fn reconcile_tick(
                     "reconcile: drift policy is Auto — applying actions"
                 );
                 let run = crate::reconciler::ApplyRun::new(run_ctx(), &plan);
-                let mut exec = TickExecutor {
-                    reconciler: &reconciler,
-                    resolved,
-                    config_dir: &config_dir,
-                    modules: &resolved_modules_ref,
-                    abort,
-                };
                 match run
                     .execute(printer, crate::reconciler::Confirm::Skip, &mut exec)
                     .map(|disposition| match disposition {
@@ -1513,6 +1587,92 @@ fn check_in_after_tick(report: TickReport<'_>, state: &Arc<Mutex<DaemonState>>, 
     }
 }
 
+/// The slot a home refusal names: the [`HOME_REFUSAL_SLOTS`] slot of the
+/// role a `~` path was expanded for, or the managed env file. `None` for
+/// any other state error.
+///
+/// [`HOME_REFUSAL_SLOTS`]: crate::reconciler::HOME_REFUSAL_SLOTS
+fn home_refusal_slot(error: &crate::errors::StateError) -> Option<&'static str> {
+    match error {
+        crate::errors::StateError::HomeUnresolved { role, .. } => Some(
+            crate::reconciler::HOME_REFUSAL_SLOTS
+                .iter()
+                .find(|(r, _, _)| r == role)
+                .map_or(*role, |(_, slot, _)| *slot),
+        ),
+        crate::errors::StateError::EnvHomeUnresolved { .. } => Some("managed env file"),
+        _ => None,
+    }
+}
+
+/// Log `error` as the refusal of a tick no home directory can run, returning
+/// whether it was one. A homeless tick meets the same refusal every interval
+/// until a home resolves, so it is a standing configuration fault logged once
+/// per tick at warn.
+fn warn_home_refusal(error: &crate::errors::StateError) -> bool {
+    let Some(slot) = home_refusal_slot(error) else {
+        return false;
+    };
+    tracing::warn!(
+        slot,
+        error = %error,
+        "reconcile: tick refused, no home directory resolves a path it would use"
+    );
+    true
+}
+
+/// The hook entries a reconcile tick over `plan` runs.
+///
+/// A drifted tick runs the `onDrift` hooks of every module with drift in the
+/// plan, and the profile's own when it is not scoped to one module. Only an
+/// applying tick (`applies`, the `Auto` drift policy) with work to do runs the
+/// plan's script actions and the `onChange` hooks: the profile's, and those
+/// of every module the plan holds an action for. A per-module tick's plan is
+/// already narrowed to its module, so another module's hooks never appear.
+fn tick_hooks<'a>(
+    plan: &'a crate::reconciler::Plan,
+    profile: &'a crate::config::ScriptSpec,
+    modules: &'a [crate::modules::ResolvedModule],
+    module_filter: Option<&str>,
+    applies: bool,
+    registry: &crate::providers::ProviderRegistry,
+) -> Vec<&'a crate::config::ScriptEntry> {
+    use crate::reconciler::{Action, ModuleActionKind, ScriptAction};
+    let actions = || plan.phases.iter().flat_map(|p| p.actions());
+    let mut hooks = Vec::new();
+    if actions().any(|a| crate::reconciler::action_counts_as_drift(a, registry)) {
+        if module_filter.is_none() {
+            hooks.extend(&profile.on_drift);
+        }
+        hooks.extend(
+            modules
+                .iter()
+                .filter(|m| module_has_drift(plan, &m.name, registry))
+                .flat_map(|m| &m.on_drift_scripts),
+        );
+    }
+    if applies && plan.total_actions() > 0 {
+        hooks.extend(actions().filter_map(|a| match a {
+            Action::Script(ScriptAction::Run { entry, .. }) => Some(entry),
+            Action::Module(m) => match &m.kind {
+                ModuleActionKind::RunScript { script, .. } => Some(script),
+                _ => None,
+            },
+            _ => None,
+        }));
+        hooks.extend(&profile.on_change);
+        hooks.extend(
+            modules
+                .iter()
+                .filter(|m| {
+                    actions().any(|a| matches!(a, Action::Module(ma) if ma.module_name == m.name))
+                })
+                .flat_map(|m| &m.on_change_scripts),
+        );
+    }
+    hooks
+}
+
 /// Narrow a planned tick down to one module's own work.
 ///
 /// Keeps that module's groups, and the manager nodes whose consumers are among
@@ -1728,7 +1888,7 @@ pub(super) fn tick_cannot_refind(
                 .is_some_and(|rest| rest.starts_with('.')),
             _ => false,
         }),
-        // script-literal-ok: resource TYPES, not manager names
+        // script-literal-ok: these are resource TYPES, and none names a manager
         "file"
         | "secret"
         | "script"

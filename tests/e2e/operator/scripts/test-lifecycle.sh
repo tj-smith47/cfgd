@@ -138,62 +138,131 @@ else
 fi
 
 # =================================================================
-# OP-LC-03: Graceful shutdown recovery
+# OP-LC-03: Leader pod deletion
 # =================================================================
-begin_test "OP-LC-03: Graceful shutdown recovery"
+begin_test "OP-LC-03: Leader pod deletion: the standby takes the lease, the webhook stays served and the gateway follows the lease"
 
-# Get current operator pod name
-OLD_POD=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
-    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+# The other jobs of the run apply through this install's webhook while this
+# case runs, so the leader goes while the standby keeps serving admission. A
+# pod name can be reused, so the UID is what tells the deleted pod apart. The
+# lease names the deleted pod until it expires (15s by default), so the new
+# holder is read up to E2E_LEASE_TRIES times, 5s apart, after the roll. The
+# new holder labels its pod for the gateway Service once its gateway accepts,
+# so the label and the Service's endpoint are read the same way after it.
+LC03_TRIES="${E2E_LEASE_TRIES:-6}"
+LC03_REPLICAS=""
+LC03_UIDS=""
+LC03_LEADER=""
+LC03_UID=""
+LC03_NEW_LEADER=""
+LC03_LABELLED=""
+LC03_GW_ENDPOINTS=""
+LC03_GW_ANSWER=""
+LC03_GW_PORT=18091
 
-OLD_UID=""
-[ -z "$OLD_POD" ] || OLD_UID=$(kubectl get pod "$OLD_POD" -n "$E2E_INSTALL_NS" \
-    -o jsonpath='{.metadata.uid}' 2>/dev/null || echo "")
+# lc03_all_ready: the Deployment asks for a standby and every replica it asks
+# for is ready. LC03_REPLICAS keeps "<asked> <ready>" as read.
+lc03_all_ready() {
+    local asked ready
+    LC03_REPLICAS="$(kubectl get deployment "$E2E_OPERATOR_DEPLOY" -n "$E2E_INSTALL_NS" \
+        -o jsonpath='{.spec.replicas} {.status.readyReplicas}' 2>&1)" || return 1
+    read -r asked ready <<<"$LC03_REPLICAS"
+    [[ ${asked:-} =~ ^[0-9]+$ ]] && [ "$asked" -ge 2 ] && [ "${ready:-0}" = "$asked" ]
+}
+# shellcheck disable=SC2329  # watch_endpoints_until invokes it by name
+lc03_replaced() {
+    LC03_UIDS="$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
+        -o jsonpath='{.items[*].metadata.uid}' 2>&1)" || return 1
+    ! has_all_words "$LC03_UIDS" "$LC03_UID" && lc03_all_ready
+}
+# shellcheck disable=SC2329  # retry_tries invokes it by name
+lc03_new_leader() {
+    LC03_NEW_LEADER="$(operator_leader_pod)" && [ "$LC03_NEW_LEADER" != "$LC03_LEADER" ]
+}
+# lc03_gateway_on_new_leader: the new lease holder is the one pod carrying the
+# gateway leader label, and the gateway Service's one ready address is its IP.
+# shellcheck disable=SC2329  # retry_tries invokes it by name
+lc03_gateway_on_new_leader() {
+    local leader_ip
+    LC03_LABELLED="$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_GATEWAY_LEADER_PODS" \
+        -o jsonpath='{.items[*].metadata.name}' 2>&1)" || return 1
+    # stderr carries the API server's Endpoints deprecation warning.
+    LC03_GW_ENDPOINTS="$(kubectl get endpoints "$E2E_GATEWAY_SVC" -n "$E2E_INSTALL_NS" \
+        -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null)" || return 1
+    leader_ip="$(kubectl get pod "$LC03_NEW_LEADER" -n "$E2E_INSTALL_NS" -o jsonpath='{.status.podIP}' 2>&1)" || return 1
+    [ "$LC03_LABELLED" = "$LC03_NEW_LEADER" ] && [ -n "$leader_ip" ] && [ "$LC03_GW_ENDPOINTS" = "$leader_ip" ]
+}
+# lc03_gateway_answers: the gateway's unauthenticated enrollment discovery,
+# asked through the gateway Service, names an enrollment method.
+# LC03_GW_ANSWER keeps the body or the failure.
+lc03_gateway_answers() {
+    local pf_pid
+    if ! pf_pid=$(port_forward "$E2E_INSTALL_NS" "svc/$E2E_GATEWAY_SVC" "$LC03_GW_PORT" "$E2E_GATEWAY_PORT"); then
+        LC03_GW_ANSWER="svc/$E2E_GATEWAY_SVC could not be forwarded to localhost"
+        return 1
+    fi
+    LC03_GW_ANSWER="$(curl -sS -w ' HTTP %{http_code}' "http://localhost:$LC03_GW_PORT/api/v1/enroll/info" 2>&1)"
+    stop_port_forward "$pf_pid"
+    [[ $LC03_GW_ANSWER == '{"method":"'*'} HTTP 200' ]]
+}
 
-echo "  Current operator pod: ${OLD_POD:-unknown} (uid ${OLD_UID:-unknown})"
-
-if [ -z "$OLD_POD" ] || [ -z "$OLD_UID" ]; then
-    fail_test "OP-LC-03" "No operator pod found"
+if ! [[ $LC03_TRIES =~ ^[1-9][0-9]*$ ]]; then
+    fail_test "OP-LC-03" "E2E_LEASE_TRIES must be a positive integer, got '$LC03_TRIES'"
+elif ! wait_until 120 2 "every replica of $E2E_OPERATOR_DEPLOY, two or more, to be ready" lc03_all_ready; then
+    fail_test "OP-LC-03" "deployment/$E2E_OPERATOR_DEPLOY never had a ready standby to keep the webhook served (spec.replicas and readyReplicas: ${LC03_REPLICAS:-unread})"
+elif ! LC03_LEADER="$(operator_leader_pod)"; then
+    fail_test "OP-LC-03" "$LC03_LEADER"
+elif ! LC03_UID="$(kubectl get pod "$LC03_LEADER" -n "$E2E_INSTALL_NS" -o jsonpath='{.metadata.uid}' 2>&1)" || [ -z "$LC03_UID" ]; then
+    fail_test "OP-LC-03" "Could not read the uid of leader pod/$LC03_LEADER: ${LC03_UID:-empty}"
+elif ! kubectl delete pod "$LC03_LEADER" -n "$E2E_INSTALL_NS" --wait=false; then
+    fail_test "OP-LC-03" "Could not delete leader pod/$LC03_LEADER (kubectl output above)"
 else
-    # Delete the pod
-    kubectl delete pod "$OLD_POD" -n "$E2E_INSTALL_NS" --wait=false --ignore-not-found 2>/dev/null
+    echo "  Deleted leader pod/$LC03_LEADER (uid $LC03_UID); waiting for its replacement..."
+    LC03_ROLLED=false
+    if watch_endpoints_until 120 "$E2E_INSTALL_NS" "$E2E_WEBHOOK_SVC" lc03_replaced; then
+        LC03_ROLLED=true
+    fi
+    echo "  Replaced: $LC03_ROLLED; pod uids: ${LC03_UIDS:-unread}; samples: $ENDPOINT_SAMPLES; samples with no ready endpoint: $ENDPOINT_EMPTY${ENDPOINT_EMPTY_AT:+ ($ENDPOINT_EMPTY_AT)}; unread: $ENDPOINT_UNREAD"
+    LC03_LED=false
+    if $LC03_ROLLED && retry_tries "$LC03_TRIES" 5 lc03_new_leader; then
+        LC03_LED=true
+    fi
+    echo "  Lease holder after the roll: ${LC03_NEW_LEADER:-unread}"
+    LC03_GW_ROUTED=false
+    if $LC03_LED && retry_tries "$LC03_TRIES" 5 lc03_gateway_on_new_leader; then
+        LC03_GW_ROUTED=true
+    fi
+    echo "  Pods labelled for the gateway: ${LC03_LABELLED:-none}; gateway Service addresses: ${LC03_GW_ENDPOINTS:-none}"
+    LC03_GW_SERVED=false
+    if $LC03_GW_ROUTED && lc03_gateway_answers; then
+        LC03_GW_SERVED=true
+    fi
+    echo "  GET /api/v1/enroll/info through svc/$E2E_GATEWAY_SVC: ${LC03_GW_ANSWER:-not asked}"
 
-    # Wait for the deployment to become available again
-    echo "  Waiting for operator deployment to recover..."
-    wait_for_deployment "$E2E_INSTALL_NS" "$E2E_OPERATOR_DEPLOY" 120
-
-    # A pod name can be reused, so the UID is what tells a replacement apart.
-    NEW_POD=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
-        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
-    NEW_UID=""
-    [ -z "$NEW_POD" ] || NEW_UID=$(kubectl get pod "$NEW_POD" -n "$E2E_INSTALL_NS" \
-        -o jsonpath='{.metadata.uid}' 2>/dev/null || echo "")
-
-    echo "  New operator pod: ${NEW_POD:-unknown} (uid ${NEW_UID:-unknown})"
-
-    if [ -z "$NEW_UID" ]; then
-        fail_test "OP-LC-03" "Operator pod did not recover after deletion"
-    elif [ "$NEW_UID" = "$OLD_UID" ]; then
-        fail_test "OP-LC-03" "Operator pod $NEW_POD still has the deleted pod's uid $OLD_UID"
+    if [ "$ENDPOINT_SAMPLES" -eq 0 ]; then
+        fail_test "OP-LC-03" "kubectl read the endpoints of $E2E_WEBHOOK_SVC in none of $ENDPOINT_UNREAD attempts after the delete"
+    elif [ "$ENDPOINT_EMPTY" -ne 0 ]; then
+        fail_test "OP-LC-03" "Service $E2E_WEBHOOK_SVC had no ready endpoint in $ENDPOINT_EMPTY of $ENDPOINT_SAMPLES samples after the leader was deleted: $ENDPOINT_EMPTY_AT"
+    elif ! $LC03_ROLLED; then
+        fail_test "OP-LC-03" "Within 120s the operator pods (uids: ${LC03_UIDS:-unread}) still held $LC03_UID or not every replica was ready (spec.replicas and readyReplicas: ${LC03_REPLICAS:-unread})"
+    elif ! $LC03_LED; then
+        fail_test "OP-LC-03" "After $LC03_TRIES reads the lease named no live operator pod other than the deleted pod/$LC03_LEADER: $LC03_NEW_LEADER"
+    elif ! $LC03_GW_ROUTED; then
+        fail_test "OP-LC-03" "After $LC03_TRIES reads the pods labelled $E2E_GATEWAY_LEADER_PODS were [${LC03_LABELLED}] and svc/$E2E_GATEWAY_SVC addressed [${LC03_GW_ENDPOINTS}], want only the new lease holder pod/$LC03_NEW_LEADER"
+    elif ! $LC03_GW_SERVED; then
+        fail_test "OP-LC-03" "GET /api/v1/enroll/info through svc/$E2E_GATEWAY_SVC to the new lease holder's gateway got [${LC03_GW_ANSWER}], want a JSON enrollment method and HTTP 200"
     else
         pass_test "OP-LC-03"
     fi
 fi
-
-# Wait for webhook endpoints to be available after OP-LC-03 pod restart.
-# The deployment becomes Available before the new pod registers webhook
-# endpoints, so kubectl apply can fail with "no endpoints available".
-echo "  Waiting for webhook readiness after pod restart..."
-kubectl wait --for=condition=Ready pod -l "$E2E_OPERATOR_PODS" \
-    -n "$E2E_INSTALL_NS" --timeout=60s 2>/dev/null || true
-wait_for_service_endpoints "$E2E_INSTALL_NS" "$E2E_WEBHOOK_SVC" 60 || true
 
 # =================================================================
 # OP-LC-04: MachineConfig reconcile loop
 # =================================================================
 begin_test "OP-LC-04: MachineConfig reconcile loop"
 
-# Retry apply: the webhook endpoint may still be registering after the OP-LC-03 restart
+# The apply goes through the webhook, which has no endpoint while a failed
+# OP-LC-03 leaves the operator coming back, so it is retried.
 lc04_apply() {
     kubectl apply -n "$E2E_NAMESPACE" -f - <<EOF 2>/dev/null && return 0
 apiVersion: cfgd.io/v1alpha1
@@ -352,8 +421,8 @@ else
     kubectl get machineconfig "e2e-lc-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
         -o jsonpath='{.status}' 2>&1 | sed 's/^/    /' || true
     echo ""
-    echo "  Operator logs (drift-related, last 40):"
-    kubectl logs -n "$E2E_INSTALL_NS" deployment/"$E2E_OPERATOR_DEPLOY" --tail=300 2>/dev/null \
+    echo "  Operator logs of every pod (drift-related, last 40):"
+    kubectl logs -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" --prefix --tail=300 2>/dev/null \
         | grep -iE "drift|e2e-lc-drift-${E2E_RUN_ID}|e2e-lc-mc-${E2E_RUN_ID}" \
         | tail -40 | sed 's/^/    /' || true
     fail_test "OP-LC-06" "Expected DriftAlert conditions '$LC06_WANT' and MC DriftDetected True/DriftActive, got '${DA_STATUS:-none}' and '${MC_DRIFT:-none}'"
@@ -378,7 +447,7 @@ spec:
   files:
     - source: bin/check.sh
       target: bin/check.sh
-  ociArtifact: "${REGISTRY}/cfgd-e2e/lc-module:v1.0"
+  ociArtifact: "$(e2e_scratch_ref "lc-module:v1.0")"
 EOF
 ) && LC07_CREATE_RC=0 || LC07_CREATE_RC=$?
 
@@ -414,11 +483,11 @@ fi
 # =================================================================
 begin_test "OP-LC-08: Health probes"
 
-# Wait for operator to be fully ready (OP-LC-03 restarts the pod)
+# OP-LC-03 replaced the leader, so the newest pod may still be starting.
 kubectl wait --for=condition=available deployment/"$E2E_OPERATOR_DEPLOY" \
-    -n "$E2E_INSTALL_NS" --timeout=60s 2>/dev/null || true
+    -n "$E2E_INSTALL_NS" --timeout=60s 2>/dev/null || true # rc-ok: the /readyz wait below judges the pod this case probes
 kubectl wait --for=condition=Ready pod -l "$E2E_OPERATOR_PODS" \
-    -n "$E2E_INSTALL_NS" --timeout=60s 2>/dev/null || true
+    -n "$E2E_INSTALL_NS" --timeout=60s 2>/dev/null || true # rc-ok: the /readyz wait below judges the pod this case probes
 
 # Get the newest running operator pod for port-forward
 LC08_POD=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
@@ -432,8 +501,9 @@ else
     LC08_PF_PID=$(port_forward "$E2E_INSTALL_NS" "pod/$LC08_POD" "$LC08_LOCAL_PORT" 8081) || LC08_PF_PID=""
 
     HEALTHZ_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://localhost:$LC08_LOCAL_PORT/healthz" 2>/dev/null) || HEALTHZ_CODE="000"
-    # The pod OP-LC-03 restarted answers 503 on /readyz until its first
-    # reconcile completes, so the case waits for 200 before judging it.
+    # The newest pod is OP-LC-03's replacement, which answers 503 on /readyz
+    # until its webhook has loaded its certificates, so the case waits for 200
+    # before judging it.
     lc08_ready() {
         READYZ_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://localhost:$LC08_LOCAL_PORT/readyz" 2>/dev/null) || READYZ_CODE="000"
         [ "$READYZ_CODE" = "200" ]

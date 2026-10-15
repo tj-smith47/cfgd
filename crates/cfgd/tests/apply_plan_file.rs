@@ -16,6 +16,9 @@ use cfgd_core::test_helpers::test_printer;
 
 use common::{apply_args, cli_for, plan_args, tiny_profile_setup};
 
+mod cfgd_binary;
+use cfgd_binary::cfgd_bin;
+
 /// Write what `cfgd plan -o json` produced to `dest`, exactly as a shell
 /// redirect would. `dest` is in the STATE directory: a file written inside the
 /// config directory is itself a change to what the derivation read, which is
@@ -132,6 +135,39 @@ fn a_saved_plan_is_refused_once_the_config_moves() {
     );
     assert!(err.contains("`cfgd plan -o json`"), "{err}");
     assert!(!target.exists(), "a refused plan runs nothing: {err}");
+}
+
+#[test]
+fn a_saved_plan_naming_an_input_it_could_not_read_is_refused_as_stale() {
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let cli = cli_for(config_dir.path(), state_dir.path());
+    let plan_file = state_dir.path().join("plan.json");
+    record_plan_file(&cli, &plan_args(), &plan_file);
+
+    // The shape a derivation writes when a directory beneath a source could not
+    // be listed: every stamp still matches, and the input is marked unreadable.
+    let mut doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&plan_file).unwrap()).unwrap();
+    let inputs = doc["savedPlan"]["configInputs"].as_array_mut().unwrap();
+    let unread = inputs.last().unwrap()["path"].as_str().unwrap().to_string();
+    inputs.last_mut().unwrap()["unreadable"] = serde_json::Value::Bool(true);
+    std::fs::write(&plan_file, serde_json::to_string(&doc).unwrap()).unwrap();
+
+    let printer = test_printer();
+    let err = cfgd::cli::RunContext::for_test(&cli, &printer, |run| {
+        run_apply(run, &replay_args(&plan_file))
+    })
+    .unwrap_err();
+    let text = err.to_string();
+    assert!(
+        text.contains("could not be read when it was written"),
+        "the refusal says why nothing it can compare moved: {text}"
+    );
+    let payload = payload_of(&err);
+    assert_eq!(payload["error"], "stale", "{payload}");
+    assert_eq!(payload["changed"], unread.as_str(), "{payload}");
+    assert_eq!(payload["unreadable"], true, "{payload}");
+    assert!(!target.exists(), "a refused plan runs nothing: {text}");
 }
 
 #[test]
@@ -822,4 +858,423 @@ fn a_plan_replays_against_its_store_copied_to_another_directory() {
     .unwrap();
     assert_eq!(outcome.status, ApplyStatus::Success);
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "hello world");
+}
+
+/// Run the real `cfgd` against the fixture's config and state directories.
+fn cfgd_at(config_dir: &Path, state_dir: &Path, args: &[&str]) -> std::process::Output {
+    cfgd_bin()
+        .unwrap()
+        .arg("--config")
+        .arg(config_dir.join("cfgd.yaml"))
+        .arg("--state-dir")
+        .arg(state_dir)
+        // A module git source in these fixtures is a local `file://` repository,
+        // and its checkout lands in a cache the test can find and edit.
+        .env(cfgd_core::CFGD_ALLOW_LOCAL_SOURCES_ENV, "1")
+        .env(cfgd_core::CFGD_CACHE_DIR_ENV, state_dir.join("cache"))
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+/// The tiny profile's config, which declares none of the fields this build
+/// defaults, under `policy`, replayed with `--yes` from a plan recorded before
+/// any alignment: the replay runs, and the document keeps the bytes the plan
+/// was derived from.
+fn assert_replay_leaves_a_behind_config_alone(policy: &str) {
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let config = config_dir.path().join("cfgd.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: t\nspec:\n  profile: tiny\n  migrationPolicy: {policy}\n"
+        ),
+    )
+    .unwrap();
+    let before = std::fs::read(&config).unwrap();
+    let plan_file = binary_plan_file(config_dir.path(), state_dir.path(), &["-o", "json", "plan"]);
+    assert_eq!(
+        std::fs::read(&config).unwrap(),
+        before,
+        "{policy}: `cfgd plan` leaves the config alone"
+    );
+
+    let out = cfgd_at(
+        config_dir.path(),
+        state_dir.path(),
+        &["--yes", "apply", "--plan", plan_file.to_str().unwrap()],
+    );
+    let (stdout, stderr) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{policy}: the replay runs its own plan: stdout {stdout} stderr {stderr}"
+    );
+    assert!(
+        !stdout.contains("stale") && !stderr.contains("stale"),
+        "{policy}: the replay is not refused as stale: stdout {stdout} stderr {stderr}"
+    );
+    assert!(
+        !stdout.contains("Added") && !stderr.contains("Added"),
+        "{policy}: the replay adds no field: stdout {stdout} stderr {stderr}"
+    );
+    assert_eq!(
+        std::fs::read(&config).unwrap(),
+        before,
+        "{policy}: the replay leaves the config document byte-identical"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "hello world",
+        "{policy}: the recorded file action ran"
+    );
+}
+
+#[test]
+fn apply_plan_after_upgrade_does_not_migrate_and_does_not_refuse_its_own_plan() {
+    assert_replay_leaves_a_behind_config_alone("Update");
+}
+
+#[test]
+fn apply_plan_under_prompt_with_yes_does_not_migrate_and_does_not_refuse_its_own_plan() {
+    assert_replay_leaves_a_behind_config_alone("Prompt");
+}
+
+/// Record `producer`'s `-o json` stdout as a plan file in the state directory,
+/// exactly as a shell redirect would.
+fn binary_plan_file(config_dir: &Path, state_dir: &Path, producer: &[&str]) -> std::path::PathBuf {
+    let out = cfgd_at(config_dir, state_dir, producer);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{producer:?} succeeds: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let plan_file = state_dir.join("plan.json");
+    std::fs::write(&plan_file, &out.stdout).unwrap();
+    plan_file
+}
+
+/// Replay `plan_file` and hold the run to the stale refusal naming `changed`.
+fn assert_replay_refused_as_stale(
+    config_dir: &Path,
+    state_dir: &Path,
+    plan_file: &Path,
+    changed: &Path,
+) {
+    let plan = plan_file.to_str().unwrap();
+    let out = cfgd_at(
+        config_dir,
+        state_dir,
+        &["--yes", "-o", "json", "apply", "--plan", plan],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the replay is refused: stdout {stdout} stderr {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let payload: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(payload["error"], "stale", "{payload}");
+    assert_eq!(
+        payload["changed"],
+        cfgd_core::to_posix_string(changed),
+        "the refusal names the source that moved: {payload}"
+    );
+}
+
+/// The tiny profile with its one managed file under `strategy`, the default
+/// when `None`.
+fn tiny_profile_with_strategy(config_dir: &Path, target: &Path, strategy: Option<&str>) {
+    let strategy = strategy.map_or_else(String::new, |s| format!("        strategy: {s}\n"));
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  files:\n    managed:\n      - source: files/hello.txt\n        target: {}\n{strategy}",
+        cfgd_core::to_posix_string(target)
+    );
+    std::fs::write(config_dir.join("profiles").join("tiny.yaml"), profile).unwrap();
+}
+
+/// Plan the tiny profile under `strategy`, edit its source, and hold the
+/// replay to the stale refusal with the target left unwritten.
+fn assert_source_edit_refuses_the_replay(strategy: Option<&str>) {
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    tiny_profile_with_strategy(config_dir.path(), &target, strategy);
+    let plan_file = binary_plan_file(config_dir.path(), state_dir.path(), &["-o", "json", "plan"]);
+
+    let source = config_dir.path().join("files").join("hello.txt");
+    std::fs::write(&source, "hello, changed world").unwrap();
+
+    assert_replay_refused_as_stale(config_dir.path(), state_dir.path(), &plan_file, &source);
+    assert!(
+        target.symlink_metadata().is_err(),
+        "{strategy:?}: a refused replay writes nothing: {}",
+        target.display()
+    );
+}
+
+#[test]
+fn a_saved_plan_is_refused_once_a_managed_source_changes() {
+    // The default strategy links, so its action carries no hash of the source.
+    assert_source_edit_refuses_the_replay(None);
+}
+
+#[test]
+fn a_saved_plan_is_refused_once_a_copied_managed_source_changes() {
+    assert_source_edit_refuses_the_replay(Some("Copy"));
+}
+
+#[test]
+fn a_saved_plan_is_refused_once_a_file_inside_a_directory_source_changes() {
+    let (config_dir, state_dir, _) = tiny_profile_setup();
+    let nested = config_dir
+        .path()
+        .join("files")
+        .join("conf")
+        .join("sub")
+        .join("app.toml");
+    std::fs::create_dir_all(nested.parent().unwrap()).unwrap();
+    std::fs::write(&nested, "a = 1").unwrap();
+    let target = config_dir.path().join("out").join("conf");
+    let profile = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  files:\n    managed:\n      - source: files/conf\n        target: {}\n",
+        cfgd_core::to_posix_string(&target)
+    );
+    std::fs::write(
+        config_dir.path().join("profiles").join("tiny.yaml"),
+        profile,
+    )
+    .unwrap();
+    let plan_file = binary_plan_file(config_dir.path(), state_dir.path(), &["-o", "json", "plan"]);
+
+    std::fs::write(&nested, "a = 22").unwrap();
+
+    assert_replay_refused_as_stale(config_dir.path(), state_dir.path(), &plan_file, &nested);
+    assert!(
+        target.symlink_metadata().is_err(),
+        "a refused replay writes nothing"
+    );
+}
+
+#[test]
+fn a_saved_plan_is_refused_once_a_module_file_source_changes() {
+    let (config_dir, state_dir, _) = tiny_profile_setup();
+    let module_dir = config_dir.path().join("modules").join("tools");
+    let source = module_dir.join("files").join("init.lua");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(&source, "-- v1").unwrap();
+    let target = config_dir.path().join("out").join("init.lua");
+    let module = format!(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: tools\nspec:\n  files:\n    - source: files/init.lua\n      target: {}\n",
+        cfgd_core::to_posix_string(&target)
+    );
+    std::fs::write(module_dir.join("module.yaml"), module).unwrap();
+    let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  modules:\n    - tools\n";
+    std::fs::write(
+        config_dir.path().join("profiles").join("tiny.yaml"),
+        profile,
+    )
+    .unwrap();
+    let plan_file = binary_plan_file(config_dir.path(), state_dir.path(), &["-o", "json", "plan"]);
+
+    std::fs::write(&source, "-- v22").unwrap();
+
+    assert_replay_refused_as_stale(config_dir.path(), state_dir.path(), &plan_file, &source);
+    assert!(
+        target.symlink_metadata().is_err(),
+        "a refused replay writes nothing"
+    );
+}
+
+#[test]
+fn a_dry_run_plan_is_refused_once_a_managed_source_changes() {
+    let (config_dir, state_dir, target) = tiny_profile_setup();
+    let plan_file = binary_plan_file(
+        config_dir.path(),
+        state_dir.path(),
+        &["-o", "json", "apply", "--dry-run"],
+    );
+
+    let source = config_dir.path().join("files").join("hello.txt");
+    std::fs::write(&source, "hello, changed world").unwrap();
+
+    assert_replay_refused_as_stale(config_dir.path(), state_dir.path(), &plan_file, &source);
+    assert!(!target.exists(), "a refused replay writes nothing");
+}
+
+/// A local repository whose first commit holds `README.md`, followed by one
+/// commit per `(tag, page)` that writes `page` to `docs/index.md` and tags it.
+/// Returns the repository's temp dir and its `file://` URL.
+fn tagged_docs_repo(pages: &[(&str, &str)]) -> (tempfile::TempDir, String) {
+    let repo_dir = tempfile::tempdir().unwrap();
+    let repo = git2::Repository::init(repo_dir.path()).unwrap();
+    let sig = git2::Signature::now("t", "t@example.com").unwrap();
+    std::fs::create_dir_all(repo_dir.path().join("docs")).unwrap();
+    std::fs::write(repo_dir.path().join("README.md"), "hi").unwrap();
+    let mut parent: Option<git2::Oid> = None;
+    for (i, (tag, page)) in std::iter::once(("", ""))
+        .chain(pages.iter().copied())
+        .enumerate()
+    {
+        let mut index = repo.index().unwrap();
+        if i == 0 {
+            index.add_path(Path::new("README.md")).unwrap();
+        } else {
+            std::fs::write(repo_dir.path().join("docs").join("index.md"), page).unwrap();
+            index.add_path(Path::new("docs/index.md")).unwrap();
+        }
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let parents: Vec<git2::Commit> = parent
+            .iter()
+            .map(|id| repo.find_commit(*id).unwrap())
+            .collect();
+        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+        let id = repo
+            .commit(Some("HEAD"), &sig, &sig, "commit", &tree, &parent_refs)
+            .unwrap();
+        if !tag.is_empty() {
+            repo.tag_lightweight(tag, repo.find_commit(id).unwrap().as_object(), false)
+                .unwrap();
+        }
+        parent = Some(id);
+    }
+    let url = cfgd_core::to_file_url(repo_dir.path());
+    (repo_dir, url)
+}
+
+/// Writes a `tools` module whose `files:` entries are `(source, target)`, and
+/// a `tiny` profile that enables it.
+fn write_tools_module(config_dir: &Path, entries: &[(String, &Path)]) {
+    let module_dir = config_dir.join("modules").join("tools");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    let mut module = String::from(
+        "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: tools\nspec:\n  files:\n",
+    );
+    for (source, target) in entries {
+        module.push_str(&format!(
+            "    - source: {source}\n      target: {}\n",
+            cfgd_core::to_posix_string(target)
+        ));
+    }
+    std::fs::write(module_dir.join("module.yaml"), module).unwrap();
+    let profile = "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: tiny\nspec:\n  modules:\n    - tools\n";
+    std::fs::write(config_dir.join("profiles").join("tiny.yaml"), profile).unwrap();
+}
+
+/// A `tools` module whose two `files:` entries come from one local repository
+/// pinned by tag: the whole checkout, and its `docs` subdirectory. Returns the
+/// repository's temp dir, its URL and both targets.
+fn pinned_git_module_setup(
+    config_dir: &Path,
+) -> (
+    tempfile::TempDir,
+    String,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
+    let (repo_dir, url) = tagged_docs_repo(&[("v1.0", "# docs")]);
+    let whole = config_dir.join("out").join("dots");
+    let docs = config_dir.join("out").join("docs");
+    write_tools_module(
+        config_dir,
+        &[
+            (format!("{url}@v1.0"), &whole),
+            (format!("{url}//docs@v1.0"), &docs),
+        ],
+    );
+    (repo_dir, url, whole, docs)
+}
+
+/// Where the run that `cfgd_at` starts checks out `requested_ref` of `url`.
+fn pinned_checkout(state_dir: &Path, url: &str, requested_ref: &str) -> std::path::PathBuf {
+    let cache_base =
+        cfgd_core::module_cache_root(Some(&state_dir.join("cache")), cfgd_core::Scope::User)
+            .unwrap();
+    cfgd_core::modules::git_checkout_dir(&cache_base, url, Some(requested_ref)).unwrap()
+}
+
+#[test]
+fn a_saved_plan_over_two_file_entries_from_one_pinned_repository_replays() {
+    let (config_dir, state_dir, _) = tiny_profile_setup();
+    let (_repo, _, whole, docs) = pinned_git_module_setup(config_dir.path());
+    let plan_file = binary_plan_file(config_dir.path(), state_dir.path(), &["-o", "json", "plan"]);
+
+    assert_replay_succeeds(config_dir.path(), state_dir.path(), &plan_file);
+    assert!(
+        whole.join("README.md").exists(),
+        "the checkout entry deployed"
+    );
+    assert!(
+        docs.join("index.md").exists(),
+        "the subdirectory entry deployed"
+    );
+}
+
+#[test]
+fn a_saved_plan_over_two_pinned_refs_of_one_repository_replays_each_refs_bytes() {
+    let (config_dir, state_dir, _) = tiny_profile_setup();
+    let (_repo, url) = tagged_docs_repo(&[("v1.0", "# docs"), ("v2.0", "# docs, version two")]);
+    let v1 = config_dir.path().join("out").join("v1");
+    let v2 = config_dir.path().join("out").join("v2");
+    write_tools_module(
+        config_dir.path(),
+        &[
+            (format!("{url}//docs@v1.0"), &v1),
+            (format!("{url}//docs@v2.0"), &v2),
+        ],
+    );
+    let plan_file = binary_plan_file(config_dir.path(), state_dir.path(), &["-o", "json", "plan"]);
+
+    assert_replay_succeeds(config_dir.path(), state_dir.path(), &plan_file);
+    let page = |dir: &Path| {
+        let text = std::fs::read_to_string(dir.join("index.md")).unwrap();
+        cfgd_core::normalize_line_endings(&text).into_owned()
+    };
+    assert_eq!(page(&v1), "# docs", "the v1.0 target holds v1.0's page");
+    assert_eq!(page(&v2), "# docs, version two");
+}
+
+/// Replays `plan_file` through the real binary and fails unless it exits 0.
+fn assert_replay_succeeds(config_dir: &Path, state_dir: &Path, plan_file: &Path) {
+    let out = cfgd_at(
+        config_dir,
+        state_dir,
+        &[
+            "--yes",
+            "-o",
+            "json",
+            "apply",
+            "--plan",
+            plan_file.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the replay runs: stdout {} stderr {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn a_saved_plan_is_refused_once_a_git_sourced_module_file_changes_in_the_cache() {
+    let (config_dir, state_dir, _) = tiny_profile_setup();
+    let (_repo, url, whole, docs) = pinned_git_module_setup(config_dir.path());
+    let plan_file = binary_plan_file(config_dir.path(), state_dir.path(), &["-o", "json", "plan"]);
+
+    let cached = pinned_checkout(state_dir.path(), &url, "v1.0")
+        .join("docs")
+        .join("index.md");
+    std::fs::write(&cached, "# docs, edited in the cache").unwrap();
+
+    assert_replay_refused_as_stale(config_dir.path(), state_dir.path(), &plan_file, &cached);
+    assert!(
+        whole.symlink_metadata().is_err() && docs.symlink_metadata().is_err(),
+        "a refused replay writes nothing"
+    );
 }

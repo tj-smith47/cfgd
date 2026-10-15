@@ -35,6 +35,15 @@ use cfgd_core::output::Printer;
 
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
+/// The run's own document, with no file behind it: these snapshots are about
+/// what init scaffolds, and an answer its migration gate holds is recorded by
+/// `main`, which they do not run.
+fn no_run_document() -> cfgd::cli::startup::StartupDocument {
+    cfgd::cli::startup::StartupDocument::load(
+        &Path::new(env!("CARGO_TARGET_TMPDIR")).join("no-run-document/cfgd.yaml"),
+    )
+}
+
 /// The migration gate held off: these goldens pin what init scaffolds and
 /// applies, and the gate's run inside init is covered against the real binary.
 fn inert_migration_gate() -> cfgd::cli::config_schema::GateInvocation<'static> {
@@ -43,6 +52,7 @@ fn inert_migration_gate() -> cfgd::cli::config_schema::GateInvocation<'static> {
         assume_yes: false,
         is_daemon: false,
         preview: false,
+        diagnostic: false,
         state_dir: None,
         scope: cfgd_core::Scope::User,
     }
@@ -74,7 +84,7 @@ fn init_happy_human() {
     };
 
     let (printer, cap) = Printer::for_test_doc();
-    cmd_init(&printer, &args).unwrap();
+    cmd_init(&printer, &no_run_document(), &args).unwrap();
     drop(printer);
 
     // Replace the tempdir-rooted target with a stable placeholder so the
@@ -143,7 +153,7 @@ fn init_from_a_local_repo_names_the_destination_once() {
     };
 
     let (printer, cap) = Printer::for_test_doc();
-    cmd_init(&printer, &args).unwrap();
+    cmd_init(&printer, &no_run_document(), &args).unwrap();
     drop(printer);
 
     let normalized = cfgd_core::normalize_for_snapshot(
@@ -202,7 +212,7 @@ fn init_happy_json() {
     };
 
     let (printer, cap) = Printer::for_test_doc();
-    cmd_init(&printer, &args).unwrap();
+    cmd_init(&printer, &no_run_document(), &args).unwrap();
     drop(printer);
 
     let mut json = cap.json().expect("init emits a Doc with payload");
@@ -250,7 +260,7 @@ fn init_already_initialized_human() {
     };
 
     let (printer, cap) = Printer::for_test_doc();
-    cmd_init(&printer, &args).unwrap();
+    cmd_init(&printer, &no_run_document(), &args).unwrap();
     drop(printer);
 
     let normalized =
@@ -327,7 +337,7 @@ fn init_with_apply_renders_apply_status_streaming() {
     };
 
     let (printer, cap) = Printer::for_test_doc();
-    let result = cmd_init(&printer, &args);
+    let result = cmd_init(&printer, &no_run_document(), &args);
     drop(printer);
     // SAFETY: serialized via #[serial].
     unsafe {
@@ -415,7 +425,7 @@ fn init_theme_rethemed_printer_still_owes_apply_a_blank_line() {
     };
 
     let (printer, cap) = Printer::for_test_doc();
-    let result = cmd_init(&printer, &args);
+    let result = cmd_init(&printer, &no_run_document(), &args);
     drop(printer);
     // SAFETY: serialized via #[serial].
     unsafe {
@@ -602,7 +612,7 @@ fn init_apply_lock_honors_state_dir_override() {
     };
 
     let (printer, _cap) = Printer::for_test_doc();
-    cmd_init(&printer, &args).unwrap();
+    cmd_init(&printer, &no_run_document(), &args).unwrap();
     drop(printer);
 
     assert!(

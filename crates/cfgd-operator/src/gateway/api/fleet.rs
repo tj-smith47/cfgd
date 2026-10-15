@@ -26,7 +26,7 @@ pub(super) async fn record_drift_event(
     enforce_device_access(&auth, &id)?;
 
     let details_str = serde_json::to_string(&req.details)
-        // fleet-drift-ok: an internal serialization failure, not a claim
+        // fleet-drift-ok: an internal serialization failure, which claims no drift
         .map_err(|e| GatewayError::Internal(format!("failed to serialize drift details: {e}")))?;
 
     let db = state.db.clone();

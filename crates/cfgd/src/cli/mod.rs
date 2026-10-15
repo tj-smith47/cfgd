@@ -55,7 +55,7 @@ use cfgd_core::{
 pub use error::{
     CliErrorMeta, cli_error, cli_error_ctx, cli_error_ctx_with_hints,
     cli_error_ctx_with_hints_and_block, cli_error_with_hints, emit_not_found_ignored,
-    exit_code_for_anyhow, invalid_argument, invalid_argument_among,
+    exit_code_for_anyhow, invalid_argument, invalid_argument_among, reported_exit,
 };
 pub(crate) use helpers::run_state_dir;
 pub(in crate::cli) use helpers::*;
@@ -612,8 +612,12 @@ pub fn env_value_masking(
     }
 }
 
+/// The `--config` default as a user would write it: with no home directory it
+/// keeps its `~`, which config discovery refuses as `ConfigError::HomeUnresolved`.
 pub fn default_config_file() -> PathBuf {
-    cfgd_core::config::config_document_in(&cfgd_core::default_config_dir())
+    cfgd_core::config::config_document_in(&cfgd_core::default_config_dir_spelling(
+        cfgd_core::Scope::User,
+    ))
 }
 
 /// Returns true if `flag` is a global flag on `Cli` that consumes the next
@@ -1352,7 +1356,7 @@ impl Cli {
     /// argument. Expanded here, every reader of these directories, the argv a
     /// service install bakes into its unit included, sees the same absolute
     /// path. With no home directory to resolve, a path keeps its `~`, and the
-    /// directory resolvers refuse it ([`cfgd_core::expand_tilde_strict`]).
+    /// directory resolvers refuse it ([`cfgd_core::expand_tilde`]).
     pub fn expand_path_flags(&mut self) {
         for dir in [
             &mut self.config_dir,
@@ -1363,7 +1367,12 @@ impl Cli {
         .into_iter()
         .flatten()
         {
-            *dir = cfgd_core::expand_tilde(dir);
+            // home-optional-ok: with no home the `~` stays, and the resolver
+            // reading the directory refuses it under its own role.
+            // home-refusal-ok: the `~` stays for the directory's own resolver, judged at its call
+            if let Ok(expanded) = cfgd_core::expand_tilde(dir, "directory flag") {
+                *dir = expanded;
+            }
         }
     }
 
@@ -3342,6 +3351,38 @@ pub enum ModuleRegistryCommand {
     List,
 }
 
+/// End a run [`execute`] returned from: record the migration answer the gate
+/// held for want of a home, then exit with the code the result carries. A
+/// [`error::ReportedExit`] exits with its own code and renders nothing; any
+/// other error renders through [`error::render_cli_error`]. A run that
+/// succeeded but could not write its structured output exits nonzero too.
+/// Every process exit after the gate passes through here, so none of them
+/// skips the recording.
+pub fn finish_run(
+    printer: &cfgd_core::output::Printer,
+    cli: &Cli,
+    startup: &startup::StartupDocument,
+    result: anyhow::Result<()>,
+) {
+    config_schema::record_held_answer_after_run(printer, cli, startup, &result);
+    let Err(e) = result else {
+        // A template render or context error, or an unreadable template file,
+        // is reported on stderr by `emit`,
+        // which cannot make `execute` return `Err` without threading a result
+        // through every `emit` call site. The printer records it, and a `-o`
+        // consumer must not see exit 0 over a polluted or empty data channel.
+        // The message is already on stderr.
+        if printer.had_output_error() {
+            cfgd_core::exit::ExitCode::Error.exit();
+        }
+        return;
+    };
+    if let Some(error::ReportedExit(code)) = e.downcast_ref::<error::ReportedExit>() {
+        std::process::exit(*code);
+    }
+    error::render_cli_error(printer, &e).exit();
+}
+
 /// Execute the given CLI command. Returns Ok(()) on success.
 pub fn execute(
     cli: &Cli,
@@ -3449,6 +3490,7 @@ pub fn execute(
             on_conflict,
         } => init::cmd_init(
             printer,
+            startup,
             &init::InitArgs {
                 path: path.as_deref(),
                 from: from.as_deref(),

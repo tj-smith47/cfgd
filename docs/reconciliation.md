@@ -261,7 +261,7 @@ own line and exposes no payload key, so it projects nothing of this one.
 | Field | What it holds |
 |---|---|
 | `plan` | The reconciler's own action graph, typed and serialized whole. `phases[]` is the rendered contract a reader scans; this is cfgd's own format, written for cfgd to read back. It spells its variants the way Rust tags them (PascalCase, externally tagged), where the rest of the payload uses camelCase. Build a `jq` expression on `phases[]`. |
-| `configInputs` | Every file the derivation opened, each with the modification time and size it carried. A file that has since moved (or appeared, or gone) makes the plan stale. |
+| `configInputs` | Every file the derivation opened, each with the modification time and size it carried. A file that has since moved (or appeared, or gone) makes the plan stale. An entry carrying `"unreadable": true` is a directory the derivation could not list (or an entry whose type it could not read): nothing beneath it was stamped, so it always reads as moved and the plan is refused. The key is absent from every other entry. |
 | `serial` | The id of the last apply recorded on this machine, or `0` when none has run. A later apply means the machine is no longer the one the plan was taken against. |
 | `storeId` | The identity of the state store the plan was derived against, a UUID minted once when the store was created and kept inside it. A replay that opens another store (another `--state-dir`) is refused; the same store copied or moved to another directory keeps its identity. |
 

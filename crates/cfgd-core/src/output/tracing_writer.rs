@@ -461,7 +461,7 @@ mod tests {
         let buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let subscriber = tracing_subscriber::fmt()
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
+            // unfolded-writer-ok: a test capture read back as a String that nobody watches
             .with_writer(Capture(buf.clone()))
             .with_timer(LocalTimeOfDay)
             .with_ansi(false)

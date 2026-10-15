@@ -1729,6 +1729,17 @@ pub trait SystemConfigurator: Send + Sync {
     /// Diff desired vs actual, return list of changes
     fn diff(&self, desired: &serde_yaml::Value) -> Result<Vec<SystemDrift>>;
 
+    /// The refusal [`Self::diff`] or [`Self::apply`] would meet over `desired`
+    /// because a path it reads or writes leads with `~` and no home directory
+    /// resolves, or `None` when nothing it touches lives under the home.
+    ///
+    /// Asked before a run opens its state store, so a configurator that
+    /// expands a `~` path answers here from the same resolution its `diff`
+    /// uses, and a homeless run refuses before its first action runs.
+    fn home_refusal(&self, _desired: &serde_yaml::Value) -> Option<crate::errors::StateError> {
+        None
+    }
+
     /// Apply desired state.
     ///
     /// The CALLER owns the action's SETTLED status line: the reconciler emits
@@ -2023,6 +2034,12 @@ pub trait SecretBackend: Send + Sync {
     fn encrypt_file(&self, path: &Path) -> Result<()>;
     fn decrypt_file(&self, path: &Path) -> Result<SecretString>;
     fn edit_file(&self, path: &Path) -> Result<()>;
+    /// The refusal every operation meets because the key this backend reads
+    /// lives under a home directory that does not resolve, or `None` when the
+    /// key has a location.
+    fn home_refusal(&self) -> Option<crate::errors::StateError> {
+        None
+    }
 }
 
 // --- SecretProvider trait ---

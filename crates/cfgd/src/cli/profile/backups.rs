@@ -9,7 +9,7 @@ pub(crate) fn collect_module_file_targets(
     config_dir: &Path,
     cache_over: Option<&Path>,
     scope: cfgd_core::Scope,
-) -> Vec<PathBuf> {
+) -> cfgd_core::errors::Result<Vec<PathBuf>> {
     // Try local module first
     let module_dir = cfgd_core::declared_modules_dir(config_dir).join(module_name);
     if let Ok(loaded) = modules::load_module(&module_dir) {
@@ -17,29 +17,32 @@ pub(crate) fn collect_module_file_targets(
             .spec
             .files
             .iter()
-            .map(|f| cfgd_core::expand_tilde(&PathBuf::from(&f.target)))
+            .map(|f| {
+                cfgd_core::expand_tilde(&PathBuf::from(&f.target), cfgd_core::FILE_TARGET_ROLE)
+            })
             .collect();
     }
 
     // Try cached remote module
+    // home-optional-ok: a cache with no location holds no cached module to read targets from
     if let Ok(cache_base) = module_cache_dir_for(cache_over, scope) {
         let lockfile = modules::load_lockfile(config_dir).unwrap_or_default();
         if let Some(entry) = lockfile.modules.iter().find(|e| e.name == module_name)
-            && let Ok(git_src) = modules::parse_git_source(&entry.url)
+            && let Ok(module_dir) = modules::locked_module_dir(entry, &cache_base)
+            && let Ok(loaded) = modules::load_module(&module_dir)
         {
-            let cache_dir = modules::git_cache_dir(&cache_base, &git_src.repo_url);
-            if let Ok(loaded) = modules::load_module(&cache_dir) {
-                return loaded
-                    .spec
-                    .files
-                    .iter()
-                    .map(|f| cfgd_core::expand_tilde(&PathBuf::from(&f.target)))
-                    .collect();
-            }
+            return loaded
+                .spec
+                .files
+                .iter()
+                .map(|f| {
+                    cfgd_core::expand_tilde(&PathBuf::from(&f.target), cfgd_core::FILE_TARGET_ROLE)
+                })
+                .collect();
         }
     }
 
-    Vec::new()
+    Ok(Vec::new())
 }
 
 /// Restore (or remove) each deployed file during module cleanup, routing
@@ -74,7 +77,7 @@ pub(crate) fn restore_or_remove_deployed_files(
             // No backup recorded — just remove the deployed file.
             if let Err(e) = std::fs::remove_file(path) {
                 section
-                    // name-row-ok: the row names the phase, not an outcome
+                    // name-row-ok: the row names the phase and reports no outcome
                     .status(Role::Warn, "rollback")
                     .qualifier(format!("failed to remove {file_path}: {e}"));
             } else {

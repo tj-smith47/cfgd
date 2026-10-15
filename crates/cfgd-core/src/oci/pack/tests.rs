@@ -174,7 +174,9 @@ fn image_manifest_serializes_camelcase() {
 // -----------------------------------------------------------------------
 
 #[test]
+#[serial_test::serial]
 fn pack_image_pushes_standard_oci_image() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let mut server = mockito::Server::new();
     let registry = registry_from_url(&server.url());
     let dir = create_test_pack_dir();
@@ -241,7 +243,9 @@ fn pack_image_pushes_standard_oci_image() {
 }
 
 #[test]
+#[serial_test::serial]
 fn pack_image_propagates_invalid_reference_error() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let dir = create_test_pack_dir();
     let result = pack_image(dir.path(), "", &PackOptions::default(), None);
     assert!(
@@ -314,7 +318,9 @@ fn pack_image_descriptor_digests_match_blob_bytes() {
 }
 
 #[test]
+#[serial_test::serial]
 fn pack_image_wire_bytes_hash_to_manifest_descriptor_digests() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     // Strongest double-hash proof: capture the ACTUAL bytes pushed over the
     // wire for each blob PUT and for the manifest PUT, then assert that
     // sha256(captured config body) == config.digest in the pushed manifest
@@ -449,7 +455,9 @@ fn pack_image_wire_bytes_hash_to_manifest_descriptor_digests() {
 }
 
 #[test]
+#[serial_test::serial]
 fn pack_image_manifest_push_500_returns_manifest_push_failed() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     // Blob uploads succeed; the manifest PUT returns 500. pack_image must
     // surface that as OciError::ManifestPushFailed, not a generic error.
     let mut server = mockito::Server::new();
@@ -485,13 +493,15 @@ fn pack_image_manifest_push_500_returns_manifest_push_failed() {
         .create();
 
     // Manifest PUT fails server-side.
-    server
+    let manifest_put = server
         .mock("PUT", "/v2/myorg/myimage/manifests/v1")
         .with_status(500)
+        .expect(1)
         .create();
 
     let artifact_ref = format!("{registry}/myorg/myimage:v1");
     let result = pack_image(dir.path(), &artifact_ref, &PackOptions::default(), None);
+    manifest_put.assert();
 
     let err = result.expect_err("manifest PUT 500 must yield Err");
     assert!(
@@ -501,7 +511,9 @@ fn pack_image_manifest_push_500_returns_manifest_push_failed() {
 }
 
 #[test]
+#[serial_test::serial]
 fn pack_image_blob_upload_500_returns_blob_upload_failed() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     // The first blob upload (config) fails its POST initiation with 500.
     // upload_blob maps that to OciError::BlobUploadFailed, which pack_image
     // propagates without ever reaching the manifest PUT.
@@ -519,7 +531,7 @@ fn pack_image_blob_upload_500_returns_blob_upload_failed() {
         .create();
 
     // POST to initiate upload fails server-side.
-    server
+    let upload_post = server
         .mock("POST", "/v2/myorg/myimage/blobs/uploads/")
         .with_status(500)
         .expect_at_least(1)
@@ -527,6 +539,7 @@ fn pack_image_blob_upload_500_returns_blob_upload_failed() {
 
     let artifact_ref = format!("{registry}/myorg/myimage:v1");
     let result = pack_image(dir.path(), &artifact_ref, &PackOptions::default(), None);
+    upload_post.assert();
 
     let err = result.expect_err("blob POST 500 must yield Err");
     assert!(
@@ -824,7 +837,9 @@ fn base_image_config_json(os: &str, arch: &str, diff_id: &str) -> Vec<u8> {
 }
 
 #[test]
+#[serial_test::serial]
 fn pack_image_base_path_layers_onto_base_via_mount() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     use std::sync::{Arc, Mutex};
 
     let mut server = mockito::Server::new();
@@ -976,7 +991,9 @@ fn pack_image_base_path_layers_onto_base_via_mount() {
 }
 
 #[test]
+#[serial_test::serial]
 fn pack_image_base_index_selects_matching_platform_manifest() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     use std::sync::{Arc, Mutex};
 
     let mut server = mockito::Server::new();
@@ -1143,7 +1160,9 @@ fn pack_image_base_index_selects_matching_platform_manifest() {
 /// entry names one, reports and writes the base's variant: the pushed
 /// config copies the base's platform, so the outcome names what was written.
 #[test]
+#[serial_test::serial]
 fn pack_image_onto_a_variant_base_reports_the_variant_its_config_carries() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     use std::sync::{Arc, Mutex};
 
     let mut server = mockito::Server::new();
@@ -1314,7 +1333,9 @@ fn pack_image_onto_a_variant_base_reports_the_variant_its_config_carries() {
 }
 
 #[test]
+#[serial_test::serial]
 fn pack_image_base_index_no_matching_platform_errors() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     let mut server = mockito::Server::new();
     let registry = registry_from_url(&server.url());
     let dir = create_test_pack_dir();
@@ -1481,4 +1502,32 @@ fn an_oci_descriptor_serializes_its_annotations_in_sorted_key_order() {
         annotations = sorted_annotations_json(),
     );
     assert_eq!(serde_json::to_string(&descriptor).unwrap(), expected);
+}
+
+fn resolve_base_from(registry: &str) -> Result<OciManifest, OciError> {
+    let base = crate::oci::OciReference::parse(&format!("{registry}/test/basemod:v1")).unwrap();
+    let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
+    resolve_base_manifest(&agent, &base, None, &target("linux/amd64"))
+}
+
+#[test]
+fn a_base_image_the_registry_answers_404_for_is_a_missing_manifest() {
+    let mut server = mockito::Server::new();
+    let registry = registry_from_url(&server.url());
+    server
+        .mock("GET", "/v2/test/basemod/manifests/v1")
+        .with_status(404)
+        .create();
+    let err = resolve_base_from(&registry).expect_err("the base is not served");
+    let expected = format!("{registry}/test/basemod:v1");
+    assert!(
+        matches!(&err, OciError::ManifestNotFound { reference } if *reference == expected),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn an_unreachable_base_registry_is_a_request_failure() {
+    let err = resolve_base_from("127.0.0.1:1").expect_err("nothing listens");
+    assert!(matches!(err, OciError::RequestFailed { .. }), "{err:?}");
 }

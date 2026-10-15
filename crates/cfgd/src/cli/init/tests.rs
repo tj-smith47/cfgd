@@ -11,6 +11,7 @@ fn inert_migration_gate() -> crate::cli::config_schema::GateInvocation<'static> 
         assume_yes: false,
         is_daemon: false,
         preview: false,
+        diagnostic: false,
         state_dir: None,
         scope: cfgd_core::Scope::User,
     }
@@ -26,7 +27,11 @@ fn inert_migration_gate() -> crate::cli::config_schema::GateInvocation<'static> 
 /// here for that reason.
 fn cmd_init_guarded(printer: &Printer, args: &InitArgs<'_>) -> anyhow::Result<()> {
     let _path = cfgd_core::test_helpers::path_env_read_guard();
-    cmd_init(printer, args)
+    // No document: these tests drive init alone, and the answer `main`
+    // would record after it is the gate's own subject elsewhere.
+    let nowhere = tempfile::tempdir().unwrap();
+    let startup = crate::cli::startup::StartupDocument::load(&nowhere.path().join("cfgd.yaml"));
+    cmd_init(printer, &startup, args)
 }
 
 // `cmd_init` gates on `command_available("git")` and calls `ExitCode::Error.exit()`
@@ -521,27 +526,27 @@ fn pick_profile_no_dir_errors() {
 
 #[test]
 fn is_clonable_source_detects_urls() {
-    assert!(is_clonable_source("https://github.com/user/repo"));
-    assert!(is_clonable_source("http://github.com/user/repo"));
-    assert!(is_clonable_source("git@github.com:user/repo.git"));
-    assert!(is_clonable_source("ssh://git@github.com/user/repo"));
-    assert!(is_clonable_source("git://github.com/user/repo"));
-    assert!(is_clonable_source("/some/local/path.git"));
+    assert!(is_clonable_source("https://github.com/user/repo").unwrap());
+    assert!(is_clonable_source("http://github.com/user/repo").unwrap());
+    assert!(is_clonable_source("git@github.com:user/repo.git").unwrap());
+    assert!(is_clonable_source("ssh://git@github.com/user/repo").unwrap());
+    assert!(is_clonable_source("git://github.com/user/repo").unwrap());
+    assert!(is_clonable_source("/some/local/path.git").unwrap());
 }
 
 #[test]
 fn is_clonable_source_detects_local_git_repo() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join(".git")).unwrap();
-    assert!(is_clonable_source(&dir.path().display().to_string()));
+    assert!(is_clonable_source(&dir.path().display().to_string()).unwrap());
 }
 
 #[test]
 fn is_clonable_source_rejects_plain_paths() {
-    assert!(!is_clonable_source("/home/user/config"));
-    assert!(!is_clonable_source("~/my-config"));
-    assert!(!is_clonable_source("./relative/path"));
-    assert!(!is_clonable_source("config"));
+    assert!(!is_clonable_source("/home/user/config").unwrap());
+    assert!(!is_clonable_source("~/my-config").unwrap());
+    assert!(!is_clonable_source("./relative/path").unwrap());
+    assert!(!is_clonable_source("config").unwrap());
 }
 
 // ─── --from resolution — GitHub shorthand vs existing path ─────────────────
@@ -563,7 +568,7 @@ fn is_clonable_source_classifies_file_urls_without_reading_the_env_gate() {
             }
         };
         assert!(
-            is_clonable_source("file:///srv/git/config"),
+            is_clonable_source("file:///srv/git/config").unwrap(),
             "file:// must be clonable with CFGD_ALLOW_LOCAL_SOURCES={allow:?}"
         );
     }
@@ -574,9 +579,9 @@ fn expanded_shorthand_is_a_clonable_source() {
     // The two halves have to agree: a resolved shorthand is what `resolve_from`
     // then hands to `is_clonable_source`, and a URL it refused would be treated
     // as a local path that does not exist.
-    assert!(is_clonable_source(&cfgd_core::resolve_repo_reference(
-        "acme/config"
-    )));
+    assert!(
+        is_clonable_source(&cfgd_core::resolve_repo_reference("acme/config").unwrap()).unwrap()
+    );
 }
 
 #[test]
@@ -1516,15 +1521,15 @@ fn a_from_run_reads_the_document_its_source_put_in_place() {
     let clone = "https://example.invalid/you/config.git";
 
     assert_eq!(
-        super::source::from_run_config(&plain, &named_yaml, dest.path()),
+        super::source::from_run_config(&plain, &named_yaml, dest.path()).unwrap(),
         toml
     );
     assert_eq!(
-        super::source::from_run_config(clone, &named_yaml, dest.path()),
+        super::source::from_run_config(clone, &named_yaml, dest.path()).unwrap(),
         toml
     );
     assert_eq!(
-        super::source::from_run_config(clone, &custom, dest.path()),
+        super::source::from_run_config(clone, &custom, dest.path()).unwrap(),
         custom
     );
 }
@@ -1556,31 +1561,31 @@ fn resolve_from_nonexistent_path_fails() {
 
 #[test]
 fn is_clonable_source_https() {
-    assert!(is_clonable_source("https://github.com/user/repo"));
-    assert!(is_clonable_source("https://github.com/user/repo.git"));
+    assert!(is_clonable_source("https://github.com/user/repo").unwrap());
+    assert!(is_clonable_source("https://github.com/user/repo.git").unwrap());
 }
 
 #[test]
 fn is_clonable_source_ssh() {
-    assert!(is_clonable_source("ssh://git@github.com/user/repo"));
-    assert!(is_clonable_source("git@github.com:user/repo.git"));
+    assert!(is_clonable_source("ssh://git@github.com/user/repo").unwrap());
+    assert!(is_clonable_source("git@github.com:user/repo.git").unwrap());
 }
 
 #[test]
 fn is_clonable_source_git_protocol() {
-    assert!(is_clonable_source("git://github.com/user/repo"));
+    assert!(is_clonable_source("git://github.com/user/repo").unwrap());
 }
 
 #[test]
 fn is_clonable_source_dot_git_suffix() {
-    assert!(is_clonable_source("anything.git"));
+    assert!(is_clonable_source("anything.git").unwrap());
 }
 
 #[test]
 fn is_clonable_source_local_plain_dir_not_git() {
     let dir = tempfile::tempdir().unwrap();
     assert!(
-        !is_clonable_source(&dir.path().display().to_string()),
+        !is_clonable_source(&dir.path().display().to_string()).unwrap(),
         "plain directory without .git should not be a git source"
     );
 }
@@ -1590,7 +1595,7 @@ fn is_clonable_source_local_git_repo() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join(".git")).unwrap();
     assert!(
-        is_clonable_source(&dir.path().display().to_string()),
+        is_clonable_source(&dir.path().display().to_string()).unwrap(),
         "directory with .git should be a git source"
     );
 }
@@ -1841,33 +1846,33 @@ fn count_packages_apt_and_cargo() {
 
 #[test]
 fn is_clonable_source_http_url() {
-    assert!(is_clonable_source("http://internal.host/repo"));
+    assert!(is_clonable_source("http://internal.host/repo").unwrap());
 }
 
 #[test]
 fn is_clonable_source_empty_string() {
-    assert!(!is_clonable_source(""));
+    assert!(!is_clonable_source("").unwrap());
 }
 
 #[test]
 fn is_clonable_source_relative_path_not_git() {
-    assert!(!is_clonable_source("relative/path"));
+    assert!(!is_clonable_source("relative/path").unwrap());
 }
 
 #[test]
 fn is_clonable_source_dot_git_middle_not_matched_as_suffix() {
     // Only .git at the END matters
-    assert!(!is_clonable_source("something.github"));
+    assert!(!is_clonable_source("something.github").unwrap());
 }
 
 #[test]
 fn is_clonable_source_bare_name_not_git() {
-    assert!(!is_clonable_source("myconfig"));
+    assert!(!is_clonable_source("myconfig").unwrap());
 }
 
 #[test]
 fn is_clonable_source_file_ending_in_dot_git() {
-    assert!(is_clonable_source("file:///path/to/repo.git"));
+    assert!(is_clonable_source("file:///path/to/repo.git").unwrap());
 }
 
 // ─── resolve_from — additional cases ──────────────────────────
@@ -2146,6 +2151,7 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
             module_cache: dir.path(),
+            registries: &[],
         },
         &printer,
     );
@@ -2159,6 +2165,67 @@ fn apply_plan_empty_plan_reports_nothing_to_do() {
         output.contains(cfgd_core::reconciler::MSG_NOTHING_TO_DO),
         "should report the shared nothing-to-do verdict for an empty plan, got: {output}"
     );
+}
+
+/// `cfgd init --apply` sweeps the module cache only when the config it
+/// scaffolded owns this machine's state store, as `cfgd apply` does. A config
+/// in another directory with no `--state-dir` does not list what the machine's
+/// own config reads, so a stale registry clone and a pinned tree another
+/// config's lock names both stay; with `--state-dir` the same run removes them.
+/// A dry run removes nothing even when its config owns the store.
+#[test]
+fn init_apply_sweeps_the_module_cache_only_for_a_config_that_owns_the_store() {
+    for (owns, dry_run) in [(false, false), (true, false), (true, true)] {
+        let swept = owns && !dry_run;
+        let dir = tempfile::tempdir().unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let (registry_clone, pinned_tree) =
+            cfgd_core::test_helpers::plant_unread_module_trees(cache.path());
+        let (printer, _cap) = Printer::for_test_doc();
+        let registry = super::build_registry_with_config(None);
+        let store = super::open_state_store(Some(dir.path()), cfgd_core::Scope::User).unwrap();
+        let reconciler = cfgd_core::reconciler::Reconciler::new(&registry, &store);
+        let resolved = config::ResolvedProfile {
+            layers: Vec::new(),
+            merged: config::MergedProfile::default(),
+        };
+        let mut plan = cfgd_core::reconciler::Plan {
+            phases: Vec::new(),
+            warnings: Vec::new(),
+        };
+        apply_plan(
+            &mut plan,
+            reconciler,
+            &resolved,
+            &[],
+            dir.path(),
+            ApplyPlanOpts {
+                sources: &[],
+                dry_run,
+                yes: true,
+                state_dir: owns.then_some(dir.path()),
+                scope: cfgd_core::Scope::User,
+                profile: None,
+                state: &store,
+                on_conflict: crate::cli::OnConflict::Ask,
+                default_strategy: cfgd_core::config::FileStrategy::Symlink,
+                module_cache: cache.path(),
+                registries: &[],
+            },
+            &printer,
+        )
+        .unwrap();
+        assert_eq!(
+            registry_clone.exists(),
+            !swept,
+            "owns the store: {owns}, dry run: {dry_run}; the stale registry clone"
+        );
+        assert_eq!(
+            pinned_tree.exists(),
+            !swept,
+            "owns the store: {owns}, dry run: {dry_run}; the pinned tree nothing here reads"
+        );
+    }
 }
 
 // ─── ensure_dir_writable — nonexistent path early return ─────
@@ -2692,7 +2759,7 @@ fn sign_with_gpg_signs_with_a_key_in_the_users_keyring() {
 fn detect_ssh_key_returns_option() {
     let printer = quiet_printer();
     // This will either find a key or return None — both are valid
-    let result = detect_ssh_key(&printer);
+    let result = detect_ssh_key(&printer).unwrap();
     // Just verify it doesn't panic and returns a valid type
     if let Some(ref path) = result {
         assert!(!path.is_empty(), "returned path should be non-empty");
@@ -2723,7 +2790,7 @@ fn detect_ssh_key_ssh_agent_path_returns_disk_key_when_agent_has_identities() {
     );
 
     let (printer, cap) = Printer::for_test_doc();
-    let result = detect_ssh_key(&printer);
+    let result = detect_ssh_key(&printer).unwrap();
     drop(printer);
     let human = cap.human();
 
@@ -2815,6 +2882,7 @@ fn init_apply_copies_an_unmanaged_target_aside_before_writing_it() {
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
             module_cache: dir.path(),
+            registries: &[],
         },
         &printer,
     )
@@ -2880,6 +2948,7 @@ fn init_dry_run_never_copies_anything_aside() {
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
             module_cache: dir.path(),
+            registries: &[],
         },
         &printer,
     )
@@ -2943,6 +3012,7 @@ fn apply_plan_prompt_declined_branch_prints_skipped_and_returns_ok() {
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
             module_cache: dir.path(),
+            registries: &[],
         },
         &printer,
     );
@@ -3019,6 +3089,7 @@ fn apply_plan_with_prompt_confirmed_proceeds_to_apply_path() {
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
             module_cache: dir.path(),
+            registries: &[],
         },
         &printer,
     );
@@ -3116,6 +3187,7 @@ fn apply_plan_records_module_state_for_the_modules_it_was_handed() {
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
             module_cache: dir.path(),
+            registries: &[],
         },
         &printer,
     );
@@ -3190,6 +3262,7 @@ fn apply_plan_with_prompt_declined_emits_skipped_and_returns_early() {
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
             module_cache: dir.path(),
+            registries: &[],
         },
         &printer,
     );
@@ -3256,6 +3329,7 @@ fn apply_plan_dry_run_skips_apply() {
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
             module_cache: dir.path(),
+            registries: &[],
         },
         &printer,
     );
@@ -5704,13 +5778,13 @@ mod cmd_init_apply_orchestration {
         std::fs::create_dir(&config_dir).unwrap();
         let url = cfgd_core::test_helpers::file_url(&bare);
 
-        let target = super::super::source::from_destination(&config_dir);
+        let target = super::super::source::from_destination(&config_dir).unwrap();
         assert_eq!(target.as_deref(), Some(config_dir.as_path()));
         let dest = resolve_from(&url, target.as_deref(), "master", &quiet_printer())
             .expect("the clone lands in the named directory");
         assert_eq!(dest, config_dir);
         assert_eq!(
-            super::super::source::from_run_config(&url, &config_dir, &dest),
+            super::super::source::from_run_config(&url, &config_dir, &dest).unwrap(),
             config_dir.join("cfgd.toml")
         );
     }
@@ -6477,6 +6551,7 @@ fn init_apply_settles_the_hash_of_every_link_deployed_row_before_it_returns() {
             on_conflict: crate::cli::OnConflict::Ask,
             default_strategy: cfgd_core::config::FileStrategy::Symlink,
             module_cache: dir.path(),
+            registries: &[],
         },
         &printer,
     )
@@ -6495,11 +6570,86 @@ fn init_apply_settles_the_hash_of_every_link_deployed_row_before_it_returns() {
     );
 }
 
+/// With no home, the answer a reader gives init's migration prompt is handed
+/// to the run's own document, where `cli::finish_run` records it once `execute` returns.
+/// Kept on init's private copy, it would be dropped with that copy.
+#[test]
+// Unsets HOME, which the prompt arm asks about.
+#[serial_test::serial]
+fn a_homeless_answer_to_inits_migration_prompt_moves_to_the_runs_document() {
+    use cfgd_core::output::PromptAnswer;
+    use cfgd_core::test_helpers::EnvVarGuard;
+    let _home = EnvVarGuard::unset("HOME");
+    let _profile = EnvVarGuard::unset("USERPROFILE");
+    let dir = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source");
+    std::fs::create_dir_all(&source).unwrap();
+    let behind = "apiVersion: cfgd.io/v1alpha1\nkind: Config\nmetadata:\n  name: source\nspec:\n  fileStrategy: Symlink\n";
+    std::fs::write(source.join("cfgd.yaml"), behind).unwrap();
+    let gate = crate::cli::config_schema::GateInvocation {
+        policy_override: None,
+        assume_yes: false,
+        is_daemon: false,
+        preview: false,
+        diagnostic: false,
+        state_dir: Some(state.path()),
+        scope: cfgd_core::Scope::User,
+    };
+    let (printer, _said) = Printer::for_test_with_prompt_responses_at(
+        vec![PromptAnswer::Confirm(false)],
+        Verbosity::Normal,
+    );
+    let source_str = source.display().to_string();
+    let args = InitArgs {
+        migration_gate: gate,
+        on_conflict: crate::cli::OnConflict::Ask,
+        path: None,
+        from: Some(&source_str),
+        branch: "master",
+        name: None,
+        apply: false,
+        dry_run: false,
+        yes: false,
+        install_daemon: false,
+        theme: None,
+        apply_profile: None,
+        apply_modules: &[],
+        cache_dir: None,
+        state_dir: Some(state.path()),
+        runtime_dir: None,
+        scope: cfgd_core::Scope::User,
+    };
+    let run_document = crate::cli::startup::StartupDocument::load(&dir.path().join("cfgd.yaml"));
+    {
+        let _path = cfgd_core::test_helpers::path_env_read_guard();
+        cmd_init(&printer, &run_document, &args).unwrap();
+    }
+    assert_eq!(
+        printer.prompt_confirm("still queued?").ok(),
+        None,
+        "init asked, and was answered no"
+    );
+    assert!(
+        run_document.take_migration_answer().is_some(),
+        "the answer waits on the run's document"
+    );
+    assert!(
+        !state
+            .path()
+            .join(cfgd_core::state::STATE_DB_FILENAME)
+            .exists(),
+        "nothing was recorded while init ran"
+    );
+}
+
 /// The answer a reader gives init's migration prompt is the answer the next
 /// command reads: init records it against the config it wrote, and a gate
 /// reaching the same file by the directory `--config` names finds it and
 /// asks nothing.
 #[test]
+// The prompt arm asks whether a home resolves, and a serial test unsets HOME.
+#[serial_test::serial]
 fn an_answer_given_to_inits_migration_prompt_is_the_one_the_next_command_reads() {
     use cfgd_core::output::PromptAnswer;
     let dir = tempfile::tempdir().unwrap();
@@ -6513,6 +6663,7 @@ fn an_answer_given_to_inits_migration_prompt_is_the_one_the_next_command_reads()
         assume_yes: false,
         is_daemon: false,
         preview: false,
+        diagnostic: false,
         state_dir: Some(state.path()),
         scope: cfgd_core::Scope::User,
     };

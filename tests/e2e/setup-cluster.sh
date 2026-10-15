@@ -6,26 +6,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# A local setup mints its run id from HEAD; see E2E_LOCAL_RUN_ID_FILE in
+# helpers.sh.
+E2E_NEW_LOCAL_RUN=1
 # shellcheck source=tests/e2e/common/helpers.sh
 source "$SCRIPT_DIR/common/helpers.sh"
 
 echo "=== cfgd E2E Setup ==="
+echo "Run id: $E2E_RUN_ID ($E2E_RUN_ID_SOURCE)"
 echo "Registry: $REGISTRY"
 echo "Image references (ArgoCD-owned components run the release their manifests pin):"
 for img in cfgd cfgd-operator cfgd-csi function-cfgd; do
     echo "  $(e2e_image "$img")"
 done
+e2e_refuse_overrides_below_chart_pins || exit 1
 
-# Where something other than setup owns a component's spec, a tag override for
-# it cannot take effect there, so setup says so.
-warn_override_unused() {
-    local image="$1" owner="$2" kind="$3" name="$4" container="$5"
-    e2e_override_unused_warning "$image" "$owner" "$kind/$name" \
-        "$(running_image "$kind" "$name" "$container")"
-}
-
-# --- Step 1: Verify cluster access ---
-# Stale-resource cleanup (former Step 0) moved to the async cfgd-e2e-janitor
+# --- Verify cluster access ---
+# Stale-resource cleanup moved to the async cfgd-e2e-janitor
 # CronJob in cfgd-system: it deletes aged cfgd-e2e-* namespaces, cfgd-test
 # RBAC, and orphaned CRD instances off the GHA critical path. See
 # /db/manifests/k3s/namespaces/cfgd-system/e2e-cleanup-cronjob.yaml.
@@ -35,14 +32,14 @@ kubectl cluster-info >/dev/null 2>&1 || {
     exit 1
 }
 
-# --- Step 1b: Pre-flight permission checks ---
+# --- Pre-flight permission checks ---
 # RBAC is managed by ArgoCD (see /db/manifests/k3s/namespaces/cfgd-system/e2e-rbac.yaml).
 # This script only verifies the runner SA has what it needs; it does NOT apply RBAC.
 ensure_namespace cfgd-system
 
-# --- Step 1c: Serialize on shared cluster state via a coordination Lease ---
+# --- Serialize on shared cluster state via a coordination Lease ---
 # Two near-simultaneous setups mutate the same cluster-scoped state (CRDs,
-# webhooks, the singleton operator/server deployments, the PR install's
+# webhooks, the singleton operator deployment, the PR install's
 # CSIDriver). A coordination.k8s.io/Lease named cfgd-e2e-setup serializes
 # them: the holder identity is GITHUB_RUN_ID and a background renewer advances
 # renewTime every third of the duration. If the holder dies, renewTime stops
@@ -248,31 +245,11 @@ if [ "$PREFLIGHT_OK" = "false" ]; then
 fi
 echo "  All pre-flight checks passed"
 
-# --- Step 2: Extract cfgd-gen-crds binary from the operator's build stage ---
+# --- Extract cfgd-gen-crds binary from the operator's build stage ---
 # Dockerfile.operator now compiles cfgd-operator AND cfgd-gen-crds in a
 # single `cargo build` pass; the `crds` stage exposes just the gen-crds
 # binary. Buildx extracts it into the local filesystem, which populates the
 # layer cache that the subsequent runtime build reuses (no second compile).
-# Registry-backed buildx cache flags for one image scope, or nothing when
-# caching is disabled (local runs). Emitted onto a buildx arg array via mapfile.
-# `type=registry` (a `:buildcache` tag beside the image in ghcr) replaces
-# `type=gha`: GitHub's Actions cache is a 10GB/repo LRU pool, and three
-# mode=max image caches evict one another between runs, so every push
-# recompiled the cargo-chef dependency layer from cold and overran the setup
-# timeout. The registry cache has no LRU eviction, so an unchanged dependency
-# layer restores across runs and the build stays warm.
-buildcache_args() {
-    [ "${SCCACHE_GHA_ENABLED:-}" = "true" ] || return 0
-    local ref
-    ref="$(e2e_image_repo "$1"):buildcache"
-    # ignore-error: the cache export is an optimization, and a registry-side
-    # blob rejection during it aborts an otherwise-successful build, which
-    # fails setup, which cascades every E2E suite to "skipped" without a
-    # single test having run. A cold next build is the correct penalty.
-    printf '%s\n' "--cache-from" "type=registry,ref=${ref}" \
-                  "--cache-to" "type=registry,ref=${ref},mode=max,ignore-error=true"
-}
-
 echo "Extracting cfgd-gen-crds from Dockerfile.operator..."
 mkdir -p "$REPO_ROOT/target/release"
 crds_args=(buildx build --target crds
@@ -282,7 +259,7 @@ mapfile -t _crds_cache < <(buildcache_args cfgd-operator)
 crds_args+=("${_crds_cache[@]}")
 docker "${crds_args[@]}" "$REPO_ROOT"
 
-# --- Step 3: Build and push images ---
+# --- Build and push images ---
 # Pre-pull base images so the Dockerfile `FROM`s hit the local cache. If
 # docker.io rate-limits this runner (HTTP 429), fall back to mirror.gcr.io and retag
 # under the bare name so `FROM debian:bookworm-slim` resolves locally.
@@ -402,8 +379,25 @@ declare -A IMAGE_BUILT
 # stops when the registry does not hold it, since a deploy of that reference
 # could not pull.
 use_overridden_image() {
-    local ref
+    local ref source
     ref="$(e2e_image "$1")"
+    if e2e_image_copied_from_release "$1"; then
+        source="$(e2e_image_repo --release "$1"):$(e2e_image_tag "$1")"
+        if ! docker manifest inspect "$source" >/dev/null 2>&1; then
+            echo "ERROR: $source is not in the registry. Its tag comes from an override, so setup copies it as it is and never builds it." >&2
+            exit 1
+        fi
+        echo "  COPY ${1}: $source -> $ref (Crossplane installs one Function per package repository, and the release repository is the one ArgoCD's Function installs from)"
+        e2e_push copy "$ref" "$source"
+        local want got
+        want="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$source")"
+        got="$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$ref")"
+        if [ -z "$want" ] || [ "$want" != "$got" ]; then
+            echo "ERROR: the copy of $source at $ref has digest '${got}', want '${want}'" >&2
+            exit 1
+        fi
+        echo "  COPY ${1}: $ref carries $source's digest $want"
+    fi
     if ! docker manifest inspect "$ref" >/dev/null 2>&1; then
         echo "ERROR: $ref is not in the registry. Its tag comes from an override, so setup uses it as it is and never builds it." >&2
         exit 1
@@ -436,7 +430,7 @@ build_and_push() {
             if [ "$retag_latest" = "true" ]; then
                 docker pull "$ref" >/dev/null 2>&1 || true
                 docker tag "$ref" "$latest" 2>/dev/null || true
-                docker push "$latest" 2>/dev/null || true
+                e2e_push docker "$latest" 2>/dev/null || true
             fi
             IMAGE_BUILT[$image]="false"
             return 0
@@ -446,10 +440,10 @@ build_and_push() {
 
     echo "  BUILD ${image}..."
     build_image "$dockerfile" "$ref" "$context" "$scope"
-    docker push "$ref"
+    e2e_push docker "$ref"
     if [ "$retag_latest" = "true" ]; then
         docker tag "$ref" "$latest"
-        docker push "$latest"
+        e2e_push docker "$latest"
     fi
     IMAGE_BUILT[$image]="true"
 }
@@ -477,7 +471,7 @@ else
     echo "  BUILD function-cfgd..."
     build_image "$REPO_ROOT/function-cfgd/Dockerfile" \
         "$FUNCTION_IMAGE" "$REPO_ROOT/function-cfgd" function-cfgd
-    docker push "$FUNCTION_IMAGE"
+    e2e_push docker "$FUNCTION_IMAGE"
     FUNCTION_DECISION="build"
 fi
 
@@ -523,12 +517,12 @@ if [ "$FUNCTION_DECISION" = "build" ]; then
         --package-root="$REPO_ROOT/function-cfgd/package" \
         --embed-runtime-image="$FUNCTION_IMAGE" \
         -o "$XPKG_OUT"
-    crossplane xpkg push "$FUNCTION_IMAGE" -f "$XPKG_OUT"
+    e2e_push xpkg "$FUNCTION_IMAGE" -f "$XPKG_OUT"
 fi
 
-# (Namespace and RBAC already created in Step 1b above)
+# (Namespace and RBAC already created by the pre-flight permission checks above)
 
-# --- Step 4: Check the PR's CRDs against the cluster's ---
+# --- Check the PR's CRDs against the cluster's ---
 echo "Comparing the PR's CRDs with the cluster's..."
 CRD_YAML=$("$REPO_ROOT/target/release/cfgd-gen-crds")
 if [ -z "$CRD_YAML" ]; then
@@ -537,60 +531,27 @@ if [ -z "$CRD_YAML" ]; then
 fi
 printf '%s\n' "$CRD_YAML" | check_pr_crds || exit 1
 
-# --- Step 5: Apply cert-manager webhook TLS ---
+# --- Apply cert-manager webhook TLS ---
 echo "Applying webhook TLS (cert-manager)..."
 kubectl apply -f "$SCRIPT_DIR/manifests/e2e-webhook-tls.yaml"
 
-# --- Step 6: Install the PR's operator and CSI driver ---
+# --- Install the PR's operator and CSI driver ---
 # The live release in cfgd-system runs whatever its owner pins, so this run's
 # operator and CSI images are installed as a second release beside it. That
 # release watches, validates and injects only for objects and namespaces that
 # carry this run's label, and registers its own CSIDriver.
 echo "Installing the PR operator and CSI driver ($E2E_INSTALL_RELEASE in $E2E_INSTALL_NS)..."
 
-# Every run's install registers the same CSIDriver name, and Helm's
-# release-namespace annotation says whose it is. An owner whose namespace is
-# gone died without uninstalling, so its CSIDriver is removed.
-if ! csi_driver_obj=$(kubectl get csidriver "$CSI_DRIVER_NAME" --ignore-not-found -o name); then
-    echo "ERROR: could not read csidriver/$CSI_DRIVER_NAME. Check that the runner can get csidrivers, then rerun setup." >&2
-    exit 1
-fi
-if [ -n "$csi_driver_obj" ]; then
-    if ! csi_owner_ns=$(kubectl get csidriver "$CSI_DRIVER_NAME" \
-        -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-namespace}'); then
-        echo "ERROR: could not read the Helm owner of csidriver/$CSI_DRIVER_NAME. Check that the runner can get csidrivers, then rerun setup." >&2
-        exit 1
-    fi
-    if [ -z "$csi_owner_ns" ]; then
-        {
-            echo "ERROR: csidriver/$CSI_DRIVER_NAME exists and no Helm release owns it, so the PR install cannot take it over."
-            echo "  Delete it (kubectl delete csidriver $CSI_DRIVER_NAME) and rerun setup."
-        } >&2
-        exit 1
-    fi
-    if [ "$csi_owner_ns" != "$E2E_INSTALL_NS" ]; then
-        if ! csi_owner_ns_phase=$(kubectl get namespace "$csi_owner_ns" --ignore-not-found \
-            -o jsonpath='{.status.phase}'); then
-            echo "ERROR: could not check whether namespace $csi_owner_ns, which owns csidriver/$CSI_DRIVER_NAME, still exists. Check that the runner can get namespaces, then rerun setup." >&2
-            exit 1
-        fi
-        if [ "$csi_owner_ns_phase" = "Terminating" ]; then
-            echo "ERROR: namespace $csi_owner_ns, which owns csidriver/$CSI_DRIVER_NAME, is being deleted; rerun setup once it is gone" >&2
-            exit 1
-        fi
-        if [ -n "$csi_owner_ns_phase" ]; then
-            {
-                echo "ERROR: $CSI_DRIVER_NAME belongs to the live install in $csi_owner_ns; one PR install runs at a time"
-                echo "  Rerun setup once that run has finished. If that run is dead, delete namespace $csi_owner_ns and csidriver/$CSI_DRIVER_NAME first."
-            } >&2
-            exit 1
-        fi
-        echo "  csidriver/$CSI_DRIVER_NAME was left by an install in $csi_owner_ns, which no longer exists; deleting it"
-        if ! kubectl delete csidriver "$CSI_DRIVER_NAME"; then
-            echo "ERROR: could not delete the leftover csidriver/$CSI_DRIVER_NAME. Delete it by hand and rerun setup." >&2
-            exit 1
-        fi
-    fi
+# Every run's install registers the same CSIDriver name, so one an earlier
+# install left, under this run's id or another, is cleared first.
+if ! claim_csidriver; then exit 1; fi
+
+# A local run's id is recorded once no other install stands in its way, so a
+# setup refused above leaves the record naming the install still on the
+# cluster, which the teardown then removes.
+if [ -z "${GITHUB_RUN_ID:-}" ]; then
+    mkdir -p "$(dirname "$E2E_LOCAL_RUN_ID_FILE")"
+    printf '%s\n' "$E2E_RUN_ID" > "$E2E_LOCAL_RUN_ID_FILE"
 fi
 
 # The subshell lets the namespace helper act on the install namespace without
@@ -628,11 +589,23 @@ if ! helm upgrade --install "$E2E_INSTALL_RELEASE" "$REPO_ROOT/chart/cfgd" -n "$
     --set "csiDriver.image.repository=$(e2e_image_repo cfgd-csi)" \
     --set "csiDriver.image.tag=$(e2e_image_tag cfgd-csi)" \
     --set-string "csiDriver.name=$CSI_DRIVER_NAME" \
+    --set "deviceGateway.port=$E2E_GATEWAY_PORT" \
+    --set-string "deviceGateway.apiKey=$E2E_GATEWAY_API_KEY" \
     --set-string "operator.watchLabelSelector=cfgd.io/e2e-run=${E2E_RUN_ID}" \
     --set-json "webhook.objectSelector={\"matchLabels\":{\"cfgd.io/e2e-run\":\"${E2E_RUN_ID}\"}}" \
     --set-json "mutatingWebhook.namespaceSelector={\"matchExpressions\":[{\"key\":\"cfgd.io/inject-modules\",\"operator\":\"In\",\"values\":[\"true\"]},{\"key\":\"cfgd.io/e2e-run\",\"operator\":\"In\",\"values\":[\"${E2E_RUN_ID}\"]}]}" \
     --wait --timeout=180s; then
-    echo "ERROR: helm upgrade --install $E2E_INSTALL_RELEASE in $E2E_INSTALL_NS failed. Read the Helm error above and the pods in $E2E_INSTALL_NS (kubectl get pods -n $E2E_INSTALL_NS), fix the cause and rerun setup." >&2
+    # A released operator at the chart's pin can still predate templates HEAD
+    # changed since that release, so the message names both the image the
+    # Deployment runs and the pin for either cause.
+    pr_operator_image="$(running_image deployment "$E2E_OPERATOR_DEPLOY" operator "$E2E_INSTALL_NS")"
+    operator_pin="$(chart_image_pins "$REPO_ROOT/chart/cfgd" 2>/dev/null | sed -n 's|.*/cfgd-operator:||p')" || true
+    {
+        echo "ERROR: helm upgrade --install $E2E_INSTALL_RELEASE in $E2E_INSTALL_NS failed."
+        echo "  deployment/$E2E_OPERATOR_DEPLOY runs $pr_operator_image; chart/cfgd pins cfgd-operator ${operator_pin:-(unreadable)}."
+        echo "  A released operator, the pinned one included, ships only what its release tag holds, and this chart can need more. For a released image, run the suites from a checkout of the release tag that shipped it (tests/e2e/README.md), or drop the operator's tag override so setup builds this checkout."
+        echo "  For an image built from this checkout, read the Helm error above and the pods in $E2E_INSTALL_NS (kubectl get pods -n $E2E_INSTALL_NS), fix the cause and rerun setup."
+    } >&2
     exit 1
 fi
 
@@ -655,6 +628,13 @@ for pr_webhook in "validatingwebhookconfiguration/$E2E_VALIDATING_WEBHOOK" \
     fi
 done
 
+# Helm waits for ready operator pods, and readiness leaves the gateway out, so
+# the gateway Service has an endpoint only once the lease holder's gateway
+# accepts and labels its pod.
+if ! wait_for_service_endpoints "$E2E_INSTALL_NS" "$E2E_GATEWAY_SVC" 120; then
+    echo "ERROR: service/$E2E_GATEWAY_SVC in $E2E_INSTALL_NS has no endpoint after 120s, so no operator pod carries $E2E_GATEWAY_LEADER_LABEL=true. The install runs $(e2e_image cfgd-operator), which must set that label once it holds the lease. Read the lease holder's log (kubectl logs -n $E2E_INSTALL_NS -l $E2E_OPERATOR_PODS --prefix --tail=50), fix the cause and rerun setup." >&2
+    exit 1
+fi
 if ! wait_for_daemonset "$E2E_INSTALL_NS" "$E2E_CSI_DS" 120; then
     echo "ERROR: daemonset/$E2E_CSI_DS in $E2E_INSTALL_NS is not ready after 120s. Read the description above, fix the cause and rerun setup." >&2
     exit 1
@@ -673,11 +653,11 @@ fi
 echo "  PR operator runs $pr_operator_image"
 echo "  PR CSI driver runs $pr_csi_image"
 
-# --- Step 7: Update operator image ---
+# --- Update operator image ---
 echo "Updating operator image..."
-# ArgoCD owns the shared cluster's operator and gateway Deployments and runs
-# the release /db/manifests pins, reverting anything applied here, so nothing
-# this run builds reaches them and a restart would only re-pull that release.
+# ArgoCD owns the shared cluster's operator Deployment and runs the release
+# /db/manifests pins, reverting anything applied here, so nothing this run
+# builds reaches it and a restart would only re-pull that release.
 ARGOCD_MANAGED=false
 argocd_rc=0
 argocd_owner deployment cfgd-operator cfgd-system "rerun setup" || argocd_rc=$?
@@ -688,43 +668,25 @@ case "$argocd_rc" in
 esac
 
 if [ "$ARGOCD_MANAGED" = "true" ]; then
-    for deploy in cfgd-operator cfgd-server; do
-        echo "  deployment/$deploy is managed by ArgoCD and runs $(running_image deployment "$deploy" cfgd-operator)"
-    done
-    warn_override_unused cfgd-operator ArgoCD deployment cfgd-server cfgd-operator
+    echo "  deployment/cfgd-operator is managed by ArgoCD and runs $(running_image deployment cfgd-operator cfgd-operator)"
 elif [ -n "${CFGD_DEPLOY_MANIFESTS:-}" ] && [ -d "$CFGD_DEPLOY_MANIFESTS" ]; then
-    # A tree `task deploy:operator` applied owns these Deployments, so setup
-    # leaves their spec alone. They name the :latest tag this run pushes, and a
-    # restart is what makes them pull a rebuilt image. Skipping it when the
+    # A tree `task deploy:operator` applied owns this Deployment, so setup
+    # leaves its spec alone. It names the :latest tag this run pushes, and a
+    # restart is what makes it pull a rebuilt image. Skipping it when the
     # image was not rebuilt is the bulk of the no-source-change time saving.
-    warn_override_unused cfgd-operator "the tree at $CFGD_DEPLOY_MANIFESTS" \
-        deployment cfgd-server cfgd-operator
     if [ "${IMAGE_BUILT[cfgd-operator]:-true}" != "true" ]; then
-        echo "  cfgd-operator image unchanged: skipping operator/server rollout restart"
-    else
-    echo "  Deployments applied from $CFGD_DEPLOY_MANIFESTS: restarting to pull :latest..."
-
-    for deploy in cfgd-operator cfgd-server; do
-        if kubectl get deployment "$deploy" -n cfgd-system >/dev/null 2>&1; then
-            kubectl rollout restart "deployment/$deploy" -n cfgd-system 2>/dev/null || true
-            # Wait for old pods to terminate (handles RWO PVC conflicts)
-            kubectl rollout status "deployment/$deploy" -n cfgd-system --timeout=120s 2>/dev/null || {
-                echo "  Rollout stuck for $deploy: deleting old pods to release PVC..."
-                kubectl delete pods -n cfgd-system -l "app=$deploy" --ignore-not-found --grace-period=5 --wait=false 2>/dev/null || true
-                kubectl rollout status "deployment/$deploy" -n cfgd-system --timeout=120s 2>/dev/null || true
-            }
-        fi
-    done
+        echo "  cfgd-operator image unchanged: skipping operator rollout restart"
+    elif kubectl get deployment cfgd-operator -n cfgd-system >/dev/null 2>&1; then
+        echo "  Deployment applied from $CFGD_DEPLOY_MANIFESTS: restarting to pull :latest..."
+        restart_deployment cfgd-system cfgd-operator 120 || exit 1
     fi
 else
     echo "  Applying E2E manifests..."
     sed "s|IMAGE_PLACEHOLDER|$(e2e_image cfgd-operator)|g" \
         "$SCRIPT_DIR/operator/manifests/operator-deployment.yaml" | kubectl apply -f -
-    sed "s|IMAGE_PLACEHOLDER|$(e2e_image cfgd-operator)|g" \
-        "$SCRIPT_DIR/node/manifests/cfgd-server.yaml" | kubectl apply -f -
 fi
 
-# --- Step 8: Apply webhook configurations ---
+# --- Apply webhook configurations ---
 # The release's webhooks leave every object and namespace carrying a run label
 # to that run's install. Setup can only keep that scoping on objects it owns: an
 # object ArgoCD tracks gets reverted on the next sync, so setup stops there.
@@ -933,33 +895,11 @@ WEBHOOKEOF
 kubectl apply -f "$WEBHOOK_FILE"
 rm -f "$WEBHOOK_FILE"
 
-# --- Step 9: Wait for all components ---
+# --- Wait for all components ---
 echo "Waiting for components..."
 wait_for_deployment cfgd-system cfgd-operator 120
-wait_for_deployment cfgd-system cfgd-server 120
 
-# --- Step 10: Reset gateway DB for clean E2E state ---
-# Call the admin reset endpoint to wipe stale device/event data from prior runs.
-# This is safe: the endpoint is behind admin auth and only deletes data rows,
-# leaving the SQLite file in place (an rm -f on the live DB corrupts its Longhorn volume).
-GW_API_KEY=$(kubectl get deployment cfgd-server -n cfgd-system \
-    -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="CFGD_API_KEY")].value}' 2>/dev/null || echo "")
-if [ -n "$GW_API_KEY" ]; then
-    # Port-forward to gateway, reset, then clean up
-    RESET_RESP=""
-    if PF_PID=$(port_forward cfgd-system svc/cfgd-server 18099 8080); then
-        RESET_RESP=$(curl -sf -X POST "http://localhost:18099/api/v1/admin/reset" \
-            -H "Authorization: Bearer $GW_API_KEY" 2>/dev/null || echo "")
-        stop_port_forward "$PF_PID"
-    fi
-    if [ -n "$RESET_RESP" ]; then
-        echo "  Gateway DB reset: $RESET_RESP"
-    else
-        echo "  WARN: Gateway DB reset failed (endpoint may not exist yet)"
-    fi
-fi
-
-# --- Step 11: Record last-green SHA per image ---
+# --- Record last-green SHA per image ---
 # Reached only after every prior step succeeded (set -e). Persisting HEAD as the
 # last-green SHA here is what lets the NEXT run's image_decision skip unchanged
 # images. Best-effort writes: a ConfigMap write failure only forces a rebuild
@@ -975,11 +915,9 @@ fi
 
 echo ""
 echo "=== E2E Setup Complete ==="
-echo "  Operator:  $(kubectl get pods -n cfgd-system -l app=cfgd-operator -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo 'unknown')"
-echo "  Gateway:   $(kubectl get pods -n cfgd-system -l app=cfgd-server -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo 'unknown')"
+echo "  Operator:  $(kubectl get pods -n cfgd-system -l app=cfgd-operator -o jsonpath='{.items[*].status.phase}' 2>/dev/null || echo 'unknown')"
 echo "  CSI:       $(kubectl get ds -n cfgd-system -l app.kubernetes.io/component=csi-driver -o jsonpath='{.items[0].status.numberReady}' 2>/dev/null || echo 'N/A') ready"
 echo "  Running:   operator $(running_image deployment cfgd-operator cfgd-operator)"
-echo "             gateway $(running_image deployment cfgd-server cfgd-operator)"
 echo "             csi $(running_image daemonset cfgd-csi-csi cfgd-csi)"
 echo "  PR:        $E2E_INSTALL_RELEASE in $E2E_INSTALL_NS, CSI driver $CSI_DRIVER_NAME"
 echo "             operator $(running_image deployment "$E2E_OPERATOR_DEPLOY" operator "$E2E_INSTALL_NS")"

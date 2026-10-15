@@ -1,0 +1,10 @@
+# Every per-user directory derives from the home `cfgd_core::home_dir` reads.
+# These find a home through the passwd database or the Windows known-folder
+# API when HOME is unset, which config discovery and `~` expansion cannot see;
+# `user_base_dirs` in crates/cfgd-core/src/util/paths.rs is the one caller.
+disallowed-methods = [
+    { path = "std::env::home_dir", reason = "use cfgd_core::home_dir, the one home every per-user path derives from" },
+    { path = "directories::BaseDirs::new", reason = "use user_base_dirs, gated on the one home" },
+    { path = "directories::UserDirs::new", reason = "derive from cfgd_core::home_dir" },
+    { path = "directories::ProjectDirs::from", reason = "derive from cfgd_core::home_dir" },
+]

@@ -1,4 +1,8 @@
 {
+  "cacheDir": {
+    "accessible": true,
+    "message": null
+  },
   "config": {
     "error": null,
     "name": "test-host",
@@ -7,6 +11,10 @@
     "valid": true
   },
   "git": true,
+  "home": {
+    "refusal": null,
+    "resolved": true
+  },
   "modules": [
     {
       "error": null,
@@ -55,6 +63,10 @@
     "sopsConfigExists": true,
     "sopsConfigPath": "/home/test/.config/cfgd/.sops.yaml",
     "sopsVersion": "3.8.1"
+  },
+  "stateStore": {
+    "accessible": true,
+    "message": null
   },
   "systemConfigurators": [
     {

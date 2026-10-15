@@ -1017,3 +1017,61 @@ fn the_widen_refuses_a_symlink_instead_of_chmodding_what_it_points_at() {
         "the file the link points at must keep its mode"
     );
 }
+
+/// Each configurator that expands a `~` path answers the home question from
+/// the resolution its `diff` uses: a declared `~` path refuses naming its own
+/// role, and an absolute one asks for no home.
+#[test]
+#[serial_test::serial]
+fn every_configurator_reading_a_home_path_refuses_it_with_no_home() {
+    let _home = [
+        cfgd_core::test_helpers::EnvVarGuard::set("HOME", ""),
+        cfgd_core::test_helpers::EnvVarGuard::set("USERPROFILE", ""),
+        cfgd_core::test_helpers::EnvVarGuard::set("XDG_CONFIG_HOME", ""),
+    ];
+    let yaml = |text: &str| serde_yaml::from_str::<serde_yaml::Value>(text).unwrap();
+    let role_of = |c: &dyn SystemConfigurator, desired: &str| match c.home_refusal(&yaml(desired)) {
+        Some(cfgd_core::errors::StateError::HomeUnresolved { role, .. }) => Some(role),
+        _ => None,
+    };
+    let cases: &[(&dyn SystemConfigurator, &str, Option<&str>, &str)] = &[
+        (
+            &SshKeysConfigurator,
+            "- name: k",
+            Some("SSH key path"),
+            "- name: k\n  path: /srv/k",
+        ),
+        (
+            &SystemdUnitConfigurator::default(),
+            "- name: x.service\n  unitFile: ~/x.service",
+            Some("systemd unit file"),
+            "- name: x.service\n  unitFile: /srv/x.service",
+        ),
+        (
+            &KdeConfigConfigurator,
+            "kdeglobals:\n  General:\n    Name: v",
+            Some("KDE config file"),
+            "/srv/kdeglobals:\n  General:\n    Name: v",
+        ),
+        (
+            &LaunchAgentConfigurator,
+            "- name: com.example.agent\n  program: /bin/true",
+            Some("launch agent plist"),
+            "[]",
+        ),
+    ];
+    for (configurator, homeward, role, settled) in cases {
+        assert_eq!(
+            role_of(*configurator, homeward),
+            *role,
+            "{} over {homeward:?}",
+            configurator.name()
+        );
+        assert_eq!(
+            role_of(*configurator, settled),
+            None,
+            "{} over {settled:?}",
+            configurator.name()
+        );
+    }
+}

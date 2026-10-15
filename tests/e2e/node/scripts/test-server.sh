@@ -21,21 +21,20 @@ for f in "$FIXTURES/profiles/"*.yaml; do
     cp_to_pod "$f" "/etc/cfgd/profiles/$(basename "$f")"
 done
 
-SERVER_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8080"
-HEALTH_URL="http://cfgd-server.cfgd-system.svc.cluster.local:8081"
-# Admin API key must match CFGD_API_KEY on the server deployment
-GW_API_KEY="${CFGD_E2E_API_KEY:-cfgd-e2e-admin-key}"
+SERVER_URL="$E2E_GATEWAY_URL"
+GW_API_KEY="$E2E_GATEWAY_API_KEY"
 echo "Device gateway URL: $SERVER_URL"
 
-# Verify the device gateway is reachable from the test pod through the health
-# endpoint, since the API requires auth.
+# Verify the device gateway is reachable from the test pod through its
+# unauthenticated enrollment discovery route, since the rest of the API
+# requires auth.
 echo "Verifying device gateway reachability from test pod..."
-if ! wait_for_pod_url "${HEALTH_URL}/readyz" 60; then
+if ! wait_for_pod_url "${SERVER_URL}/api/v1/enroll/info" 60; then
     echo "ERROR: device gateway not reachable after 60s" >&2
     exit 1
 fi
 
-DEVICE_ID="e2e-test-$(date +%s)"
+gateway_device DEVICE_ID "e2e-test-$(date +%s)-${E2E_RUN_ID}"
 
 # =================================================================
 # T30: cfgd checkin succeeds
@@ -182,28 +181,45 @@ fi
 # =================================================================
 begin_test "T36: Compliance data included in checkin"
 
-# Create a config with compliance enabled
+# A config whose run yields three distinct, non-zero counts and a non-empty
+# list of failing checks: two declared files whose targets are missing
+# (violations), three watch paths that exist (compliant) and one that does not
+# (a warning).
 exec_in_pod bash -c 'cat > /etc/cfgd/e2e-compliance-checkin.yaml << "INNEREOF"
 apiVersion: cfgd.io/v1alpha1
 kind: Config
 metadata:
   name: e2e-compliance-checkin
 spec:
-  profile: k8s-worker-minimal
+  profile: e2e-compliance-checkin
   compliance:
     enabled: true
     scope:
       files: true
       packages: false
-      system: true
+      system: false
       secrets: false
+      watchPaths:
+        - /etc
+        - /usr
+        - /var
+        - /etc/cfgd-e2e-t36/watched-missing
+INNEREOF'
+exec_in_pod bash -c 'cat > /etc/cfgd/profiles/e2e-compliance-checkin.yaml << "INNEREOF"
+apiVersion: cfgd.io/v1alpha1
+kind: Profile
+metadata:
+  name: e2e-compliance-checkin
+spec:
+  files:
+    managed:
+      - source: files/t36-a.conf
+        target: /etc/cfgd-e2e-t36/missing-a.conf
+      - source: files/t36-b.conf
+        target: /etc/cfgd-e2e-t36/missing-b.conf
 INNEREOF'
 
-# Copy profiles for this config (reuse existing profiles)
-exec_in_pod bash -c 'ls /etc/cfgd/profiles/*.yaml > /dev/null 2>&1' || \
-    cp_to_pod "$FIXTURES/profiles/k8s-worker-minimal.yaml" /etc/cfgd/profiles/k8s-worker-minimal.yaml 2>/dev/null || true
-
-COMPLIANCE_DEVICE_ID="e2e-compliance-$(date +%s)"
+gateway_device COMPLIANCE_DEVICE_ID "e2e-compliance-node-$(date +%s)-${E2E_RUN_ID}"
 
 RC=0
 OUTPUT=$(exec_in_pod cfgd \
@@ -217,23 +233,22 @@ OUTPUT=$(exec_in_pod cfgd \
 echo "  Compliance checkin output:"
 echo "$OUTPUT" | head -15 | sed 's/^/    /'
 
-# Verify the device now has complianceSummary in its API response
 DEVICE_RESP=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${COMPLIANCE_DEVICE_ID}" 2>/dev/null || echo "{}")
-echo "  Device API response (first 400 chars):"
-echo "$DEVICE_RESP" | head -c 400 | sed 's/^/    /'
-echo ""
+GOT=$(echo "$DEVICE_RESP" | jq -c '.complianceSummary' 2>/dev/null || echo "")
 
-if [ "$RC" -eq 0 ] \
-    && assert_contains "$DEVICE_RESP" "complianceSummary" \
-    && assert_contains "$DEVICE_RESP" "compliant" \
-    && assert_contains "$DEVICE_RESP" "violation"; then
+WANT=$(checkin_compliance_want /etc/cfgd/e2e-compliance-checkin.yaml) || WANT=""
+echo "  stored: $GOT"
+echo "  want:   $WANT"
+
+if [ "$RC" -eq 0 ] && [ -n "$WANT" ] \
+    && echo "$WANT" | jq -e '[.compliant, .warning, .violation] as [$c, $w, $v] | all($c, $w, $v; type == "number" and . > 0) and $c != $w and $w != $v and $c != $v' >/dev/null 2>&1 \
+    && echo "$DEVICE_RESP" | jq -e --argjson want "$WANT" '.complianceSummary == $want' >/dev/null 2>&1; then
     pass_test "T36"
 else
-    fail_test "T36" "Compliance summary not found in device API response (exit: $RC)"
+    fail_test "T36" "Stored complianceSummary differs from the pod's compliance run, or that run's counts are not three distinct non-zero numbers (exit: $RC)"
 fi
 
-# Cleanup the compliance config
-exec_in_pod rm -f /etc/cfgd/e2e-compliance-checkin.yaml 2>/dev/null || true
+exec_in_pod rm -f /etc/cfgd/e2e-compliance-checkin.yaml /etc/cfgd/profiles/e2e-compliance-checkin.yaml 2>/dev/null || true
 
 # --- Summary ---
 print_summary "Device Gateway Integration Tests"

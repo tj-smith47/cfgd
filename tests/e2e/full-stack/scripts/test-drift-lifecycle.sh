@@ -43,12 +43,12 @@ fi
 # =================================================================
 begin_test "FS-DRIFT-02: DriftAlert end-to-end propagation"
 
-kubectl apply -n cfgd-system -f - <<EOF
+kubectl apply -n "$E2E_INSTALL_NS" -f - <<EOF
 apiVersion: cfgd.io/v1alpha1
 kind: DriftAlert
 metadata:
   name: drift-${DEVICE_1}
-  namespace: cfgd-system
+  namespace: ${E2E_INSTALL_NS}
   labels:
     ${E2E_RUN_LABEL_YAML}
 spec:
@@ -64,7 +64,7 @@ EOF
 
 # Wait for DriftAlert to mark MC as drifted
 echo "  Waiting for drift propagation..."
-DRIFT_DETECTED=$(wait_for_k8s_field machineconfig "mc-${DEVICE_1}" cfgd-system \
+DRIFT_DETECTED=$(wait_for_k8s_field machineconfig "mc-${DEVICE_1}" "$E2E_INSTALL_NS" \
     '{.status.conditions[?(@.type=="DriftDetected")].status}' "True" 60) || true
 
 echo "  MC DriftDetected condition: ${DRIFT_DETECTED:-not set}"
@@ -80,15 +80,15 @@ fi
 # =================================================================
 begin_test "FS-DRIFT-03: Policy sees drifted MachineConfig"
 
-if wait_for_k8s_field machineconfig "mc-${DEVICE_1}" cfgd-system \
+if wait_for_k8s_field machineconfig "mc-${DEVICE_1}" "$E2E_INSTALL_NS" \
     '{.status.conditions[?(@.type=="DriftDetected")].status}' "True" 60 > /dev/null; then
-    DRIFT_REASON=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
+    DRIFT_REASON=$(kubectl get machineconfig "mc-${DEVICE_1}" -n "$E2E_INSTALL_NS" \
         -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].reason}' 2>/dev/null || echo "")
     echo "  MC DriftDetected status: True"
     echo "  MC DriftDetected reason: $DRIFT_REASON"
     pass_test "FS-DRIFT-03"
 else
-    DRIFT_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
+    DRIFT_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n "$E2E_INSTALL_NS" \
         -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
     fail_test "FS-DRIFT-03" "MC DriftDetected condition not True within 60s (status=$DRIFT_STATUS)"
 fi
@@ -99,13 +99,13 @@ fi
 begin_test "FS-DRIFT-04: Drift resolution lifecycle"
 
 # Delete DriftAlert
-kubectl delete driftalert "drift-${DEVICE_1}" -n cfgd-system --ignore-not-found 2>/dev/null || true
+kubectl delete driftalert "drift-${DEVICE_1}" -n "$E2E_INSTALL_NS" --ignore-not-found 2>/dev/null || true
 
 # Patch MC to trigger re-reconcile (changes generation). A patch that never
 # landed means the generation never moved, so the wait below would time out
 # against a controller that was given nothing to do.
 FS04_PATCH_RC=0
-kubectl patch machineconfig "mc-${DEVICE_1}" -n cfgd-system --type=merge \
+kubectl patch machineconfig "mc-${DEVICE_1}" -n "$E2E_INSTALL_NS" --type=merge \
     -p '{"spec":{"packages":[{"name":"vim"},{"name":"git"},{"name":"curl"},{"name":"wget"}]}}' \
     >/dev/null 2>&1 || FS04_PATCH_RC=$?
 echo "  MC patch rc: ${FS04_PATCH_RC}"
@@ -113,7 +113,7 @@ echo "  MC patch rc: ${FS04_PATCH_RC}"
 # Wait for MC to clear drift (controller may set status=False or remove the condition entirely)
 echo "  Waiting for drift to clear..."
 fs04_drift_cleared() {
-    DRIFT_VAL=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
+    DRIFT_VAL=$(kubectl get machineconfig "mc-${DEVICE_1}" -n "$E2E_INSTALL_NS" \
         -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo "")
     [ "$DRIFT_VAL" = "False" ] || [ -z "$DRIFT_VAL" ]
 }
@@ -122,10 +122,10 @@ if wait_until 60 1 "DriftDetected to clear on machineconfig/mc-${DEVICE_1}" fs04
     DRIFT_CLEARED=true
 fi
 
-READY_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
+READY_STATUS=$(kubectl get machineconfig "mc-${DEVICE_1}" -n "$E2E_INSTALL_NS" \
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "")
 
-echo "  MC driftDetected: $(kubectl get machineconfig "mc-${DEVICE_1}" -n cfgd-system \
+echo "  MC driftDetected: $(kubectl get machineconfig "mc-${DEVICE_1}" -n "$E2E_INSTALL_NS" \
     -o jsonpath='{.status.conditions[?(@.type=="DriftDetected")].status}' 2>/dev/null || echo 'unknown')"
 echo "  MC Ready status: $READY_STATUS"
 
@@ -210,21 +210,21 @@ sysctl_drift_case "FS-DRIFT-07" /etc/cfgd/e2e-compliance-cfgd.yaml net.ipv4.ip_f
 # =================================================================
 begin_test "FS-DRIFT-08: device checkin after compliance carries state"
 
-DEVICE_ID="e2e-compliance-$(date +%s)"
+gateway_device DEVICE_ID "e2e-compliance-$(date +%s)-${E2E_RUN_ID}"
 
-exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance --no-color > /dev/null 2>&1 || true
-CHECKIN_OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml checkin \
+WANT=$(checkin_compliance_want /etc/cfgd/e2e-compliance-cfgd.yaml) || WANT=""
+CHECKIN_OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml checkin \
     --server-url "$SERVER_URL" --api-key "$GW_API_KEY" --device-id "$DEVICE_ID" --no-color 2>&1) && CHECKIN_RC=0 || CHECKIN_RC=$?
 
-DEVICES=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "")
-if assert_contains "$DEVICES" "$DEVICE_ID"; then
+DEVICE_RESP=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null || echo "")
+GOT=$(echo "$DEVICE_RESP" | jq -c '.complianceSummary' 2>/dev/null || echo "")
+echo "  stored: $GOT"
+echo "  want:   $WANT"
+if [ "$CHECKIN_RC" -eq 0 ] && [ -n "$WANT" ] \
+    && echo "$DEVICE_RESP" | jq -e --argjson want "$WANT" '.complianceSummary == $want' >/dev/null 2>&1; then
     pass_test "FS-DRIFT-08"
 else
-    if [ "$CHECKIN_RC" -le 1 ]; then
-        pass_test "FS-DRIFT-08"
-    else
-        fail_test "FS-DRIFT-08" "Device not registered after compliance+checkin (exit $CHECKIN_RC): $CHECKIN_OUTPUT"
-    fi
+    fail_test "FS-DRIFT-08" "Stored complianceSummary $GOT differs from the pod's compliance run, $WANT (exit $CHECKIN_RC): $CHECKIN_OUTPUT"
 fi
 
 # =================================================================

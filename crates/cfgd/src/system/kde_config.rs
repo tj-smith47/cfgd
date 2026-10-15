@@ -68,22 +68,40 @@ fn read_kde_value(file: &str, group: &str, key: &str) -> String {
 
 /// Resolve a `--file` value the way KConfig does: an absolute path stands, a
 /// bare name lives under `$XDG_CONFIG_HOME` (`~/.config` when unset).
-fn user_config_path(file: &str) -> Option<PathBuf> {
-    let path = cfgd_core::expand_tilde(std::path::Path::new(file));
-    if path.is_absolute() {
-        return Some(path);
+fn user_config_path(file: &str) -> Result<PathBuf> {
+    // Judged on the raw string: `Path::is_absolute` reads `/srv/kdeglobals` as
+    // relative on Windows (no drive), which would send a rooted path under the
+    // user's config directory and refuse it on a host with no home.
+    if cfgd_schema::path_is_rooted(file).is_some() {
+        return Ok(PathBuf::from(file));
     }
+    let path = cfgd_core::expand_tilde(std::path::Path::new(file), KDE_FILE_ROLE)?;
+    if path.is_absolute() {
+        return Ok(path);
+    }
+    // home-env-ok: KConfig's own lookup, which takes any non-empty value
     let base = match std::env::var("XDG_CONFIG_HOME") {
         Ok(dir) if !dir.trim().is_empty() => PathBuf::from(dir),
-        _ => cfgd_core::expand_tilde(std::path::Path::new("~/.config")),
+        _ => cfgd_core::expand_tilde(std::path::Path::new("~/.config"), KDE_FILE_ROLE)?,
     };
-    Some(base.join(path))
+    Ok(base.join(path))
+}
+
+const KDE_FILE_ROLE: &str = "KDE config file";
+
+/// The groups of one declared file, when any of them declares a key: the files
+/// `diff` reads.
+fn declared_groups(groups: &serde_yaml::Value) -> Option<&serde_yaml::Mapping> {
+    groups.as_mapping().filter(|m| {
+        m.values()
+            .any(|keys| keys.as_mapping().is_some_and(|k| !k.is_empty()))
+    })
 }
 
 /// The system-wide half of the KConfig cascade (`$XDG_CONFIG_DIRS`, `/etc/xdg`
 /// when unset) for one file name.
 fn system_config_paths(file: &str) -> Vec<PathBuf> {
-    if std::path::Path::new(file).is_absolute() {
+    if cfgd_schema::path_is_rooted(file).is_some() || file.starts_with('~') {
         return Vec::new();
     }
     let dirs = match std::env::var("XDG_CONFIG_DIRS") {
@@ -132,19 +150,17 @@ fn entry_key(group: &str, key: &str) -> String {
     format!("{group}\u{1}{key}")
 }
 
-fn snapshot_rc_file(file: &str) -> RcSnapshot {
+fn snapshot_rc_file(file: &str) -> Result<RcSnapshot> {
     let immutable_anywhere = system_config_paths(file).iter().any(|path| {
         std::fs::read_to_string(path)
             .map(|body| body.contains("[$i]"))
             .unwrap_or(false)
     });
-    let body = user_config_path(file)
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .unwrap_or_default();
-    RcSnapshot {
+    let body = std::fs::read_to_string(user_config_path(file)?).unwrap_or_default();
+    Ok(RcSnapshot {
         entries: parse_rc(&body),
         trusted: !immutable_anywhere,
-    }
+    })
 }
 
 fn parse_rc(body: &str) -> HashMap<String, String> {
@@ -208,6 +224,15 @@ impl SystemConfigurator for KdeConfigConfigurator {
             || cfgd_core::command_available("kwriteconfig5")
     }
 
+    fn home_refusal(&self, desired: &serde_yaml::Value) -> Option<cfgd_core::errors::StateError> {
+        desired
+            .as_mapping()?
+            .iter()
+            .filter(|(_, groups)| declared_groups(groups).is_some())
+            .filter_map(|(file, _)| file.as_str())
+            .find_map(|file| cfgd_core::home_refusal_of(user_config_path(file)))
+    }
+
     fn required_tool(&self) -> Option<&'static str> {
         // The v6 binary alone: a host with neither copy gets the current
         // generation installed, and one already holding v5 answers available
@@ -231,23 +256,17 @@ impl SystemConfigurator for KdeConfigConfigurator {
                 Some(f) => f,
                 None => continue,
             };
-            let groups_map = match groups.as_mapping() {
-                // A file whose groups declare no keys has nothing to compare,
-                // so reading its rc file (and its whole XDG cascade) answers a
-                // question nobody asked. Unlike the sibling configurators' own
-                // guards this one saves file I/O rather than a spawn, so no
-                // shim can observe it.
-                Some(m)
-                    if m.values()
-                        .any(|keys| keys.as_mapping().is_some_and(|k| !k.is_empty())) =>
-                {
-                    m
-                }
-                _ => continue,
+            // A file whose groups declare no keys has nothing to compare, so
+            // reading its rc file (and its whole XDG cascade) answers a
+            // question nobody asked. This guard saves file I/O, where the
+            // sibling configurators' guards save a spawn, so no shim can
+            // observe it.
+            let Some(groups_map) = declared_groups(groups) else {
+                continue;
             };
             // One read of the rc file for every group and key declared under
             // it, instead of one `kreadconfig` spawn per key.
-            let snapshot = snapshot_rc_file(file);
+            let snapshot = snapshot_rc_file(file)?;
             for (group_key, keys) in groups_map {
                 let group = match group_key.as_str() {
                     Some(g) => g,
@@ -376,6 +395,27 @@ mod tests {
         \n\
         [General][Sub]\n\
         Nested=deep\n";
+
+    #[test]
+    fn a_rooted_file_stands_on_every_host_and_joins_no_cascade_directory() {
+        for file in [
+            "/srv/kdeglobals",
+            r"C:\Users\jane\kdeglobals",
+            r"\\share\kdeglobals",
+        ] {
+            assert_eq!(
+                user_config_path(file)
+                    .ok()
+                    .map(|p| p.to_string_lossy().into_owned()),
+                Some(file.to_string()),
+                "{file} is rooted, so KConfig reads it where it stands"
+            );
+            assert!(
+                system_config_paths(file).is_empty(),
+                "{file} is rooted, so no XDG_CONFIG_DIRS entry is joined to it"
+            );
+        }
+    }
 
     #[test]
     fn parsed_entries_answer_exactly_what_kreadconfig_answers() {

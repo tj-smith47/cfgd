@@ -358,7 +358,7 @@ YAML
 echo '#!/bin/sh' >"$OCI_DIR/bin/hello.sh"
 echo 'echo "hello from oci test"' >>"$OCI_DIR/bin/hello.sh"
 chmod +x "$OCI_DIR/bin/hello.sh"
-run "${C[@]}" module push "$OCI_DIR" --artifact "${REGISTRY}/cfgd-e2e/cli-oci-test:v1.0"
+run "${C[@]}" module push "$OCI_DIR" --artifact "$(e2e_scratch_ref "cli-oci-test:v1.0")"
 if assert_ok; then
     OCI_PUSH_OK=true
     pass_test "OCI01"
@@ -368,7 +368,7 @@ begin_test "OCI02: module pull"
 if [ "$OCI_PUSH_OK" = "true" ]; then
     OCI_PULL_DIR="$SCRATCH/oci-pull-test"
     mkdir -p "$OCI_PULL_DIR"
-    run "${C[@]}" module pull "${REGISTRY}/cfgd-e2e/cli-oci-test:v1.0" --dir "$OCI_PULL_DIR"
+    run "${C[@]}" module pull "$(e2e_scratch_ref "cli-oci-test:v1.0")" --dir "$OCI_PULL_DIR"
     if assert_ok && [ -f "$OCI_PULL_DIR/module.yaml" ]; then
         pass_test "OCI02"
     else fail_test "OCI02"; fi
@@ -378,7 +378,7 @@ fi
 
 begin_test "OCI03: module push --platform"
 if [ "$OCI_PUSH_OK" = "true" ]; then
-    run "${C[@]}" module push "$OCI_DIR" --artifact "${REGISTRY}/cfgd-e2e/cli-oci-platform:v1.0" --platform linux/amd64
+    run "${C[@]}" module push "$OCI_DIR" --artifact "$(e2e_scratch_ref "cli-oci-platform:v1.0")" --platform linux/amd64
     if assert_ok; then
         pass_test "OCI03"
     else fail_test "OCI03"; fi

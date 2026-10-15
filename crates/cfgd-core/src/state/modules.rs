@@ -147,6 +147,44 @@ impl StateStore {
         Ok(records)
     }
 
+    /// Every file every module has deployed, the rows of modules no longer
+    /// applied included, ordered by module then path.
+    pub fn module_file_manifest(&self) -> Result<Vec<ModuleFileRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT module_name, file_path, content_hash, strategy, last_applied
+             FROM module_file_manifest ORDER BY module_name, file_path",
+        )?;
+        let records = stmt
+            .query_map([], |row| {
+                Ok(ModuleFileRecord {
+                    module_name: row.get(0)?,
+                    file_path: row.get(1)?,
+                    content_hash: row.get(2)?,
+                    strategy: row.get(3)?,
+                    last_applied: row.get(4)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(records)
+    }
+
+    /// Delete the manifest rows named by `(module_name, file_path)` pairs, in
+    /// one transaction.
+    pub fn delete_module_file_rows(&self, rows: &[(&str, &str)]) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        self.in_transaction(|| {
+            let mut stmt = self.conn.prepare(
+                "DELETE FROM module_file_manifest WHERE module_name = ?1 AND file_path = ?2",
+            )?;
+            for (module_name, file_path) in rows {
+                stmt.execute(params![module_name, file_path])?;
+            }
+            Ok(())
+        })
+    }
+
     /// Whether any module has deployed the file at `file_path`.
     ///
     /// `file_path` is the [`crate::to_posix_fs_key`] form the manifest is

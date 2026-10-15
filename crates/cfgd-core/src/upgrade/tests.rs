@@ -2215,7 +2215,7 @@ mod cosign_verify_blob {
             run_cosign_verify_blob(&checksums, &bundle, None).expect_err("missing binary → Err");
         let msg = format!("{err}");
         assert!(
-            msg.contains("cosign invocation failed"),
+            msg.contains("failed to run cosign verify-blob"),
             "error prefixes with invocation context: {msg}"
         );
     }

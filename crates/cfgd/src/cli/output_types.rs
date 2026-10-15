@@ -641,6 +641,63 @@ pub struct DoctorOutput {
     pub modules: Vec<DoctorModuleCheck>,
     pub system_configurators: Vec<DoctorConfiguratorCheck>,
     pub profiles: Vec<DoctorProfileLayoutCheck>,
+    pub state_store: DoctorRootCheck,
+    pub cache_dir: DoctorRootCheck,
+    pub home: DoctorHomeCheck,
+}
+
+/// Whether a directory root this run's flags and scope name resolved through
+/// the resolver `apply` uses (`stateStore` also opens the store there). `apply`
+/// refuses to start without either, so an inaccessible root fails the doctor
+/// verdict; `message` carries the refusal in that case.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorRootCheck {
+    pub accessible: bool,
+    pub message: Option<String>,
+    /// Set on the state store's check alone: `false` when no store exists yet,
+    /// which `apply` creates, so the check still passes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created: Option<bool>,
+}
+
+impl DoctorRootCheck {
+    /// A root that resolved (and, for the state store, opened).
+    pub fn accessible() -> Self {
+        Self {
+            accessible: true,
+            message: None,
+            created: None,
+        }
+    }
+
+    /// A root `apply` would refuse on, with the refusal.
+    pub fn unavailable(message: String) -> Self {
+        Self {
+            accessible: false,
+            message: Some(message),
+            created: None,
+        }
+    }
+
+    /// A state store not created yet, which the first `apply` creates.
+    pub fn not_created() -> Self {
+        Self {
+            accessible: true,
+            message: None,
+            created: Some(false),
+        }
+    }
+}
+
+/// Whether a home directory resolved, and the refusal `apply` meets without
+/// one: `refusal` is set only when no home resolved and the desired state
+/// declares work under it, which is the one case that fails the verdict.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DoctorHomeCheck {
+    pub resolved: bool,
+    pub refusal: Option<String>,
 }
 
 /// Per-profile layout-form check: canonical bundle (`profiles/<name>/profile.yaml`)
@@ -700,6 +757,14 @@ pub struct DoctorSecretsCheck {
     pub sops_version: Option<String>,
     pub age_key_exists: bool,
     pub age_key_path: Option<String>,
+    /// Why the age key has no location, when the home its path needs does
+    /// not resolve.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub age_key_error: Option<String>,
+    /// Whether this run decrypts with that key, which makes a key with no
+    /// location a refusal.
+    #[serde(skip)]
+    pub age_key_blocks_run: bool,
     pub sops_config_exists: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sops_config_path: Option<String>,
@@ -2078,6 +2143,8 @@ mod tests {
                 sops_version: Some("3.8.0".to_string()),
                 age_key_exists: true,
                 age_key_path: Some("/home/u/.age".to_string()),
+                age_key_error: None,
+                age_key_blocks_run: false,
                 sops_config_exists: false,
                 sops_config_path: None,
                 providers: vec![DoctorProviderCheck {
@@ -2111,6 +2178,20 @@ mod tests {
                 path: Some("/etc/cfgd/profiles/work.yaml".to_string()),
                 error: None,
             }],
+            state_store: DoctorRootCheck {
+                accessible: false,
+                message: Some("no home directory found".to_string()),
+                created: None,
+            },
+            cache_dir: DoctorRootCheck {
+                accessible: false,
+                message: Some("no cache directory found".to_string()),
+                created: None,
+            },
+            home: DoctorHomeCheck {
+                resolved: false,
+                refusal: Some("no env file".to_string()),
+            },
         };
         let json = serde_json::to_value(&v).unwrap();
         assert_eq!(json["config"]["valid"], json!(true));
@@ -2121,6 +2202,14 @@ mod tests {
         assert_eq!(json["systemConfigurators"][0]["name"], json!("systemd"));
         assert_eq!(json["profiles"][0]["name"], json!("work"));
         assert_eq!(json["profiles"][0]["legacy"], json!(true));
+        assert_eq!(json["stateStore"]["accessible"], json!(false));
+        assert_eq!(
+            json["stateStore"]["message"],
+            json!("no home directory found")
+        );
+        assert_eq!(json["cacheDir"]["accessible"], json!(false));
+        assert_eq!(json["home"]["resolved"], json!(false));
+        assert_eq!(json["home"]["refusal"], json!("no env file"));
     }
 
     #[test]
@@ -2149,6 +2238,8 @@ mod tests {
             sops_version: Some("3.8.0".to_string()),
             age_key_exists: false,
             age_key_path: None,
+            age_key_error: None,
+            age_key_blocks_run: false,
             sops_config_exists: false,
             sops_config_path: None,
             providers: vec![],
@@ -2173,6 +2264,8 @@ mod tests {
             sops_version: None,
             age_key_exists: true,
             age_key_path: None,
+            age_key_error: None,
+            age_key_blocks_run: false,
             sops_config_exists: true,
             sops_config_path: Some("/etc/sops.yaml".to_string()),
             providers: vec![],

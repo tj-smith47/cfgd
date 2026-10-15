@@ -12,7 +12,7 @@ use crate::sha256_digest;
 use super::archive::extract_tar_gz;
 use super::auth::RegistryAuth;
 use super::sign::{VerifyOptions, verify_attestation, verify_signature};
-use super::transport::{authenticated_request, response_digest};
+use super::transport::{Missing, authenticated_request_if_present, get_present, response_digest};
 use super::{MEDIA_TYPE_OCI_MANIFEST, OciManifest, OciReference};
 
 /// The result of a successful [`pull_module`] call.
@@ -154,24 +154,20 @@ pub struct ArtifactFacts {
 
 /// Read an artifact's declared facts from its registry.
 ///
-/// A registry that answers the subject manifest is reachable, so only that
-/// read is fallible here: everything after it is a label the artifact either
-/// carries or does not.
+/// Only a `404` is an answer: a subject manifest the registry does not hold
+/// is [`OciError::ManifestNotFound`], an absent attestation tag is no
+/// attestation, and every other registry failure is an error.
 pub fn artifact_facts(artifact_ref: &str) -> Result<ArtifactFacts, OciError> {
     let oci_ref = OciReference::parse(artifact_ref)?;
     let auth = RegistryAuth::resolve(&oci_ref.registry);
     let agent = crate::http::http_agent(crate::http::HTTP_OCI_TIMEOUT);
 
     let (digest, doc) =
-        fetch_manifest_document(&agent, &oci_ref, auth.as_ref(), oci_ref.reference_str()).map_err(
-            |e| OciError::ManifestNotFound {
-                reference: format!("{oci_ref}: {e}"),
-            },
-        )?;
+        fetch_manifest_document(&agent, &oci_ref, auth.as_ref(), oci_ref.reference_str())?;
 
     Ok(ArtifactFacts {
         platforms: declared_platforms(&doc),
-        attestations: attached_attestations(&agent, &oci_ref, auth.as_ref(), &digest),
+        attestations: attached_attestations(&agent, &oci_ref, auth.as_ref(), &digest)?,
     })
 }
 
@@ -193,14 +189,12 @@ fn fetch_manifest_document(
         oci_ref.api_base(),
         oci_ref.repository,
     );
-    let resp = authenticated_request(
+    let resp = get_present(
         agent,
-        "GET",
         &url,
         auth,
         Some(&super::manifest_accept()),
-        None,
-        None,
+        Missing::Manifest(oci_ref),
     )?;
     let ManifestDocument { digest, doc, .. } = read_manifest_document(resp)?;
     Ok((digest, doc))
@@ -292,53 +286,51 @@ fn declared_platforms(doc: &serde_json::Value) -> Vec<String> {
 /// `cosign attest` pushes its DSSE envelopes as an ordinary manifest tagged
 /// `sha256-<hex>.att` beside the subject, one layer per attestation, each
 /// annotated with the predicate type it carries. An artifact nobody attested
-/// has no such tag and the registry says so — which is an answer, not a
-/// failure, and the reason this half is infallible: the subject manifest was
-/// already fetched, so the registry has proven itself reachable and readable.
+/// has no such tag, and the registry's `404` for it is an empty list. Any
+/// other registry failure is an error, because an empty list would replace
+/// the attestations a reader already recorded. A tag whose body is not a
+/// manifest carrying layers names no attestation.
 fn attached_attestations(
     agent: &ureq::Agent,
     oci_ref: &OciReference,
     auth: Option<&RegistryAuth>,
     digest: &str,
-) -> Vec<String> {
+) -> Result<Vec<String>, OciError> {
     let url = format!(
         "{}/{}/manifests/{}.att",
         oci_ref.api_base(),
         oci_ref.repository,
         digest.replace(':', "-"),
     );
-    let Ok(resp) = authenticated_request(
-        agent,
-        "GET",
-        &url,
-        auth,
-        Some(MEDIA_TYPE_OCI_MANIFEST),
-        None,
-        None,
-    ) else {
-        return Vec::new();
+    let Some(resp) =
+        authenticated_request_if_present(agent, "GET", &url, auth, Some(MEDIA_TYPE_OCI_MANIFEST))?
+    else {
+        return Ok(Vec::new());
     };
-    let Ok(body) = resp.into_body().read_to_string() else {
-        return Vec::new();
-    };
+    let body = resp
+        .into_body()
+        .read_to_string()
+        .map_err(|e| OciError::RequestFailed {
+            message: format!("cannot read attestation manifest body: {e}"),
+        })?;
     let Ok(doc) = serde_json::from_str::<serde_json::Value>(&body) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let Some(layers) = doc.get("layers").and_then(|l| l.as_array()) else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
 
     // Two attestations of one type are one type; first sighting keeps the
     // order cosign attached them in, oldest first.
     let mut seen = std::collections::HashSet::new();
-    layers
+    Ok(layers
         .iter()
         .filter_map(|layer| {
             let predicate = layer.get("annotations")?.get("predicateType")?.as_str()?;
             Some(super::sign::attestation_type_name(predicate))
         })
         .filter(|t| seen.insert(t.clone()))
-        .collect()
+        .collect())
 }
 
 /// The fallible half of [`pull_module`]: every step from the tag read
@@ -388,18 +380,13 @@ fn pull_module_inner(
         layer.digest,
     );
 
-    let resp = authenticated_request(
+    let resp = get_present(
         agent,
-        "GET",
         &blob_url,
         auth,
         Some("application/octet-stream"),
-        None,
-        None,
-    )
-    .map_err(|e| OciError::BlobNotFound {
-        digest: format!("{}: {e}", layer.digest),
-    })?;
+        Missing::Blob(&layer.digest),
+    )?;
 
     // Read blob data (cap at 512 MB to prevent OOM from malicious manifests)
     const MAX_BLOB_SIZE: u64 = 512 * 1024 * 1024;
@@ -483,19 +470,14 @@ fn fetch_pull_document(
         oci_ref.api_base(),
         oci_ref.repository,
     );
-    authenticated_request(
+    let resp = get_present(
         agent,
-        "GET",
         &url,
         auth,
         Some(&super::manifest_accept()),
-        None,
-        None,
-    )
-    .map_err(|e| OciError::ManifestNotFound {
-        reference: format!("{name}: {e}"),
-    })
-    .and_then(read_manifest_document)
+        Missing::Manifest(name),
+    )?;
+    read_manifest_document(resp)
 }
 
 /// The image manifest to pull out of `top`, the document the reference
@@ -582,11 +564,15 @@ fn parse_image_manifest(doc: serde_json::Value) -> Result<OciManifest, OciError>
 mod tests {
     use super::*;
     use crate::oci::archive::create_tar_gz;
-    use crate::oci::test_helpers::{create_test_module_dir, registry_from_url};
+    use crate::oci::test_helpers::{
+        create_test_module_dir, registry_from_url, serve_no_attestations,
+    };
     use crate::oci::{MEDIA_TYPE_MODULE_CONFIG, MEDIA_TYPE_MODULE_LAYER};
 
     #[test]
+    #[serial_test::serial]
     fn artifact_facts_read_the_annotation_of_a_single_platform_artifact() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let mut server = mockito::Server::new();
         let registry = registry_from_url(&server.url());
 
@@ -604,12 +590,15 @@ mod tests {
             )
             .create();
 
+        serve_no_attestations(&mut server, "test/onemod");
         let facts = artifact_facts(&format!("{registry}/test/onemod:v1")).unwrap();
         assert_eq!(facts.platforms, vec!["linux/amd64".to_string()]);
     }
 
     #[test]
+    #[serial_test::serial]
     fn artifact_facts_read_every_index_entry_in_order() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let mut server = mockito::Server::new();
         let registry = registry_from_url(&server.url());
 
@@ -635,6 +624,7 @@ mod tests {
             )
             .create();
 
+        serve_no_attestations(&mut server, "test/multimod");
         let facts = artifact_facts(&format!("{registry}/test/multimod:v1")).unwrap();
         assert_eq!(
             facts.platforms,
@@ -643,7 +633,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn two_platform_pushes_to_one_tag_read_back_as_both_platforms_in_push_order() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let store = crate::oci::test_helpers::ManifestStore::new("test/roundtrip");
         let amd64 = create_test_module_dir();
         let arm64 = create_test_module_dir();
@@ -673,6 +665,7 @@ mod tests {
         artifact: &str,
         platform: Option<&str>,
     ) -> Result<(String, PullOutcome), OciError> {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let out = tempfile::tempdir().unwrap();
         let outcome = pull_module(artifact, out.path(), PullChecks::default(), platform, None)?;
         let mark = std::fs::read_to_string(out.path().join("README.md")).unwrap();
@@ -680,7 +673,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn pull_of_an_index_extracts_the_entry_for_the_requested_platform() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let store = crate::oci::test_helpers::ManifestStore::new("test/pullidx");
         let artifact = store.artifact("v1");
         let amd = module_dir_marked("amd64 build");
@@ -717,7 +712,9 @@ mod tests {
     /// takes the first entry for its os and architecture, which is how a node
     /// asking for `linux/arm64` reads an index listing `linux/arm64/v8`.
     #[test]
+    #[serial_test::serial]
     fn pull_of_an_index_matches_the_variant_a_platform_names() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let store = crate::oci::test_helpers::ManifestStore::new("test/pullvariant");
         let artifact = store.artifact("v1");
         for platform in ["linux/arm/v6", "linux/arm/v7", "linux/arm64/v8"] {
@@ -751,7 +748,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn pull_of_an_index_with_no_platform_takes_the_hosts_entry() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let store = crate::oci::test_helpers::ManifestStore::new("test/pullhost");
         let artifact = store.artifact("v1");
         let other = module_dir_marked("other build");
@@ -764,7 +763,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn pull_of_an_index_without_the_platform_names_what_it_holds() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let store = crate::oci::test_helpers::ManifestStore::new("test/pullnone");
         let artifact = store.artifact("v1");
         for platform in ["linux/amd64", "linux/arm64"] {
@@ -793,7 +794,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn pull_of_a_single_manifest_takes_it_whatever_platform_is_asked() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let store = crate::oci::test_helpers::ManifestStore::new("test/pullone");
         let artifact = store.artifact("v1");
         let dir = module_dir_marked("only build");
@@ -812,7 +815,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn pull_refuses_a_malformed_platform_before_reading_the_tag() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let store = crate::oci::test_helpers::ManifestStore::new("test/pullbad");
         let artifact = store.artifact("v1");
         let dir = module_dir_marked("only build");
@@ -826,7 +831,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn pull_refuses_an_index_entry_the_registry_serves_under_another_digest() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let store = crate::oci::test_helpers::ManifestStore::new("test/pulllie");
         let artifact = store.artifact("v1");
         let dir = module_dir_marked("real build");
@@ -859,6 +866,7 @@ mod tests {
     /// Two platforms pushed to `v1` of a fresh store, answering the store,
     /// the artifact and the index digest the tag resolves to.
     fn two_platform_store(repo: &str) -> (crate::oci::test_helpers::ManifestStore, String, String) {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let store = crate::oci::test_helpers::ManifestStore::new(repo);
         let artifact = store.artifact("v1");
         let mut index = String::new();
@@ -886,6 +894,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn pull_verifies_the_digest_of_the_one_tag_read_it_extracts_from() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let shim = crate::test_helpers::CosignTestShim::builder()
             .with_argv_logging(true)
             .with_exit(0)
@@ -951,6 +960,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn pull_refuses_a_tag_whose_digest_header_names_other_bytes_before_any_check() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let shim = crate::test_helpers::CosignTestShim::builder()
             .with_argv_logging(true)
             .with_exit(0)
@@ -986,6 +996,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn pull_without_a_digest_header_checks_the_digest_of_the_bytes_it_read() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let shim = crate::test_helpers::CosignTestShim::builder()
             .with_argv_logging(true)
             .with_exit(0)
@@ -1018,6 +1029,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn pull_types_an_attestation_failure_apart_from_a_signature_failure() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let _shim = crate::test_helpers::CosignTestShim::builder()
             .with_exit(1)
             .with_stderr("no matching attestations")
@@ -1039,6 +1051,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn pull_names_the_entry_digest_an_index_points_at_when_it_is_missing() {
         let store = crate::oci::test_helpers::ManifestStore::new("test/pullgone");
         let artifact = store.artifact("v1");
@@ -1061,14 +1074,16 @@ mod tests {
         let entry = format!("{}@{missing}", artifact.trim_end_matches(":v1"));
         match &err {
             OciError::ManifestNotFound { reference } => {
-                assert!(reference.starts_with(&format!("{entry}: ")), "{reference}");
+                assert_eq!(reference, &entry);
             }
             other => panic!("expected ManifestNotFound, got {other:?}"),
         }
     }
 
     #[test]
+    #[serial_test::serial]
     fn pull_row_states_the_digest_platform_and_index_it_took() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let (_store, artifact, index) = two_platform_store("test/pullrow");
         let out = tempfile::tempdir().unwrap();
         let (printer, cap) = crate::output::Printer::for_test_doc();
@@ -1089,7 +1104,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn pull_row_of_a_single_manifest_states_its_annotated_platform() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let store = crate::oci::test_helpers::ManifestStore::new("test/pullrow1");
         let artifact = store.artifact("v1");
         let dir = module_dir_marked("only build");
@@ -1113,7 +1130,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn artifact_facts_of_an_artifact_declaring_no_platform_are_empty() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let mut server = mockito::Server::new();
         let registry = registry_from_url(&server.url());
 
@@ -1124,12 +1143,15 @@ mod tests {
             .with_body(serde_json::json!({ "schemaVersion": 2, "layers": [] }).to_string())
             .create();
 
+        serve_no_attestations(&mut server, "test/plainmod");
         let facts = artifact_facts(&format!("{registry}/test/plainmod:v1")).unwrap();
         assert!(facts.platforms.is_empty());
     }
 
     #[test]
+    #[serial_test::serial]
     fn artifact_facts_name_each_attestation_in_the_vocabulary_cosign_verifies_by() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let mut server = mockito::Server::new();
         let registry = registry_from_url(&server.url());
 
@@ -1177,12 +1199,15 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn artifact_facts_of_an_unattested_artifact_name_no_attestation() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let mut server = mockito::Server::new();
         let registry = registry_from_url(&server.url());
 
-        // No `.att` tag is mocked: an artifact nobody attested has none, and
-        // the registry's refusal to serve it is the answer "none".
+        // An artifact nobody attested has no `.att` tag, and the registry's
+        // 404 for it is the answer "none".
+        serve_no_attestations(&mut server, "test/baremod");
         server
             .mock("GET", "/v2/test/baremod/manifests/v1")
             .with_status(200)
@@ -1196,7 +1221,124 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
+    fn artifact_facts_report_an_unreachable_registry_as_a_request_failure() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
+        let err = artifact_facts("127.0.0.1:1/test/gonemod:v1").expect_err("nothing listens");
+        assert!(matches!(err, OciError::RequestFailed { .. }), "{err:?}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn artifact_facts_report_a_failed_attestation_read_as_an_error() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
+        let mut server = mockito::Server::new();
+        let registry = registry_from_url(&server.url());
+        server
+            .mock("GET", "/v2/test/attfail/manifests/v1")
+            .with_status(200)
+            .with_header("Content-Type", MEDIA_TYPE_OCI_MANIFEST)
+            .with_header("Docker-Content-Digest", "sha256:c0ffee")
+            .with_body(serde_json::json!({ "schemaVersion": 2, "layers": [] }).to_string())
+            .create();
+        let att = server
+            .mock("GET", "/v2/test/attfail/manifests/sha256-c0ffee.att")
+            .with_status(500)
+            .expect(1)
+            .create();
+
+        let err = artifact_facts(&format!("{registry}/test/attfail:v1"))
+            .expect_err("a 500 is not the answer \"no attestation\"");
+        att.assert();
+        assert!(matches!(err, OciError::RequestFailed { .. }), "{err:?}");
+    }
+
+    /// `pull_module` of `test/<repo>:v1` with no checks and no platform.
+    fn pull_plain(registry: &str, repo: &str) -> Result<PullOutcome, OciError> {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
+        let out = tempfile::tempdir().unwrap();
+        pull_module(
+            &format!("{registry}/{repo}:v1"),
+            out.path(),
+            PullChecks::default(),
+            None,
+            None,
+        )
+    }
+
+    /// The pull error for a tag whose manifest GET answers `status`.
+    fn pull_with_manifest_status(status: usize) -> OciError {
+        let mut server = mockito::Server::new();
+        let manifest = server
+            .mock("GET", "/v2/test/statusmod/manifests/v1")
+            .with_status(status)
+            .expect(1)
+            .create();
+        let err = pull_plain(&registry_from_url(&server.url()), "test/statusmod")
+            .expect_err("the manifest is not served");
+        manifest.assert();
+        err
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn pull_reports_an_unreachable_registry_as_a_request_failure() {
+        let err = pull_plain("127.0.0.1:1", "test/gonemod").expect_err("nothing listens");
+        assert!(matches!(err, OciError::RequestFailed { .. }), "{err:?}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn pull_reports_a_registry_500_on_the_manifest_as_a_request_failure() {
+        let err = pull_with_manifest_status(500);
+        assert!(matches!(err, OciError::RequestFailed { .. }), "{err:?}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn pull_reports_a_refused_credential_on_the_manifest_as_an_auth_failure() {
+        let err = pull_with_manifest_status(401);
+        assert!(matches!(err, OciError::AuthFailed { .. }), "{err:?}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn pull_reports_a_registry_500_on_the_layer_as_a_request_failure() {
+        let mut server = mockito::Server::new();
+        let manifest = serde_json::json!({
+            "schemaVersion": 2,
+            "mediaType": MEDIA_TYPE_OCI_MANIFEST,
+            "config": { "mediaType": MEDIA_TYPE_MODULE_CONFIG, "digest": "sha256:cfg", "size": 1 },
+            "layers": [{
+                "mediaType": MEDIA_TYPE_MODULE_LAYER,
+                "digest": format!("sha256:{}", "0".repeat(64)),
+                "size": 16,
+            }],
+        });
+        server
+            .mock("GET", "/v2/test/layerfail/manifests/v1")
+            .with_status(200)
+            .with_body(manifest.to_string())
+            .create();
+        let layer = server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(r"/v2/test/layerfail/blobs/sha256:.*".to_string()),
+            )
+            .with_status(500)
+            .expect(1)
+            .create();
+
+        let err = pull_plain(&registry_from_url(&server.url()), "test/layerfail")
+            .expect_err("the layer is not served");
+        layer.assert();
+        assert!(matches!(err, OciError::RequestFailed { .. }), "{err:?}");
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn pull_module_downloads_and_verifies_digest() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let mut server = mockito::Server::new();
         let registry = registry_from_url(&server.url());
 
@@ -1262,7 +1404,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn pull_module_detects_digest_mismatch() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let mut server = mockito::Server::new();
         let registry = registry_from_url(&server.url());
 
@@ -1320,6 +1464,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn pull_module_with_require_key_fails_when_cosign_verify_rejects() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         use crate::test_helpers::CosignTestShim;
         let _shim = CosignTestShim::builder()
             .with_exit(1)
@@ -1365,6 +1510,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn pull_module_with_require_key_proceeds_when_cosign_verify_succeeds() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         use crate::test_helpers::CosignTestShim;
         let _shim = CosignTestShim::builder().with_exit(0).install();
 
@@ -1419,7 +1565,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn pull_module_returns_manifest_not_found_on_404() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let mut server = mockito::Server::new();
         let registry = registry_from_url(&server.url());
 
@@ -1449,7 +1597,9 @@ mod tests {
     /// step now runs inside `pull_module_inner`, matched exactly once, so the
     /// spinner is always settled by `finish_fail` and never by Drop.
     #[test]
+    #[serial_test::serial]
     fn pull_module_failure_settles_via_finish_fail_not_drop() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let mut server = mockito::Server::new();
         let registry = registry_from_url(&server.url());
 
@@ -1489,7 +1639,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn pull_module_returns_blob_not_found_when_layer_missing() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let mut server = mockito::Server::new();
         let registry = registry_from_url(&server.url());
 
@@ -1538,7 +1690,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn pull_module_returns_request_failed_on_invalid_manifest_json() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let mut server = mockito::Server::new();
         let registry = registry_from_url(&server.url());
 

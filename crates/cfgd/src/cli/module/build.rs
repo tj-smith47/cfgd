@@ -244,7 +244,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn missing_module_yaml_returns_error_meta() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         let dir = tempfile::tempdir().unwrap();
         let (printer, _cap) = cfgd_core::output::Printer::for_test_doc();
 
@@ -276,7 +278,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn build_fails_single_target_returns_build_failed_error_meta() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
             return;
         }
@@ -312,7 +316,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn build_fails_single_target_includes_target_in_header_output() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
             return;
         }
@@ -344,7 +350,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn build_fails_multi_target_returns_build_failed_error_meta() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
             return;
         }
@@ -375,7 +383,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn target_split_comma_produces_multi_target_path() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
             return;
         }
@@ -410,7 +420,9 @@ mod tests {
     /// (connection refused) on the first target, so this needs no successful
     /// docker build and no push.
     #[test]
+    #[serial_test::serial]
     fn build_failure_settle_line_nests_under_the_target_owner_header() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         // `cmd_module_build` shells out to `docker build`/`podman build` even
         // for a base image it will fail to reach — the runtime binary itself
         // has to be present on PATH before the "connection refused" failure
@@ -461,6 +473,7 @@ mod tests {
         #[test]
         #[serial]
         fn sign_fails_when_cosign_exits_nonzero_returns_sign_failed_error_meta() {
+            let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
             if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
                 return;
             }
@@ -509,6 +522,7 @@ mod tests {
             targets: &str,
             tag: Option<&serde_json::Value>,
         ) -> (String, String, ManifestPuts) {
+            let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
             use std::os::unix::fs::PermissionsExt;
 
             let dir = tempfile::tempdir().unwrap();
@@ -623,7 +637,9 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    #[serial_test::serial]
     fn build_default_target_omits_target_and_base_image_from_header() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
             return;
         }
@@ -665,7 +681,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn build_missing_directory_path_still_rejects_with_module_yaml_missing() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         // Path that doesn't exist at all → dir_path.join("module.yaml") also
         // doesn't exist, falling through the same error branch as an empty
         // existing directory. Pin the error key + message so the branch is
@@ -698,7 +716,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn build_single_target_failure_payload_includes_target_in_error_meta() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
             return;
         }
@@ -730,7 +750,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn build_multi_target_failure_payload_includes_failing_target_only() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
             return;
         }
@@ -773,7 +795,9 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    #[serial_test::serial]
     fn build_emits_targets_list_in_error_payload_for_multi_target() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         if !cfgd_core::command_available("docker") && !cfgd_core::command_available("podman") {
             return;
         }
@@ -808,7 +832,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn build_module_yaml_missing_does_not_run_docker() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         // No docker required — the missing-module.yaml gate fires first.
         let dir = tempfile::tempdir().unwrap();
         // Intentionally do NOT write module.yaml.

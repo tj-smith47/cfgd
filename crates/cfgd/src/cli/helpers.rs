@@ -576,6 +576,7 @@ fn decorate_profile_not_found(
 /// is simply omitted (never an error). An ambiguous name still counts — the
 /// source does deliver that profile, however malformed its layout.
 fn sources_providing_profile(cli: &Cli, cfg: &CfgdConfig, profile_name: &str) -> Vec<String> {
+    // home-optional-ok: a hint naming sources; a cache with no location holds none
     let Ok(cache_dir) = source_cache_dir(cli) else {
         return Vec::new();
     };
@@ -830,7 +831,7 @@ pub(in crate::cli) fn pending_backups(
     merged
         .backups
         .iter()
-        .filter(|b| b.schedule.is_none())
+        .filter(|b| cfgd_core::backup::runs_with_apply(b))
         .collect()
 }
 
@@ -918,11 +919,13 @@ pub(in crate::cli) fn parse_file_spec(spec: &str) -> anyhow::Result<(PathBuf, Pa
             ));
         }
         Ok((
-            cfgd_core::expand_tilde(Path::new(source)),
-            cfgd_core::expand_tilde(Path::new(target)),
+            // home-refusal-ok: a create verb's `--file` argument; no apply or plan path reaches it
+            cfgd_core::expand_tilde(Path::new(source), "--file source")?,
+            cfgd_core::expand_tilde(Path::new(target), cfgd_core::FILE_TARGET_ROLE)?,
         ))
     } else {
-        let expanded = cfgd_core::expand_tilde(Path::new(spec));
+        // home-refusal-ok: a create verb's `--file` argument; no apply or plan path reaches it
+        let expanded = cfgd_core::expand_tilde(Path::new(spec), "--file source")?;
         Ok((expanded.clone(), expanded))
     }
 }
@@ -1336,6 +1339,16 @@ pub(crate) fn run_state_dir(
     })
 }
 
+/// `path` with a leading `~` expanded, or as written when no home directory
+/// resolves: config discovery reports the unset home for the path the user
+/// wrote (`ConfigError::HomeUnresolved`).
+fn keep_tilde_without_home(path: &Path) -> PathBuf {
+    // home-optional-ok: config discovery refuses the kept `~` with ConfigError::HomeUnresolved
+    // home-refusal-ok: config discovery refuses the kept `~` before the verb loads or plans
+    // anything
+    cfgd_core::expand_tilde(path, "config document").unwrap_or_else(|_| path.to_path_buf())
+}
+
 /// The absolute path of the config document an invocation names, from the
 /// `--config` value clap parsed (`CFGD_CONFIG` included), whether that value
 /// was supplied, the `--config-dir` override and the scope.
@@ -1349,14 +1362,15 @@ pub fn settle_config_path(
     scope: cfgd_core::Scope,
 ) -> PathBuf {
     // The alias pass reads the raw `--config-dir` off clap, so the `~` is
-    // expanded here, where both callers meet.
-    let config_dir = config_dir.map(cfgd_core::expand_tilde);
+    // expanded here, where both callers meet. With no home it stays, for the
+    // loader to refuse as an unset home.
+    let config_dir = config_dir.map(keep_tilde_without_home);
     let config_dir = config_dir.as_deref();
     // Under `--scope system` only the bare default moves to the system config
     // root, before the `--config-dir` fold, so an explicit `--config` or
     // `--config-dir` (or their env twins) still wins.
     let config = if scope.is_system() && !config_is_explicit && config_dir.is_none() {
-        cfgd_core::config::config_document_in(&cfgd_core::default_config_dir_for(
+        cfgd_core::config::config_document_in(&cfgd_core::default_config_dir_spelling(
             cfgd_core::Scope::System,
         ))
     } else {
@@ -1366,7 +1380,7 @@ pub fn settle_config_path(
     // No shell expands a `~` read from an environment file or a quoted
     // argument, so cfgd expands it itself, before the directory inference
     // below looks at the path.
-    let config = cfgd_core::expand_tilde(&config);
+    let config = keep_tilde_without_home(&config);
     // A directory names the document inside it. Inferred once, here, so every
     // consumer (theme load, profiles-dir derivation, dispatch) agrees on the
     // file, where `load_config` inferring alone would leave `config_dir()`
@@ -1667,9 +1681,8 @@ pub(in crate::cli) fn reword_conflict_arrow_for_display(details: &str) -> String
     details.replace(" <- ", " from ")
 }
 
-/// Render composition conflicts under a section and persist them to the state
-/// store for `status`/history. Best-effort persistence: a state error is logged,
-/// not fatal, so a read-only filesystem never blocks a compose.
+/// Render composition conflicts under a section and record them in the state
+/// store for `status`/history ([`RunContext::record_source_conflicts`]).
 fn display_and_persist_conflicts(
     ctx: &RunContext<'_>,
     result: &composition::CompositionResult,
@@ -1692,24 +1705,7 @@ fn display_and_persist_conflicts(
     }
     drop(guard);
 
-    if let Some(state) = ctx.state_opt() {
-        for conflict in &result.conflicts {
-            if let Err(e) = state.record_source_conflict(
-                &conflict.winning_source,
-                "composition",
-                &conflict.resource_id,
-                conflict.resolution_type.label(),
-                Some(&conflict.details),
-            ) {
-                tracing::warn!(
-                    error = %e,
-                    winning_source = %conflict.winning_source,
-                    resource_id = %conflict.resource_id,
-                    "failed to persist source conflict to state store; conflict history may be incomplete",
-                );
-            }
-        }
-    }
+    ctx.record_source_conflicts(&result.conflicts);
 }
 
 /// The single desired-state resolver every command flows through.
@@ -1759,6 +1755,164 @@ pub(in crate::cli) fn resolve_desired_state(
         with_profile,
         printer,
         confirm,
+    )
+}
+
+/// The refusal a run over `cfg` meets for want of a home directory, or `None`
+/// when a home resolves or nothing the run would do writes under one.
+///
+/// Asked before the run writes anything, so it reads only what is already on
+/// disk: each source's cached checkout composed in
+/// [`composition::ConstraintMode::Report`], the local modules, the locked
+/// modules the cache already holds and the modules sources offer, followed
+/// through `depends:` from every module the run names. `module_filter` and
+/// `with_profile` select the run's modules the way
+/// [`resolve_desired_from_composition`] does: an isolated `--module` run's
+/// `local_resolved` is already the empty profile carrying the names, and no
+/// source layers into it. `state` is the store when one is open, so the
+/// manager `PATH` entries it recorded count too. `doctor` asks it; `apply`
+/// and `plan` resolve first and ask [`unresolved_home_after_resolution`].
+pub(in crate::cli) fn unresolved_home_before_run(
+    ctx: &RunContext<'_>,
+    cfg: &config::CfgdConfig,
+    local_resolved: &ResolvedProfile,
+    module_filter: &[String],
+    with_profile: bool,
+    state: Option<&StateStore>,
+) -> Option<cfgd_core::errors::StateError> {
+    // home-optional-ok: the question asked is what a missing home refuses
+    if cfgd_core::home_dir().is_ok() {
+        return None;
+    }
+    let cli = ctx.cli();
+    let quiet = ctx
+        .printer()
+        .at_verbosity(cfgd_core::output::Verbosity::Quiet);
+    let isolated = !module_filter.is_empty() && !with_profile;
+    // A source that cannot be read from its cache contributes nothing here;
+    // the run's own composition reports why when it reaches it.
+    let composed = (!cfg.spec.sources.is_empty())
+        .then(|| {
+            // home-optional-ok: a cache with no location refuses the run when its store opens
+            let cache_dir = source_cache_dir(cli).ok()?;
+            let mut mgr = SourceManager::new(&cache_dir);
+            mgr.set_allow_unsigned(cfg.spec.security_effective().allow_unsigned);
+            mgr.set_announce_cache_skips(false);
+            mgr.load_sources_cached(&cfg.spec.sources, &quiet).ok()?;
+            mgr.compose(
+                &cfg.spec.sources,
+                local_resolved,
+                composition::ConstraintMode::Report,
+            )
+            .ok()
+        })
+        .flatten();
+    let source_roots = composed
+        .as_ref()
+        .map_or(&[][..], |c| c.source_module_roots.as_slice());
+    let profile = match &composed {
+        Some(c) if !isolated => &c.resolved.merged,
+        _ => &local_resolved.merged,
+    };
+
+    let config_dir = ctx.config_dir();
+    let mut on_disk = modules::load_modules(config_dir).unwrap_or_default();
+    // home-optional-ok: a cache with no location refuses the run when its store opens
+    if let Ok(cache_base) = module_cache_dir(cli)
+        && let Ok(lockfile) = modules::load_lockfile(config_dir)
+    {
+        for entry in &lockfile.modules {
+            if on_disk.contains_key(&entry.name) {
+                continue;
+            }
+            // A locked module the cache does not hold is fetched by the run,
+            // which is a write this question never makes.
+            let Ok(dir) = modules::locked_module_dir(entry, &cache_base) else {
+                continue;
+            };
+            if let Ok(module) = modules::load_module(&dir) {
+                on_disk.insert(entry.name.clone(), module);
+            }
+        }
+    }
+    // A source body that fails to load is the run's to report.
+    let _ = modules::load_source_modules(source_roots, &mut on_disk);
+
+    let mut reached: Vec<&modules::LoadedModule> = Vec::new();
+    let mut pending: Vec<&str> = profile
+        .modules
+        .iter()
+        .chain(module_filter)
+        .map(String::as_str)
+        .collect();
+    while let Some(name) = pending.pop() {
+        let Some(module) = on_disk.get(modules::resolve_profile_module_name(name)) else {
+            continue;
+        };
+        if reached.iter().any(|m| m.name == module.name) {
+            continue;
+        }
+        pending.extend(module.spec.depends.iter().map(String::as_str));
+        reached.push(module);
+    }
+
+    let platform = Platform::current();
+    home_refusal_with_config_providers(
+        cfg,
+        state,
+        profile,
+        reached
+            .into_iter()
+            .map(|m| cfgd_core::reconciler::ModuleHomeUse::of_loaded(m, platform)),
+    )
+}
+
+/// The refusal a run over `profile` and the `modules` it resolved and
+/// fetched meets for want of a home directory, or `None` when a home
+/// resolves or nothing in them writes under one.
+///
+/// `apply`, `plan`, `module create --apply` and `init --apply` ask it between
+/// the resolution and the state store's open
+/// ([`super::run_context::StoreHold::open_for`]), so every source and locked
+/// module the run fetched counts, whether or not the cache held it before.
+/// `state` is the recorded store read without opening it for writing, so the
+/// manager `PATH` entries it recorded count too.
+pub(in crate::cli) fn unresolved_home_after_resolution(
+    cfg: &config::CfgdConfig,
+    profile: &cfgd_core::config::MergedProfile,
+    modules: &[cfgd_core::modules::ResolvedModule],
+    state: Option<&StateStore>,
+) -> Option<cfgd_core::errors::StateError> {
+    // home-optional-ok: the question asked is what a missing home refuses
+    if cfgd_core::home_dir().is_ok() {
+        return None;
+    }
+    home_refusal_with_config_providers(
+        cfg,
+        state,
+        profile,
+        modules
+            .iter()
+            .map(cfgd_core::reconciler::ModuleHomeUse::from),
+    )
+}
+
+/// [`cfgd_core::reconciler::unresolved_home_refusal`] with the providers `cfg`
+/// builds: the secret backend, whose decrypt key may itself live under the
+/// home, and the system configurators, whose paths may.
+fn home_refusal_with_config_providers<'m>(
+    cfg: &config::CfgdConfig,
+    state: Option<&StateStore>,
+    profile: &cfgd_core::config::MergedProfile,
+    modules: impl IntoIterator<Item = cfgd_core::reconciler::ModuleHomeUse<'m>>,
+) -> Option<cfgd_core::errors::StateError> {
+    let registry = super::registry::build_registry_with_config(Some(cfg));
+    cfgd_core::reconciler::unresolved_home_refusal(
+        state,
+        profile,
+        cfgd_core::reconciler::ReconcileContext::Apply,
+        modules,
+        Some(&registry),
     )
 }
 

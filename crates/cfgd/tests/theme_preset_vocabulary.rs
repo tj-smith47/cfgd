@@ -2,8 +2,8 @@
 //! vocabulary is held at the two points a word enters: the setter that writes
 //! one, and the load that reads one somebody else wrote.
 //!
-//! Both halves need the real binary. The setter's refusal ends in
-//! `std::process::exit`, and the load-time warning is raised in `main.rs`
+//! Both halves need the real binary. The setter's refusal sets its exit code
+//! in `main`, and the load-time warning is raised in `main.rs`
 //! where the printer is built, which no in-process call reaches.
 
 use std::path::Path;

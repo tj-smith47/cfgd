@@ -1031,8 +1031,8 @@ pub(super) fn recorded_scope_row(recorded: &str) -> Option<(&'static str, &str)>
     Some(if value.starts_with(&owner_prefix) {
         ("Scope", value)
     } else {
-        // header-row-ok: what the RECORDED run was scoped to, not the profile
-        // this report is running under
+        // header-row-ok: what the RECORDED run was scoped to, which can differ
+        // from the profile this report is running under
         ("Profile", value)
     })
 }
@@ -1092,7 +1092,7 @@ pub fn build_fleet_status_doc(
                 let (result_word, result_role) = last.status.human_display();
                 let mut rows = vec![KvPair::role_valued("Result", result_word, result_role)];
                 // long-line-ok: a hatch is read off its own line, so it cannot wrap
-                // decision-summary-ok: the `applies` record's own summary column, not a pending decision's
+                // decision-summary-ok: the `applies` record's own summary column, unrelated to any pending decision
                 if let Some(summary) = &last.summary {
                     // Prose, never the stored column: the wire shape is what
                     // `-o json` carries, and a human row reading
@@ -1496,13 +1496,16 @@ fn recorded_row_method(
         return cfgd_core::reconciler::recorded_env_method(&r.resource_id).to_string();
     }
     if r.resource_type == "file" {
-        return detail
-            .strategies
-            .for_declared_target(&cfgd_core::expand_tilde(std::path::Path::new(
-                &r.resource_id,
-            )))
-            .map_or(NO_DETAIL, |s| s.method_label())
-            .to_string();
+        // home-optional-ok: a recorded id that names no resolvable path
+        // declares no target, and the cell shows none.
+        return cfgd_core::expand_tilde(
+            std::path::Path::new(&r.resource_id),
+            cfgd_core::FILE_TARGET_ROLE,
+        )
+        .ok()
+        .and_then(|target| detail.strategies.for_declared_target(&target))
+        .map_or(NO_DETAIL, |s| s.method_label())
+        .to_string();
     }
     NO_DETAIL.to_string()
 }
@@ -2628,7 +2631,7 @@ pub fn build_module_status_doc(
             // contradict the rows on the next line.
             //
             // drift-chain-ok: whether the section has a verdict to state at
-            // all, not whether the run stands on drift — `any_drift` is that.
+            // all; `any_drift` answers whether the run stands on drift.
             if output.drift.is_empty()
                 && output.system_errors.is_empty()
                 && !output.standing.is_empty()
@@ -2912,8 +2915,8 @@ fn render_module_inventories(
                         // errored probe is not nothing to report, so that row
                         // keeps the `not scanned` verdict `clean_row` gives it.
                         // facts-block-ok: this branch renders the inventory row
-                        // INSTEAD of a status row, and the rows around it are
-                        // the same inventory, not a run's result lines.
+                        // in the place of a status row, and the rows around it
+                        // are the same inventory with no run result among them.
                         None if !masking.masks(&alias.name) && !probe_errored => s.kv(
                             &alias.name,
                             super::module::list_show::gated_value(alias.command.clone(), alias),
@@ -3120,6 +3123,10 @@ pub(super) fn cmd_status(
     }
 
     let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
+    // The live env check below folds the `PATH` line against the home, so a
+    // run with none is refused here, before the state store opens and leaves
+    // a `state.db` behind for a run that read nothing from it.
+    cfgd_core::home_dir()?;
     let state = run.state()?;
 
     let last_apply = state.last_apply()?;
@@ -3188,7 +3195,7 @@ pub(super) fn cmd_status(
             &resolved.merged,
             &resolved_modules,
         ),
-    );
+    )?;
 
     // The plan withholds items no run has recorded a row for yet; a dashboard
     // that hides them contradicts the plan it summarizes. Same classification
@@ -3298,7 +3305,7 @@ pub(super) fn cmd_status(
             &resolved_modules,
             &config_dir,
             cfg.spec.file_strategy,
-        )
+        )?
     } else {
         cfgd_core::effective::FileStrategies::with_default(cfg.spec.file_strategy)
     };
@@ -3339,13 +3346,20 @@ pub(super) fn cmd_status(
     // below clears this vector and refills it from its own findings, so any
     // work spent on the recorded rows here would be discarded unrendered.
     if !do_scan {
+        let recomputed = output
+            .drift
+            .iter()
+            .map(|event| {
+                if cfgd_core::output::is_shell_drift_kind(&event.resource_type) {
+                    merged_env_items.display_values(&event.resource_type, &event.resource_id)
+                } else {
+                    Ok(None)
+                }
+            })
+            .collect::<cfgd_core::errors::Result<Vec<_>>>()?;
+        let mut recomputed = recomputed.into_iter();
         output.drift.retain_mut(|event| {
-            if !cfgd_core::output::is_shell_drift_kind(&event.resource_type) {
-                return true;
-            }
-            let Some((want, have)) =
-                merged_env_items.display_values(&event.resource_type, &event.resource_id)
-            else {
+            let Some((want, have)) = recomputed.next().flatten() else {
                 return true;
             };
             // The recompute just read the machine: a row whose declared line
@@ -3427,7 +3441,7 @@ pub(super) fn cmd_status(
         for r in &drift {
             output
                 .drift
-                .push(super::live_drift::drift_event_from(r, &merged_env_items));
+                .push(super::live_drift::drift_event_from(r, &merged_env_items)?);
         }
         output.standing = report
             .standing
@@ -3475,7 +3489,7 @@ pub(super) fn cmd_status(
         exit_on_drift_verdict(cfgd_core::state::DriftVerdict::from_checks(
             output.any_drift(),
             !output.system_errors.is_empty(),
-        ));
+        ))?;
     }
 
     Ok(())
@@ -3484,14 +3498,18 @@ pub(super) fn cmd_status(
 /// The `--exit-code` price of a drift verdict, the ONE mapping both status
 /// surfaces exit through: `Unknown` is `Error` (1) — the answer is missing,
 /// not clean — ahead of `Drifted`'s `DriftDetected` (5); `Clean` returns.
-fn exit_on_drift_verdict(verdict: cfgd_core::state::DriftVerdict) {
+fn exit_on_drift_verdict(verdict: cfgd_core::state::DriftVerdict) -> anyhow::Result<()> {
     match verdict {
-        cfgd_core::state::DriftVerdict::Unknown => cfgd_core::exit::ExitCode::Error.exit(),
-        cfgd_core::state::DriftVerdict::Drifted => cfgd_core::exit::ExitCode::DriftDetected.exit(),
+        cfgd_core::state::DriftVerdict::Unknown => {
+            Err(crate::cli::reported_exit(cfgd_core::exit::ExitCode::Error))
+        }
+        cfgd_core::state::DriftVerdict::Drifted => Err(crate::cli::reported_exit(
+            cfgd_core::exit::ExitCode::DriftDetected,
+        )),
         // `--exit-code` implies a scan, so the verdict is always an answered
         // one here; an uncovered owner exits clean for the same reason a clean
         // one does — this gate prices findings, and there are none.
-        cfgd_core::state::DriftVerdict::Clean | cfgd_core::state::DriftVerdict::Unchecked => {}
+        cfgd_core::state::DriftVerdict::Clean | cfgd_core::state::DriftVerdict::Unchecked => Ok(()),
     }
 }
 
@@ -3619,7 +3637,7 @@ fn join_package_state(
 }
 
 // no-header-ok: the invocation named the module, and this report answers for
-// that one module rather than for the configuration around it — its header
+// that one module alone; its header
 // leads on the module's own Status row (`the_status_row_leads_a_module_report`)
 // and carries no Scope row for the same reason. The config, sources and
 // profile behind it are what `cfgd status` states.
@@ -3648,7 +3666,57 @@ pub(super) fn cmd_status_module(
         }
     };
 
-    let state = ctx.state()?;
+    let platform = cfgd_core::platform::Platform::current();
+    // Deliberately the config-FREE registry: a module resolves against the
+    // managers it declares and cannot reach the profile's `packages.custom`,
+    // so resolving it through a config-aware registry would map a module
+    // package onto a manager the module cannot use. Both branches resolve the
+    // chain through it — the scan against the installed listing, the
+    // recorded fallback without one — so the scopes a recorded row is judged
+    // against are the scopes the scan would have used.
+    let registry = ctx.base_registry();
+    let mgr_map = registry.manager_map();
+    let managers: std::collections::HashMap<&str, &dyn cfgd_core::providers::PackageManager> =
+        mgr_map.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+    let resolve_chain = |installed: Option<&cfgd_core::providers::PackageContext<'_>>| {
+        modules::resolve_modules(
+            &[mod_name.to_string()],
+            config_dir,
+            &cache_base,
+            &[],
+            platform,
+            &mgr_map,
+            installed,
+            printer,
+            &modules::refuse_floor_bootstrap,
+        )
+    };
+    // The scan's chain is resolved, and its shell check (which reads the
+    // managed env file under the home whenever the chain declares env or
+    // aliases) is run, before the store opens: a scan the home refuses leaves
+    // the store as it found it. Until then, with no home, the package queries
+    // read the store read-only and record nothing. The run's one package
+    // context serves the chain resolution and the declared-floor check, so
+    // each manager is asked for its installed listing once.
+    let store_hold = ctx.hold_store_while_homeless();
+    let scan = if do_scan {
+        let pkg_cx = ctx.package_context()?;
+        let resolved_modules = resolve_chain(Some(&pkg_cx))?;
+        let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
+        // The isolate's one layered view, read by the display recompute and
+        // by the per-item shell check.
+        let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &resolved_modules);
+        let env_check = cfgd_core::reconciler::env_item_verify_results(&layered)?;
+        // The merge below folds its `PATH` line against the home whatever the
+        // chain declares, and reads the recorded manager directories off the
+        // open store, so the home is asked here, before the store opens.
+        cfgd_core::home_dir()?;
+        Some((pkg_cx, resolved_modules, resolved, layered, env_check))
+    } else {
+        None
+    };
+
+    let state = store_hold.release()?;
     let state_rec = state.module_state_by_name(mod_name)?;
     // What the lockfile remembers about this module, for the two recorded rows
     // a remote module carries. A lockfile this run cannot read leaves them out
@@ -3687,7 +3755,6 @@ pub(super) fn cmd_status_module(
     // the machine was checked. The chain's own scopes are stamped instead, by
     // `record_scoped_scan_findings` itself.
     //
-    let platform = cfgd_core::platform::Platform::current();
     let mut drift: Vec<ModuleDrift> = Vec::new();
     // The raw stored rows behind `drift` above, for the payload's own
     // `standing` key — populated only on the scanning branch, since the
@@ -3711,40 +3778,7 @@ pub(super) fn cmd_status_module(
         std::collections::VecDeque<(String, ModulePackagePresence)>,
     > = std::collections::HashMap::new();
     let mut system_errors: Vec<super::output_types::SystemCheckError> = Vec::new();
-    // Deliberately the config-FREE registry: a module resolves against the
-    // managers it declares and cannot reach the profile's `packages.custom`,
-    // so resolving it through a config-aware registry would map a module
-    // package onto a manager the module cannot use. Both branches resolve the
-    // chain through it — the scan against the installed listing, the
-    // recorded fallback without one — so the scopes a recorded row is judged
-    // against are the scopes the scan would have used.
-    let registry = ctx.base_registry();
-    let mgr_map = registry.manager_map();
-    let managers: std::collections::HashMap<&str, &dyn cfgd_core::providers::PackageManager> =
-        mgr_map.iter().map(|(k, v)| (k.as_str(), *v)).collect();
-    let resolve_chain = |installed: Option<&cfgd_core::providers::PackageContext<'_>>| {
-        modules::resolve_modules(
-            &[mod_name.to_string()],
-            config_dir,
-            &cache_base,
-            &[],
-            platform,
-            &mgr_map,
-            installed,
-            printer,
-            &modules::refuse_floor_bootstrap,
-        )
-    };
-    if do_scan {
-        // The run's one context, so every pass below — the chain resolution,
-        // the declared-floor check, and the package join after this block —
-        // asks each manager for its installed listing once.
-        let pkg_cx = ctx.package_context()?;
-        let resolved_modules = resolve_chain(Some(&pkg_cx))?;
-        let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
-        // The isolate's one layered view, read by the display recompute here
-        // and by the per-item shell check inside the scan below.
-        let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &resolved_modules);
+    if let Some((pkg_cx, resolved_modules, resolved, layered, env_check)) = scan {
         // File and package rows only — the recompute is a no-op for both, but
         // `drift_event_from` takes the merge rather than deciding per row.
         let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(
@@ -3754,7 +3788,7 @@ pub(super) fn cmd_status_module(
                 &resolved.merged,
                 &resolved_modules,
             ),
-        );
+        )?;
         let fm = CfgdFileManager::new(config_dir, &resolved)?;
         // One spinner across this module's live scan, narrated per pass.
         printer.narrate(
@@ -3789,7 +3823,7 @@ pub(super) fn cmd_status_module(
                             .map(|(m, target)| (m.to_string(), target))
                             .unwrap_or_else(|| (mod_name.to_string(), r.resource_id.clone()));
                     drift.push(ModuleDrift {
-                        event: super::live_drift::drift_event_from(&r, &merged_env_items),
+                        event: super::live_drift::drift_event_from(&r, &merged_env_items)?,
                         owner,
                         surface: SURFACE_FILES,
                         item,
@@ -3849,7 +3883,7 @@ pub(super) fn cmd_status_module(
                                 event: super::live_drift::drift_event_from(
                                     &finding,
                                     &merged_env_items,
-                                ),
+                                )?,
                                 // The module whose resolution declared this
                                 // package, which is not always the one under
                                 // report: a dependency's missing package is
@@ -3875,7 +3909,7 @@ pub(super) fn cmd_status_module(
                                     event: super::live_drift::drift_event_from(
                                         row,
                                         &merged_env_items,
-                                    ),
+                                    )?,
                                     owner: resolved_module.name.clone(),
                                     surface: SURFACE_PACKAGES,
                                     item: pkg.resolved_name.clone(),
@@ -3906,7 +3940,6 @@ pub(super) fn cmd_status_module(
                 // recorded winner is a layer outside this chain stays out of
                 // `checked`: a scoped "clean" may not heal a claim it never
                 // re-checked.
-                let env_check = cfgd_core::reconciler::env_item_verify_results(&layered);
                 let owners =
                     cfgd_core::reconciler::merged_entry_owners(&resolved, &resolved_modules);
                 let tokens: std::collections::HashMap<String, &str> = resolved_modules
@@ -3933,7 +3966,7 @@ pub(super) fn cmd_status_module(
                         continue;
                     }
                     drift.push(ModuleDrift {
-                        event: super::live_drift::drift_event_from(&r, &merged_env_items),
+                        event: super::live_drift::drift_event_from(&r, &merged_env_items)?,
                         owner: owner_module.to_string(),
                         surface: if r.resource_type == "alias" {
                             SURFACE_ALIASES
@@ -4105,7 +4138,7 @@ pub(super) fn cmd_status_module(
         // The verdict the `Status` row just rendered, priced: `Unknown`
         // outranking `Drifted` is what puts a probe that could not run ahead
         // of drift it might have found, as on every `--exit-code` surface.
-        exit_on_drift_verdict(output.drift_verdict());
+        exit_on_drift_verdict(output.drift_verdict())?;
     }
 
     Ok(())
@@ -4565,7 +4598,7 @@ mod tests {
         // `env_targets` rather than re-typed here. Matched per PATH SEGMENT and
         // exactly, so neither `spec.profile` nor a bare `profile` reads as
         // `~/.profile`.
-        let basename_tells = cfgd_core::reconciler::env_target_basenames();
+        let basename_tells = cfgd_core::reconciler::env_target_basenames().unwrap();
         assert!(
             basename_tells.len() >= 10,
             "the env engine no longer offers its target names: {basename_tells:?}"
@@ -8145,9 +8178,8 @@ mod tests {
 
     #[test]
     fn cmd_status_exit_code_false_with_drift_returns_ok() {
-        // Guard: when --exit-code is not set, drift presence must NOT trigger
-        // process::exit. Only the non-exiting half is testable in-process; the
-        // drift-present branch would terminate the test runner via process::exit.
+        // Guard: when --exit-code is not set, drift presence must NOT ask for
+        // a nonzero exit.
         let (_cfg_dir, state_dir, config_path) = setup_env();
         let store = open_state_store(Some(state_dir.path()), cfgd_core::Scope::User).unwrap();
         store
@@ -8166,8 +8198,8 @@ mod tests {
     #[test]
     fn cmd_status_exit_code_true_no_drift_returns_ok() {
         // Complement to the test above: with `exit_code=true` but a clean host,
-        // the live-scan gate finds no drift, so the function must not call
-        // `process::exit` and must return Ok.
+        // the live-scan gate finds no drift, so the function asks for no exit
+        // and returns Ok.
         let (_cfg_dir, state_dir, config_path) = setup_env();
         let cli = test_cli_for(config_path, state_dir.path());
         let (printer, _) = test_printers();
@@ -8287,7 +8319,9 @@ mod tests {
             ),
             &[],
         )
+        .unwrap()
         .declared_line("env-var", "EDITOR")
+        .unwrap()
         .expect("EDITOR renders a declared line");
 
         let state_dir = tmp.path().join("state");
@@ -8425,7 +8459,9 @@ mod tests {
             ),
             &[],
         )
+        .unwrap()
         .declared_line("env-var", "EDITOR")
+        .unwrap()
         .expect("EDITOR renders a declared line");
 
         let expected_detail =
@@ -8530,9 +8566,10 @@ mod tests {
             &[],
             &[],
         );
-        let merged = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]);
+        let merged = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]).unwrap();
         let declared_line = merged
             .declared_line("env-var", "EDITOR")
+            .unwrap()
             .expect("EDITOR renders a declared line");
         // The machine HOLDS the declared line: whatever the recorded row says,
         // this entry is converged right now. Planted from the generator, so
@@ -10019,10 +10056,9 @@ mod tests {
     }
 
     // The drift-catching, exit(5) branch is proven by the real subprocess in
-    // `tests/cli_integration.rs::status_module_exit_code_catches_module_file_drift`
-    // — `process::exit` cannot be exercised in-process. This test proves the
-    // complementary path: a converged module's live scan finds nothing, so
-    // `--exit-code` must return Ok rather than calling `process::exit`.
+    // `tests/cli_integration.rs::status_module_exit_code_catches_module_file_drift`.
+    // This test proves the complementary path: a converged module's live scan
+    // finds nothing, so `--exit-code` returns Ok and asks for no exit.
     #[test]
     fn cmd_status_module_exit_code_true_no_drift_returns_ok() {
         let env = converged_module_env();
@@ -11487,7 +11523,7 @@ mod tests {
             &[],
         );
         cfgd_core::test_helpers::plant_managed_env_files(
-            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]),
+            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]).unwrap(),
             tmp_home.path(),
             cfgd_core::config::EnvScope::default(),
         );

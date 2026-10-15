@@ -304,6 +304,12 @@ jobs:
       - name: Chart render goldens
         run: task chart:test
 
+      # The operator item-read scan in `task e2e:tags:check` reads the syntax
+      # tree shfmt prints, whose node names can change between versions, so it
+      # runs under the pinned one.
+      - name: Install shfmt
+        uses: ./.github/actions/setup-shfmt
+
       # A suite that spells an image reference itself ignores that image's tag
       # override; the check resolves the map and fails on any such reference.
       # The same task drives port_forward against a stand-in kubectl and fails

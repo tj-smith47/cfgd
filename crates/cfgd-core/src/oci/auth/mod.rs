@@ -39,8 +39,8 @@ impl RegistryAuth {
     pub fn resolve(registry: &str) -> Option<Self> {
         // 1. Environment variables
         if let (Ok(user), Ok(pass)) = (
-            std::env::var("REGISTRY_USERNAME"),
-            std::env::var("REGISTRY_PASSWORD"),
+            std::env::var(super::REGISTRY_USERNAME_ENV),
+            std::env::var(super::REGISTRY_PASSWORD_ENV),
         ) && !user.is_empty()
             && !pass.is_empty()
         {
@@ -51,8 +51,10 @@ impl RegistryAuth {
         }
 
         // 2. Docker config.json
-        let config_path = docker_config_path();
-        if let Ok(contents) = std::fs::read_to_string(&config_path)
+        // home-optional-ok: with no home there is no per-user Docker config to
+        // read, and the lookup moves on to anonymous access.
+        if let Ok(config_path) = docker_config_path()
+            && let Ok(contents) = std::fs::read_to_string(&config_path)
             && let Ok(config) = serde_json::from_str::<DockerConfig>(&contents)
         {
             // Try direct auth entry
@@ -80,11 +82,15 @@ impl RegistryAuth {
     }
 }
 
-pub(super) fn docker_config_path() -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var("DOCKER_CONFIG") {
-        return std::path::PathBuf::from(dir).join("config.json");
+pub(super) fn docker_config_path() -> crate::errors::Result<std::path::PathBuf> {
+    if let Ok(dir) = std::env::var(super::DOCKER_CONFIG_ENV) {
+        return Ok(std::path::PathBuf::from(dir).join("config.json"));
     }
-    crate::expand_tilde(std::path::Path::new("~/.docker/config.json"))
+    // home-refusal-ok: its one caller reads no home as no Docker config and pulls anonymously
+    crate::expand_tilde(
+        std::path::Path::new("~/.docker/config.json"),
+        "Docker config file",
+    )
 }
 
 /// Try to find credentials in the Docker config auths map.
@@ -203,10 +209,16 @@ fn resolve_from_credential_helper(helper_name: &str, registry: &str) -> Option<R
 
 /// Attempt to get a bearer token for the given registry+repository scope.
 /// Registries return a 401 with a Www-Authenticate header pointing to a token endpoint.
+///
+/// `registry` names the request the challenge answered, in every error. A
+/// token endpoint that answers with an HTTP error status is
+/// [`OciError::AuthFailed`]; one that cannot be reached at all is
+/// [`OciError::RequestFailed`].
 pub(super) fn get_bearer_token(
     agent: &ureq::Agent,
     www_authenticate: &str,
     auth: Option<&RegistryAuth>,
+    registry: &str,
 ) -> Result<String, OciError> {
     // Parse: Bearer realm="...",service="...",scope="..."
     let realm = extract_auth_param(www_authenticate, "realm");
@@ -214,7 +226,7 @@ pub(super) fn get_bearer_token(
     let scope = extract_auth_param(www_authenticate, "scope");
 
     let realm = realm.ok_or_else(|| OciError::AuthFailed {
-        registry: String::new(),
+        registry: registry.to_string(),
         message: format!("missing realm in Www-Authenticate header: {www_authenticate}"),
     })?;
 
@@ -235,9 +247,14 @@ pub(super) fn get_bearer_token(
         req = req.header("Authorization", &cred.basic_auth_header());
     }
 
-    let mut resp = req.call().map_err(|e| OciError::AuthFailed {
-        registry: String::new(),
-        message: format!("token request failed: {e}"),
+    let mut resp = req.call().map_err(|e| match e {
+        ureq::Error::StatusCode(_) => OciError::AuthFailed {
+            registry: registry.to_string(),
+            message: format!("token request failed: {e}"),
+        },
+        e => OciError::RequestFailed {
+            message: format!("token request for {registry} failed: {e}"),
+        },
     })?;
 
     #[derive(Deserialize)]
@@ -249,20 +266,19 @@ pub(super) fn get_bearer_token(
     let body_str = resp
         .body_mut()
         .read_to_string()
-        .map_err(|e| OciError::AuthFailed {
-            registry: String::new(),
-            message: format!("cannot read token response body: {e}"),
+        .map_err(|e| OciError::RequestFailed {
+            message: format!("cannot read the token response for {registry}: {e}"),
         })?;
     let body: TokenResponse =
         serde_json::from_str(&body_str).map_err(|e| OciError::AuthFailed {
-            registry: String::new(),
+            registry: registry.to_string(),
             message: format!("invalid token response JSON: {e}"),
         })?;
 
     body.token
         .or(body.access_token)
         .ok_or_else(|| OciError::AuthFailed {
-            registry: String::new(),
+            registry: registry.to_string(),
             message: "no token in response".to_string(),
         })
 }

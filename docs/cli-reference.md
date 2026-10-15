@@ -380,12 +380,40 @@ $ cfgd apply --plan plan.json
 ✗ plan.json is stale: /home/you/.config/cfgd/profiles/tiny.yaml changed since it was written, so it no longer describes this config — run `cfgd plan -o json` again
 ```
 
+Under `-o json` this refusal carries the `stale` kind and the file as `changed`. When
+the refusal is over a directory cfgd could not list (below), `changed` names that
+directory and `"unreadable": true` sits beside it; the key is absent otherwise.
+
+The stamped files are every file the derivation read:
+
+- the config document, every profile and module document, both lockfiles and every
+  declared package manifest (a `Brewfile`, a `package.json`)
+- every managed-file source, templates and encrypted sources included, whatever its
+  strategy
+- every module file source, local or from a module's git checkout
+- every secret source the plan decrypts
+- every systemd `unitFile` the plan installs
+- every script file a patch names in its `run`, and every script file a lifecycle hook
+  (`preApply`, `postApply`, `preReconcile`, `postReconcile`), the profile's or a
+  module's, names in its `run`
+
+A directory source is stamped with every file beneath it except a `.git` entry and
+what lies under it, so an edit to a nested file alone refuses the replay.
+
+A directory beneath a stamped source that cfgd could not list when the plan was written
+refuses the replay too, naming that directory: nothing beneath it was stamped, so cfgd
+cannot tell whether it changed.
+
 Three shapes are refused ahead of those: a payload carrying no `savedPlan` (its run
 was filtered, or held a source decision back), one whose phases were reordered or
 duplicated by hand, and one whose derivation never read the config this run resolved.
 The last is what a global `--config` beside `--plan` runs into: a plan file names no
 config of its own, so without that question the recorded actions would run against a
 second machine picture.
+
+A replay never writes the fields a config document behind this build's schema leaves
+undeclared: under `Prompt` and `Update` it reports them the way `Warn` does, and the
+next plain `cfgd apply` writes them (see [`cfgd config migrate`](#cfgd-config-migrate)).
 
 ```console
 $ cfgd apply --config /etc/cfgd/other.yaml --plan plan.json
@@ -1400,6 +1428,87 @@ systemd's `CONFIGURATION_DIRECTORY` under a service), the config check fails wit
 `cannot resolve home directory (HOME unset)` and so does the verdict, since every verb that reads
 the config fails the same way there.
 
+A state store that cannot be opened also fails the verdict, because `apply` opens the same store
+before it does anything else. The store is the one `--state-dir`, `CFGD_STATE_DIR` or `--scope`
+names, or the default state directory, and the row reads `✗ State store: unavailable` with the
+open error as its detail. `-o json` carries the same check as `stateStore`:
+
+```json
+"stateStore": {
+  "accessible": false,
+  "message": "cannot determine state directory: state error: cannot locate the per-user state directory: no home directory found"
+}
+```
+
+`message` is `null` when the store opened.
+
+`doctor` opens an existing store read-only, and creates no store and no file beside one. On a machine no `apply` has run
+on, the row reads `✓ State store: not created yet` with `` `cfgd apply` creates it `` as its
+detail, and the verdict passes. `-o json` adds `"created": false` to `stateStore` in that case
+only:
+
+```json
+"stateStore": {
+  "accessible": true,
+  "message": null,
+  "created": false
+}
+```
+
+The module cache is checked the same way, because `apply` and `plan` resolve it before they
+open the state store: a cache with nowhere to go (`CFGD_CACHE_DIR`, `XDG_CACHE_HOME` and the
+home directory all unset) refuses the run before any `state.db` is created, and fails the
+verdict on a `✗ Cache directory: unavailable` row. `-o json` carries it as `cacheDir`, in the
+same shape as `stateStore`.
+
+With no home directory set, the `Home directory` row fails when the profile (composed with every
+source already in the cache, since `doctor` fetches nothing), or a module it reaches, declares
+work under `~/`:
+
+- an env var or alias
+- a `~/` file or secret target
+- a `~/` source or destination of a backup unit with no `schedule` (one `apply` snapshots)
+- a `~/` `workdir` or `creates` guard on a `preApply`, `postApply` or `onChange` script, or on
+  a module package's install script
+- a `~/` path a system configurator this host runs reads: an `sshKeys` key (one with no `path`
+  defaults to `~/.ssh/`), a `systemdUnits` `unitFile`, a `kdeConfig` file (a bare name lives
+  under `~/.config` when `XDG_CONFIG_HOME` is unset), or any `launchAgents` entry on macOS
+- a secret decrypted with an age key under `~/`
+- a package manager `PATH` entry cfgd recorded
+
+`apply`, `plan` and `init --apply` fetch their sources and resolve their modules first, so a
+source the cache did not hold yet counts too, and refuse that work before they open the state
+store or run any action, writing nothing in its place. An existing
+store is only read until then (`apply --plan` checks its saved plan against it the same way), so
+a refused run neither migrates it nor recreates its `-wal` and `-shm` files. A replay with no
+`state.db` has no store to check its plan against and is refused for the missing home; a store
+cfgd cannot read without writing to it (a `-wal` file with no `-shm` beside it) refuses the run
+naming that store, and `doctor` reports it on the `State store` row. The verdict fails
+with them. With nothing declared there, the row is informational and the verdict passes.
+`-o json` reports it as `home`:
+
+```json
+"home": {
+  "resolved": false,
+  "refusal": "cannot write the managed env file ~/.cfgd.env: no home directory found (HOME unset); set HOME"
+}
+```
+
+`refusal` is `null` when a home is set or nothing declared needs one.
+
+The other commands that need the home for part of their work settle it before they open the
+state store too: `status`, `diff` and `verify`, `diff --module` and `status --module --scan`
+(the module's env vars), `compliance` and `compliance export` (the file, secret and watch-path
+targets, and the export directory), every `backup` verb (each unit's source and
+destination), and `module create --apply` and `init --apply` / `--apply-profile` /
+`--apply-module` (the plan they apply). A run they refuse for want of the home creates no `state.db`, and leaves an
+existing one as it was.
+
+An age key configured under `~/` (`spec.secrets.sops.ageKey`) has no location with no home set.
+The `age key` row then reads `no location` with the refusal as its detail: `✗` when a declared
+secret decrypts with it, `⚠` otherwise. `-o json` carries the refusal as `secrets.ageKeyError`,
+which is absent when the key path resolves.
+
 ### `cfgd log`
 
 Show apply history from the state store.
@@ -1787,7 +1896,14 @@ CFGD_STATE_DIR='~/state' cfgd paths    # cfgd expands the ~ to your home directo
 ```
 
 See [Configuration → File locations](configuration.md#file-locations) for the
-per-platform defaults and the override precedence.
+per-platform defaults and the override precedence. On a machine with no home
+directory, an absolute `XDG_STATE_HOME` or `XDG_CACHE_HOME` still places the state
+or cache root, on every platform:
+
+```sh
+env -u HOME XDG_CONFIG_HOME=/srv/cfgd/config XDG_STATE_HOME=/srv/cfgd/state \
+  XDG_CACHE_HOME=/srv/cfgd/cache cfgd paths
+```
 
 ### Package tokens
 
@@ -2243,6 +2359,12 @@ is pulled as it is. `--require-signature` and `--verify-attest` check the digest
 on the one read the pull extracts from, before anything is extracted. That digest is the sha256 of
 the bytes read; a registry whose `Docker-Content-Digest` header names another digest is refused
 before any check runs.
+
+Only a registry's own `404` reports something missing: `manifest not found` for the tag or index
+entry, `blob not found` for a layer. A registry that cannot be reached or answers with any other
+HTTP error fails with `registry request failed`. One that refuses the credential (a 401 or 403,
+before or after a token exchange) fails with `registry authentication failed`. Both carry the
+cause.
 
 ```sh
 cfgd module pull ghcr.io/me/my-module:1.0.0 --dir out --platform linux/arm64 -o json
@@ -2893,8 +3015,18 @@ again, because the question changed. A run with no terminal reports instead and
 records no answer, and the daemon does the same: it never rewrites a tracked file.
 A preview (`cfgd plan`, `cfgd apply --dry-run`, `cfgd profile migrate --dry-run`
 and `cfgd init --dry-run`) adds no field to the document either, answering
-`Prompt` and `Update` the way `Warn` does. Every write the check makes prints the
-fields it added.
+`Prompt` and `Update` the way `Warn` does. So does `cfgd apply --plan`: the saved
+plan was recorded by a preview (`cfgd plan` or `cfgd apply --dry-run`), and a
+preview never migrates, so an alignment written ahead of the replay would make it
+refuse its own plan as stale. The next
+plain `cfgd apply` writes the fields. `cfgd doctor` reports the fields under
+every policy but `Ignore` (`Prompt`, `Warn` and `Update`) and writes nothing: it asks nothing, records no answer and leaves
+the document as it is. Every write the check makes prints the fields it added.
+
+With no home directory, the answer is read from an existing store without
+opening it for writing, and recorded once the command has run, whether it
+succeeded or failed for another reason. A command refused for want of the home
+records nothing, so it asks again next time.
 
 Four invocations are withheld from that load-time check, because the migration
 question is their own subject: this verb, `cfgd config edit`, and
@@ -3179,6 +3311,7 @@ domain instead: `config`, `file`, `package`, `secret`, `system`, `state`,
 | `encryption_failed` | The secret backend could not encrypt the file. |
 | `filename_required` | `kubectl cfgd` was given no `-f`/`--filename`. |
 | `foreign_config` | The `--plan` file was not written for this config. |
+| `home_unresolved` | No home directory resolves (`HOME` unset, or `USERPROFILE` and `HOME` on Windows): `cfgd generate` was given no `--home` (`name` is `--home`), or a `--plan` replay has no state store to check the plan against (`name` is `plan`). |
 | `host_moved` | The `--plan` file describes a different host. |
 | `in_use` | The module named for deletion is referenced by a profile. |
 | `inherited` | The profile named for deletion is inherited by another profile. |

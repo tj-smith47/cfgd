@@ -392,8 +392,7 @@ pub fn cmd_module_upgrade(
             modules::fetch_git_source(&new_src, &cache_base, name, &lib_printer)
         })?;
     let new_module = modules::load_module(&new_local_path)?;
-    let repo_dir = modules::git_cache_dir(&cache_base, &old_git_src.repo_url);
-    let new_commit = modules::get_head_commit_sha(&repo_dir)?;
+    let new_commit = modules::checked_out_commit(&cache_base, &new_src)?;
     let new_integrity = modules::hash_module_contents(&new_local_path)?;
 
     if new_commit == old_entry.commit {
@@ -454,11 +453,11 @@ pub fn cmd_module_upgrade(
     // Update lockfile entry
     lockfile.modules[entry_idx] = cfgd_core::config::ModuleLockEntry {
         name: name.to_string(),
-        url: old_entry.url.clone(),
+        url: compute_lock_url(&format!("{}@{new_ref}", old_git_src.repo_url), &new_src),
         pinned_ref: new_ref.clone(),
         commit: new_commit.clone(),
         integrity: new_integrity.clone(),
-        subdir: old_entry.subdir,
+        subdir: old_entry.subdir.clone(),
     };
     modules::save_lockfile(&config_dir, &lockfile)?;
 
@@ -832,7 +831,7 @@ pub fn cmd_module_registry_add(
     // will clone. An existing local path stays itself rather than becoming a
     // same-named GitHub repository; a GitHub `owner/repo` shorthand expands;
     // any other shape passes through.
-    let url = &*cfgd_core::resolve_repo_reference(url);
+    let url = &*cfgd_core::resolve_repo_reference(url)?;
 
     let registry_name = match name {
         Some(n) => n.to_string(),

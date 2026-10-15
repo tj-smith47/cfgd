@@ -7,10 +7,10 @@ use cfgd_core::providers::PackageManagerExt;
 pub(super) fn cmd_doctor(run: &RunContext<'_>, fix: bool) -> anyhow::Result<()> {
     // A failed verdict must fail the process so `cfgd doctor && cfgd apply`
     // stops instead of sailing into a guaranteed-broken apply. The Doc is
-    // already emitted, so exit directly (mirroring cmd_profile_migrate)
-    // rather than return an error the central sink would re-render.
+    // already emitted, so the exit renders nothing new (mirroring
+    // cmd_profile_migrate).
     if !run_doctor(run, fix)? {
-        cfgd_core::exit::ExitCode::Error.exit();
+        return Err(crate::cli::reported_exit(cfgd_core::exit::ExitCode::Error));
     }
     Ok(())
 }
@@ -45,11 +45,11 @@ fn fix_missing_tools(printer: &Printer) {
     let registry = crate::cli::build_registry();
     for (tool, seam) in missing {
         match crate::cli::helpers::provision_tool(printer, &registry, tool, seam) {
-            // name-row-ok: the row names the executable, not an outcome
+            // name-row-ok: the row names the executable and reports no outcome
             Ok(()) => {
                 section.status(Role::Ok, *tool).qualifier("installed");
             }
-            // name-row-ok: the row names the executable, not an outcome
+            // name-row-ok: the row names the executable and reports no outcome
             Err(reason) => {
                 // no-next-step: the reason lists the managers that would have
                 // installed it, which is the only move left to the reader
@@ -78,24 +78,17 @@ pub(crate) fn run_doctor(run: &RunContext<'_>, fix: bool) -> anyhow::Result<bool
 
 /// Display-only doctor results that are not part of the stable JSON payload.
 ///
-/// The `DoctorOutput` schema is consumer-facing and frozen; this struct carries
-/// the human-section sources (state-store health, profiles dir, config sources)
-/// so the human Doc keeps parity with the prior output without altering the
-/// `-o json` shape.
+/// The `DoctorOutput` schema is consumer-facing and changes additively only;
+/// this struct carries the human-section sources (profiles dir, config
+/// sources) that the `-o json` shape does not.
 #[derive(Default)]
 pub struct DoctorExtras {
-    pub state_store: Option<DoctorStateStore>,
     pub profiles_dir: Option<DoctorProfilesDir>,
     pub config_sources: Vec<DoctorConfigSource>,
     /// The env var currently suppressing the automatic update check
     /// (`CFGD_NO_UPDATE_CHECK` / `NO_UPDATE_NOTIFIER` / `DO_NOT_TRACK`), or
     /// `None` when no opt-out is active.
     pub update_optout: Option<&'static str>,
-}
-
-pub struct DoctorStateStore {
-    pub accessible: bool,
-    pub message: Option<String>,
 }
 
 pub struct DoctorProfilesDir {
@@ -398,7 +391,14 @@ fn collect_doctor_output(
         .map(|r| r.merged.modules.clone())
         .unwrap_or_default();
 
-    let cache_base = module_cache_dir(cli).unwrap_or_default();
+    // The cache root `apply` resolves before it opens anything, through the
+    // same resolver; a refusal here is the one `apply` would stop on.
+    let cache_root = module_cache_dir(cli);
+    let cache_dir = match &cache_root {
+        Ok(_) => DoctorRootCheck::accessible(),
+        Err(e) => DoctorRootCheck::unavailable(e.to_string()),
+    };
+    let cache_base = cache_root.unwrap_or_default();
     sp.set_message("Probing: modules");
     let all_modules =
         modules::load_all_modules(&config_dir, &cache_base, &[], printer).unwrap_or_default();
@@ -418,7 +418,12 @@ fn collect_doctor_output(
     let modules_registry = run.base_registry();
     let mgr_map = modules_registry.manager_map();
     let platform = Platform::current();
-    let doctor_cx = run.package_context().ok();
+    sp.set_message("Probing: state store");
+    let (state_store, state) = probe_state_store(cli.state_dir.as_deref(), cli.scope());
+    let recorded = super::run_context::RecordNothing(state.as_ref());
+    let doctor_cx = state_store
+        .accessible
+        .then(|| run.package_context_over(&recorded));
 
     let (module_checks, module_routes) = build_module_routes(
         &module_list,
@@ -468,22 +473,37 @@ fn collect_doctor_output(
         })
         .collect();
 
-    // Probe the store THIS run's `--state-dir`/`--scope` would open, not the
-    // per-user default — a `--scope system` doctor reporting the user store
-    // accessible would be diagnosing a store the run never uses. Asked through
-    // the run's context, which opens that exact store and does NOT memoize a
-    // failure, so a refused open is still re-attempted and still reported here
-    // rather than being answered from a cached error.
-    sp.set_message("Probing: state store");
-    let state_store = match run.state() {
-        Ok(_) => DoctorStateStore {
-            accessible: true,
-            message: None,
-        },
-        Err(e) => DoctorStateStore {
-            accessible: false,
-            message: Some(e.to_string()),
-        },
+    // Probe the store this run's `--state-dir`/`--scope` would open: a
+    // `--scope system` doctor reporting the user store accessible would be
+    // diagnosing a store the run never uses. Opened directly, without the
+    // run's context, because `RunContext::state` refuses first on a cache that
+    // does not resolve, and that failure belongs to the Cache row alone.
+
+    // The question `apply` asks before it opens anything, over the same
+    // source-composed profile and module closure, so the verdict fails exactly
+    // when `apply` would refuse for want of a home.
+    // home-optional-ok: the row's own question is whether a home resolves
+    let home_resolved = cfgd_core::home_dir().is_ok();
+    let refusal = loaded_cfg
+        .zip(doctor_profile.as_ref())
+        .and_then(|(cfg, resolved)| {
+            super::helpers::unresolved_home_before_run(
+                run,
+                cfg,
+                resolved,
+                &[],
+                false,
+                state.as_ref(),
+            )
+        });
+    let age_key_blocks_run = matches!(
+        &refusal,
+        Some(cfgd_core::errors::StateError::HomeUnresolved { role, .. })
+            if *role == secrets::AGE_KEY_ROLE
+    );
+    let home = DoctorHomeCheck {
+        resolved: home_resolved,
+        refusal: refusal.map(|e| e.to_string()),
     };
 
     sp.set_message("Probing: profiles");
@@ -503,6 +523,7 @@ fn collect_doctor_output(
     let config_sources: Vec<DoctorConfigSource> = if let Some(cfg) = loaded_cfg
         && !cfg.spec.sources.is_empty()
     {
+        // home-optional-ok: a display cell; the Cache row reports why the root does not resolve
         let cache_dir = source_cache_dir(cli).ok();
         cfg.spec
             .sources
@@ -566,6 +587,8 @@ fn collect_doctor_output(
             sops_version: health.sops_version.clone(),
             age_key_exists: health.age_key_exists,
             age_key_path: health.age_key_path.as_ref().map(cfgd_core::to_posix_string),
+            age_key_error: health.age_key_error.clone(),
+            age_key_blocks_run,
             sops_config_exists: health.sops_config_exists,
             sops_config_path: health
                 .sops_config_path
@@ -584,10 +607,12 @@ fn collect_doctor_output(
         modules: module_checks,
         system_configurators: configurator_checks,
         profiles: profile_layouts,
+        state_store,
+        cache_dir,
+        home,
     };
 
     let extras = DoctorExtras {
-        state_store: Some(state_store),
         profiles_dir: Some(profiles_dir_extra),
         config_sources,
         update_optout: cfgd_core::upgrade::update_optout_var(),
@@ -619,7 +644,9 @@ pub fn build_doctor_doc(output: &DoctorOutput, extras: &DoctorExtras) -> Doc {
     // they are cfgd's own state store, profiles directory and update behaviour
     // on this machine. `Environment` is spoken for too; it reads as the `spec.env`
     // surface, which doctor equally does not check.
-    doc = doc.section("Installation", |s| build_installation_section(s, extras));
+    doc = doc.section("Installation", |s| {
+        build_installation_section(s, output, extras)
+    });
     doc = doc.section_if_nonempty(
         super::source::list::SOURCES_SECTION,
         &extras.config_sources,
@@ -658,7 +685,7 @@ fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBu
                     .into(),
             ));
             // facts-block-ok: the block closes this arm's section; the rows
-            // below are the match's other arms, not rows after it
+            // below belong to the match's other arms
             s = s.kv_block(pairs);
             for old in &cfg.legacy_output_keys {
                 let new = cfgd_core::config::LEGACY_OUTPUT_KEYS
@@ -666,7 +693,7 @@ fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBu
                     .find(|(legacy, _)| legacy == old)
                     .map(|(_, new)| *new)
                     .unwrap_or(old.as_str());
-                // name-row-ok: the row names the key, not an outcome
+                // name-row-ok: the row names the key and reports no outcome
                 s = s.status_with(Role::Warn, old.clone(), |sf| {
                     sf.qualifier(format!("moved to {new}")).detail(format!(
                         "run `cfgd config set {} <value>`",
@@ -700,10 +727,10 @@ fn build_config_section(s: SectionBuilder, cfg: &DoctorConfigCheck) -> SectionBu
 // no-next-step: the row's detail names the command that installs the tool
 fn build_tools_section(s: SectionBuilder, git_available: bool) -> SectionBuilder {
     if git_available {
-        // name-row-ok: the row names the executable, not an outcome
+        // name-row-ok: the row names the executable and reports no outcome
         s.status_with(Role::Ok, "git", |f| f.qualifier("found"))
     } else {
-        // name-row-ok: the row names the executable, not an outcome
+        // name-row-ok: the row names the executable and reports no outcome
         s.status_with(Role::Fail, "git", |f| {
             f.qualifier(cfgd_core::Absence::NotFound.as_str())
                 .detail(MSG_RUN_DOCTOR_FIX)
@@ -720,12 +747,12 @@ const MSG_RUN_DOCTOR_FIX: &str = "run `cfgd doctor --fix` to install it";
 fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) -> SectionBuilder {
     s = if secrets.sops_available {
         let version_str = secrets.sops_version.as_deref().unwrap_or("unknown version");
-        // name-row-ok: the row names the executable, not an outcome
+        // name-row-ok: the row names the executable and reports no outcome
         s.status_with(Role::Ok, "sops", |f| {
             f.qualifier(format!("found ({})", version_str))
         })
     } else {
-        // name-row-ok: the row names the executable, not an outcome
+        // name-row-ok: the row names the executable and reports no outcome
         s.status_with(Role::Warn, "sops", |f| {
             f.qualifier(cfgd_core::Absence::NotFound.as_str())
                 .detail(format!("required for secrets; {MSG_RUN_DOCTOR_FIX}"))
@@ -733,11 +760,11 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
     };
 
     s = match (secrets.age_key_exists, secrets.age_key_path.as_deref()) {
-        // name-row-ok: the row names the key file, not an outcome
+        // name-row-ok: the row names the key file and reports no outcome
         (true, Some(path)) => s.status_with(Role::Ok, "age key", |f| {
             f.qualifier(cfgd_core::fold_home_in_text(path))
         }),
-        // name-row-ok: the row names the key file, not an outcome
+        // name-row-ok: the row names the key file and reports no outcome
         (false, Some(path)) => s.status_with(Role::Warn, "age key", |f| {
             f.qualifier(cfgd_core::fold_home_in_text(path))
                 .detail(format!(
@@ -745,7 +772,22 @@ fn build_secrets_section(mut s: SectionBuilder, secrets: &DoctorSecretsCheck) ->
                     cfgd_core::Absence::NotFound
                 ))
         }),
-        _ => s,
+        // A run that decrypts with the key refuses without it; one that does
+        // not still reads the key the moment a secret is declared.
+        (_, None) => match secrets.age_key_error.as_deref() {
+            Some(error) => {
+                let role = if secrets.age_key_blocks_run {
+                    Role::Fail
+                } else {
+                    Role::Warn
+                };
+                // name-row-ok: the row names the key file and reports no outcome
+                s.status_with(role, "age key", |f| {
+                    f.qualifier("no location").detail(error)
+                })
+            }
+            None => s,
+        },
     };
 
     s = match (
@@ -883,7 +925,7 @@ fn build_profiles_section(
     profiles: &[DoctorProfileLayoutCheck],
 ) -> SectionBuilder {
     if profiles.iter().all(|p| !p.legacy && p.error.is_none()) {
-        // verdict-row-ok: a layout verdict, not an act cfgd performed
+        // verdict-row-ok: a layout verdict on what cfgd found
         return s.status(Role::Ok, "All profiles use the canonical bundle layout");
     }
     profiles.iter().fold(s, |s, p| {
@@ -892,7 +934,7 @@ fn build_profiles_section(
             // them errors), unlike the supported legacy form — Fail, not Warn.
             s.status(Role::Fail, cfgd_core::output::collapse_to_subject_line(err))
         } else if p.legacy {
-            // name-row-ok: the row names the profile, not an outcome
+            // name-row-ok: the row names the profile and reports no outcome
             s.status_with(Role::Warn, format!("profile '{}'", p.name), |sf| {
                 sf.qualifier("uses the legacy flat layout")
                     .detail(format!("run `cfgd profile migrate {}`", p.name))
@@ -903,19 +945,73 @@ fn build_profiles_section(
     })
 }
 
+/// The state store `apply` would open, checked without creating or migrating
+/// it: doctor is a diagnostic, and a fresh machine has no store until the first
+/// apply writes one.
+fn probe_state_store(
+    state_over: Option<&Path>,
+    scope: cfgd_core::Scope,
+) -> (DoctorRootCheck, Option<cfgd_core::state::StateStore>) {
+    let dir = match super::helpers::run_state_dir(state_over, scope) {
+        Ok(dir) => dir,
+        Err(e) => return (DoctorRootCheck::unavailable(e.to_string()), None),
+    };
+    // `apply` refuses a directory it cannot write before it opens the store.
+    if dir.is_dir()
+        && let cfgd_core::DirWritable::NotWritable = cfgd_core::probe_dir_writable(&dir)
+    {
+        let refusal = cfgd_core::errors::CfgdError::from(
+            cfgd_core::errors::StateError::DirectoryNotWritable { path: dir },
+        );
+        return (DoctorRootCheck::unavailable(refusal.to_string()), None);
+    }
+    let db = dir.join(cfgd_core::state::STATE_DB_FILENAME);
+    if !db.exists() {
+        return (DoctorRootCheck::not_created(), None);
+    }
+    match cfgd_core::state::StateStore::open_read_only(&db) {
+        Ok(store) => (DoctorRootCheck::accessible(), Some(store)),
+        Err(e) => (DoctorRootCheck::unavailable(e.to_string()), None),
+    }
+}
+
 // no-next-step: the row's detail names the directory cfgd could not use
-fn build_installation_section(mut s: SectionBuilder, extras: &DoctorExtras) -> SectionBuilder {
-    if let Some(ss) = extras.state_store.as_ref() {
-        s = if ss.accessible {
+fn build_installation_section(
+    s: SectionBuilder,
+    output: &DoctorOutput,
+    extras: &DoctorExtras,
+) -> SectionBuilder {
+    let root_row = |s: SectionBuilder, label: &str, check: &DoctorRootCheck| {
+        if check.created == Some(false) {
             // name-row-ok: an inventory row naming what was checked
-            s.status(Role::Ok, "State store: accessible")
+            s.status_with(Role::Ok, format!("{label}: not created yet"), |sf| {
+                sf.detail("`cfgd apply` creates it")
+            })
+        } else if check.accessible {
+            // name-row-ok: an inventory row naming what was checked
+            s.status(Role::Ok, format!("{label}: accessible"))
         } else {
-            let detail = ss.message.clone().unwrap_or_else(|| "unavailable".into());
-            s.status_with(Role::Warn, "State store: unavailable", |sf| {
+            let detail = check
+                .message
+                .clone()
+                .unwrap_or_else(|| "unavailable".into());
+            s.status_with(Role::Fail, format!("{label}: unavailable"), |sf| {
                 sf.detail(detail)
             })
-        };
-    }
+        }
+    };
+    let s = root_row(s, "State store", &output.state_store);
+    let s = root_row(s, "Cache directory", &output.cache_dir);
+    let mut s = match (output.home.resolved, output.home.refusal.as_deref()) {
+        // name-row-ok: an inventory row naming what was checked
+        (true, _) => s.status(Role::Ok, "Home directory: found"),
+        (false, Some(refusal)) => s.status_with(Role::Fail, "Home directory: unset", |sf| {
+            sf.detail(refusal.to_string())
+        }),
+        (false, None) => s.status_with(Role::Info, "Home directory: unset", |sf| {
+            sf.detail("nothing declared writes under it")
+        }),
+    };
     if let Some(pd) = extras.profiles_dir.as_ref() {
         s = if let Some(err) = pd.error.as_deref() {
             s.status_with(Role::Fail, "Profiles directory", |sf| {
@@ -975,6 +1071,12 @@ fn all_passed(output: &DoctorOutput) -> bool {
         // Legacy layout is a Warn (supported); only errored profile checks
         // (ambiguous forms, unscannable dir) fail the verdict.
         && output.profiles.iter().all(|p| p.error.is_none())
+        // `apply` resolves these same roots before it writes anything, so a
+        // root that does not resolve is a run that cannot start, and a missing
+        // home is one only when the desired state writes under it.
+        && output.state_store.accessible
+        && output.cache_dir.accessible
+        && output.home.refusal.is_none()
 }
 
 /// A config missing at the DEFAULT path is a fresh-machine state (rendered as

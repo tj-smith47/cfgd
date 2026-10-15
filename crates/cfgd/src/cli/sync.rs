@@ -5,10 +5,9 @@ use cfgd_core::output::{Doc, OwnerLabel, Role};
 pub fn cmd_sync(run: &RunContext<'_>) -> anyhow::Result<()> {
     // A leg that refused must not read as success to a CI `&&` chain, the same
     // reason `apply` exits nonzero on a partial run. The rows and the payload
-    // are already flushed by `run_sync`, so this exits directly rather than
-    // returning an error nothing new could say.
+    // are already flushed by `run_sync`, so the exit renders nothing new.
     if sync_refused(&run_sync(run)?) {
-        cfgd_core::exit::ExitCode::Error.exit();
+        return Err(crate::cli::reported_exit(cfgd_core::exit::ExitCode::Error));
     }
     Ok(())
 }
@@ -227,8 +226,8 @@ pub fn run_sync(run: &RunContext<'_>) -> anyhow::Result<SyncOutput> {
                 sync_payload.local_pulled = true;
             }
             cfgd_core::daemon::PullOutcome::UpToDate => {
-                // verdict-row-ok: the state the checkout was already in, not an
-                // act this run performed
+                // verdict-row-ok: the state the checkout was already in; this run
+                // changed nothing
                 repo_sec.status(Role::Ok, "Already up to date");
             }
             cfgd_core::daemon::PullOutcome::Failed(e) => {

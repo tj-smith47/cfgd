@@ -68,8 +68,8 @@ Windows render never matches the home's POSIX spelling), and never reaches a `tr
 when the post-edit hook flags it, append a justification on the same line:
 
 ```rust
-tracing::warn!("cannot read {}", path.display()); // native-ok: log line, not a key
-tracing::info!("daemon: health endpoint at {ipc_path}"); // native-ok: journal line, not a display slot
+tracing::warn!("cannot read {}", path.display()); // native-ok: a log line, read by people
+tracing::info!("daemon: health endpoint at {ipc_path}"); // native-ok: a journal line, read by people
 ```
 
 The hook flags **newly-added** native renders only, across `cfgd-core/src` and

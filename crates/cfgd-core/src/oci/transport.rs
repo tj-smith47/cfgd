@@ -86,20 +86,18 @@ fn read_error_body(resp: Response<Body>) -> String {
     String::from_utf8_lossy(&data).trim().to_string()
 }
 
-/// Build a [`RequestFailed`](OciError::RequestFailed) that carries the
-/// registry's own explanation. Registries report failures (quota exceeded,
-/// insufficient storage, access denied) as a JSON `errors[]` array per the
-/// OCI Distribution Spec; when the body parses that way each entry renders
-/// as `CODE: message`, and when it doesn't (plain text, HTML error page, or
-/// no body at all) the raw trimmed body is appended instead so nothing the
-/// registry sent is silently dropped.
+/// The error a registry's non-2xx answer to `url` stands for, carrying the
+/// registry's own explanation. A `401` or `403` refuses the credential and is
+/// [`AuthFailed`](OciError::AuthFailed), the variant a `401` with no Bearer
+/// challenge already is; every other status is
+/// [`RequestFailed`](OciError::RequestFailed). Registries report failures
+/// (quota exceeded, insufficient storage, access denied) as a JSON `errors[]`
+/// array per the OCI Distribution Spec; when the body parses that way each
+/// entry renders as `CODE: message`, and when it doesn't (plain text, HTML
+/// error page) the raw trimmed body is appended so nothing the registry sent
+/// is silently dropped.
 fn format_registry_error(status: u16, url: &str, resp: Response<Body>) -> OciError {
     let body = read_error_body(resp);
-    if body.is_empty() {
-        return OciError::RequestFailed {
-            message: format!("HTTP {status} from {url}"),
-        };
-    }
     let detail = match serde_json::from_str::<RegistryErrorBody>(&body) {
         Ok(parsed) if !parsed.errors.is_empty() => parsed
             .errors
@@ -115,8 +113,23 @@ fn format_registry_error(status: u16, url: &str, resp: Response<Body>) -> OciErr
             .join("; "),
         _ => body,
     };
-    OciError::RequestFailed {
-        message: format!("HTTP {status} from {url}: {detail}"),
+    let answer = if detail.is_empty() {
+        format!("HTTP {status}")
+    } else {
+        format!("HTTP {status}: {detail}")
+    };
+    match status {
+        401 | 403 => OciError::AuthFailed {
+            registry: url.to_string(),
+            message: answer,
+        },
+        _ => OciError::RequestFailed {
+            message: if detail.is_empty() {
+                format!("HTTP {status} from {url}")
+            } else {
+                format!("HTTP {status} from {url}: {detail}")
+            },
+        },
     }
 }
 
@@ -155,6 +168,39 @@ pub(super) fn authenticated_request_if_present(
         404 => Ok(None),
         status => Err(format_registry_error(status, url, resp)),
     }
+}
+
+/// What a GET names when the registry answers `404` for it.
+pub(super) enum Missing<'a> {
+    /// A manifest, by the reference the reader asked for.
+    Manifest(&'a dyn std::fmt::Display),
+    /// A blob, by its digest.
+    Blob(&'a str),
+}
+
+/// GET `url`, or the not-found error `missing` names when the registry
+/// answers `404`. Every other failure is [`authenticated_request_if_present`]'s
+/// own error. The one place an OCI read builds
+/// [`ManifestNotFound`](OciError::ManifestNotFound) or
+/// [`BlobNotFound`](OciError::BlobNotFound), so no other failure can be
+/// reported as a missing artifact.
+pub(super) fn get_present(
+    agent: &ureq::Agent,
+    url: &str,
+    auth: Option<&RegistryAuth>,
+    accept: Option<&str>,
+    missing: Missing<'_>,
+) -> Result<Response<Body>, OciError> {
+    authenticated_request_if_present(agent, "GET", url, auth, accept)?.ok_or_else(
+        || match missing {
+            Missing::Manifest(reference) => OciError::ManifestNotFound {
+                reference: reference.to_string(),
+            },
+            Missing::Blob(digest) => OciError::BlobNotFound {
+                digest: digest.to_string(),
+            },
+        },
+    )
 }
 
 /// The registry's final response to a request, whatever its status, after
@@ -200,7 +246,7 @@ fn authorized_response(
             });
         }
 
-        let token = get_bearer_token(agent, &www_auth, auth)?;
+        let token = get_bearer_token(agent, &www_auth, auth, url)?;
 
         // Retry with bearer token
         let resp2 = run_request(
@@ -359,18 +405,13 @@ pub(super) fn fetch_blob(
         digest
     );
 
-    let resp = authenticated_request(
+    let resp = get_present(
         agent,
-        "GET",
         &blob_url,
         auth,
         Some("application/octet-stream"),
-        None,
-        None,
-    )
-    .map_err(|e| OciError::BlobNotFound {
-        digest: format!("{digest}: {e}"),
-    })?;
+        Missing::Blob(digest),
+    )?;
 
     let mut data = Vec::new();
     resp.into_body()
@@ -493,10 +534,7 @@ mod tests {
             .with_status(201)
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let result = upload_blob(&agent, &oci_ref, None, data, "application/octet-stream");
         assert!(result.is_ok(), "upload_blob failed: {:?}", result.err());
@@ -530,10 +568,7 @@ mod tests {
             .with_status(200)
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let result = upload_blob(&agent, &oci_ref, None, data, "application/octet-stream");
         assert!(result.is_ok());
@@ -583,10 +618,7 @@ mod tests {
             .with_status(201)
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let result = upload_blob(&agent, &oci_ref, None, data, "application/octet-stream");
         assert!(
@@ -632,10 +664,7 @@ mod tests {
             .with_body("manifest content")
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let url = format!("{}/v2/test/repo/manifests/v1", server.url());
         let result = authenticated_request(&agent, "GET", &url, None, None, None, None);
@@ -657,10 +686,7 @@ mod tests {
             .with_header("Www-Authenticate", "Basic realm=\"test\"")
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let url = format!("{}/v2/test/repo/manifests/v1", server.url());
         let result = authenticated_request(&agent, "GET", &url, None, None, None, None);
@@ -686,10 +712,7 @@ mod tests {
             .with_body("{}")
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let url = format!("{}/v2/test/repo/tags/list", server.url());
         let result = authenticated_request(&agent, "GET", &url, Some(&auth), None, None, None);
@@ -709,10 +732,7 @@ mod tests {
             .with_status(201)
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let url = format!("{}/v2/test/repo/manifests/v1", server.url());
         let result = authenticated_request(
@@ -737,10 +757,7 @@ mod tests {
             m = m.with_header(*k, v);
         }
         m.create();
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
         let url = format!("{}/v2/test/repo/manifests/v1", server.url());
         authenticated_request(&agent, "PUT", &url, None, None, None, Some(b"x"))
             .expect("PUT should succeed")
@@ -806,18 +823,17 @@ mod tests {
     fn authenticated_request_returns_error_on_500() {
         let mut server = mockito::Server::new();
 
-        server
+        let tags = server
             .mock("GET", "/v2/test/repo/tags/list")
             .with_status(500)
+            .expect(1)
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let url = format!("{}/v2/test/repo/tags/list", server.url());
         let result = authenticated_request(&agent, "GET", &url, None, None, None, None);
+        tags.assert();
         assert!(matches!(result, Err(OciError::RequestFailed { .. })));
     }
 
@@ -833,10 +849,7 @@ mod tests {
             )
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let url = format!("{}/v2/test/repo/blobs/uploads/", server.url());
         let result = authenticated_request(&agent, "POST", &url, None, None, None, Some(&[]));
@@ -858,10 +871,7 @@ mod tests {
             .with_body("upstream registry unreachable")
             .create();
 
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
         let url = format!("{}/v2/test/repo/tags/list", server.url());
         let result = authenticated_request(&agent, "GET", &url, None, None, None, None);
@@ -876,14 +886,102 @@ mod tests {
     fn authenticated_request_returns_request_failed_on_unreachable_host() {
         // Pointing the agent at a closed port triggers the catch-all
         // `Err(e) => Err(OciError::RequestFailed { ... })` arm.
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_millis(250)))
-            .build()
-            .new_agent();
+        let agent = crate::http::http_agent(std::time::Duration::from_millis(250));
 
         // 127.0.0.1:1 is reserved/unused; the connection refuses immediately.
         let url = "http://127.0.0.1:1/v2/test/repo/tags/list";
         let result = authenticated_request(&agent, "GET", url, None, None, None, None);
         assert!(matches!(result, Err(OciError::RequestFailed { .. })));
+    }
+
+    fn fetch_blob_from(registry: &str) -> Result<Vec<u8>, OciError> {
+        let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
+        let oci_ref = OciReference {
+            registry: registry.to_string(),
+            repository: "test/blobmod".to_string(),
+            reference: ReferenceKind::Tag("v1".to_string()),
+        };
+        fetch_blob(&agent, &oci_ref, None, "sha256:abc")
+    }
+
+    fn fetch_blob_answered(status: usize) -> OciError {
+        let mut server = mockito::Server::new();
+        let blob = server
+            .mock("GET", "/v2/test/blobmod/blobs/sha256:abc")
+            .with_status(status)
+            .expect(1)
+            .create();
+        let err =
+            fetch_blob_from(&registry_from_url(&server.url())).expect_err("the blob is not served");
+        blob.assert();
+        err
+    }
+
+    #[test]
+    fn fetch_blob_reports_a_credential_refused_after_the_token_exchange_as_an_auth_failure() {
+        let mut server = mockito::Server::new();
+        let challenge = format!(r#"Bearer realm="{}/token",service="svc""#, server.url());
+        server
+            .mock("GET", "/v2/test/blobmod/blobs/sha256:abc")
+            .match_header("authorization", mockito::Matcher::Missing)
+            .with_status(401)
+            .with_header("Www-Authenticate", &challenge)
+            .create();
+        server
+            .mock("GET", mockito::Matcher::Regex(r"^/token".to_string()))
+            .with_status(200)
+            .with_body(r#"{"token":"tok"}"#)
+            .create();
+        let retry = server
+            .mock("GET", "/v2/test/blobmod/blobs/sha256:abc")
+            .match_header("authorization", "Bearer tok")
+            .with_status(401)
+            .with_body(
+                r#"{"errors":[{"code":"UNAUTHORIZED","message":"authentication required"}]}"#,
+            )
+            .expect(1)
+            .create();
+
+        let err = fetch_blob_from(&registry_from_url(&server.url()))
+            .expect_err("the token does not open the blob");
+        retry.assert();
+        assert!(
+            matches!(&err, OciError::AuthFailed { message, .. }
+                if message == "HTTP 401: UNAUTHORIZED: authentication required"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn fetch_blob_reports_a_403_as_an_auth_failure() {
+        let err = fetch_blob_answered(403);
+        assert!(matches!(err, OciError::AuthFailed { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn fetch_blob_names_the_digest_only_when_the_registry_answers_404() {
+        let err = fetch_blob_answered(404);
+        assert!(
+            matches!(&err, OciError::BlobNotFound { digest } if digest == "sha256:abc"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn fetch_blob_reports_an_unreachable_registry_as_a_request_failure() {
+        let err = fetch_blob_from("127.0.0.1:1").expect_err("nothing listens there");
+        assert!(matches!(err, OciError::RequestFailed { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn fetch_blob_reports_a_registry_500_as_a_request_failure() {
+        let err = fetch_blob_answered(500);
+        assert!(matches!(err, OciError::RequestFailed { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn fetch_blob_reports_a_refused_credential_as_an_auth_failure() {
+        let err = fetch_blob_answered(401);
+        assert!(matches!(err, OciError::AuthFailed { .. }), "{err:?}");
     }
 }

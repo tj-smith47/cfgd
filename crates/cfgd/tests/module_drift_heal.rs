@@ -11,7 +11,7 @@
 //! spelled here, so a producer that goes back to minting an aggregate takes
 //! this test red instead of quietly seeding its own new grammar.
 //!
-//! The verbs run as the real binary, because they end in `std::process::exit`.
+//! The verbs run as the real binary, because their exit codes are set in `main`.
 
 use std::path::{Path, PathBuf};
 

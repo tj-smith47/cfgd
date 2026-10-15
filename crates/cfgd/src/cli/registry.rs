@@ -107,10 +107,6 @@ impl cfgd_core::daemon::DaemonHooks for WorkstationDaemonHooks {
         )
     }
 
-    fn expand_tilde(&self, path: &std::path::Path) -> std::path::PathBuf {
-        cfgd_core::expand_tilde(path)
-    }
-
     fn prune_orphaned_packages(
         &self,
         orphans: &[cfgd_core::providers::OrphanedPackage],
@@ -565,9 +561,8 @@ pub(in crate::cli) fn open_state_store(
     state_dir: Option<&Path>,
     scope: cfgd_core::Scope,
 ) -> anyhow::Result<StateStore> {
-    Ok(StateStore::open_in_dir(&super::helpers::run_state_dir(
-        state_dir, scope,
-    )?)?)
+    let dir = super::helpers::run_state_dir(state_dir, scope)?;
+    Ok(StateStore::open_in_dir(&dir)?)
 }
 
 // --- Secret backend resolution ---

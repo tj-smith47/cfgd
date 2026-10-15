@@ -1673,7 +1673,8 @@ mod unix_script {
             "work",
             crate::reconciler::ReconcileContext::Apply,
             &module,
-        );
+        )
+        .unwrap();
         let out = crate::with_test_home(home.path(), || {
             compute_patched(
                 "",
@@ -1696,7 +1697,8 @@ mod unix_script {
             config_dir.path(),
             "work",
             crate::reconciler::ReconcileContext::Apply,
-        );
+        )
+        .unwrap();
         let out = crate::with_test_home(home.path(), || {
             compute_patched(
                 "",

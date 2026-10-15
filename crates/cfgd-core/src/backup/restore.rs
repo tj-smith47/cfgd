@@ -201,16 +201,22 @@ impl RestoreTarget {
 /// Exported so the caller that renders the confirmation prompt names the same
 /// path [`restore_backup`] will overwrite, rather than re-deriving it and
 /// prompting about a path that is not the one written.
-pub fn restore_target(unit: &BackupUnit<'_>, to: Option<&Path>) -> RestoreTarget {
+///
+/// # Errors
+///
+/// [`StateError::HomeUnresolved`](crate::errors::StateError::HomeUnresolved)
+/// when `to` starts with `~` and no home directory is set.
+pub fn restore_target(unit: &BackupUnit<'_>, to: Option<&Path>) -> Result<RestoreTarget> {
     let requested = match to {
-        Some(path) => crate::expand_tilde(path),
+        // home-refusal-ok: `backup restore` alone reads it; no apply or plan path reaches it
+        Some(path) => crate::expand_tilde(path, "restore target")?,
         None => unit.source(),
     };
     let resolved = resolve_target_link(&requested);
-    RestoreTarget {
+    Ok(RestoreTarget {
         requested,
         resolved,
-    }
+    })
 }
 
 /// Every restorable snapshot of `unit`, newest first.
@@ -376,7 +382,7 @@ pub fn restore_backup(
     // is a link to a directory holds a directory snapshot. Restoring it has to
     // follow the same link, or the snapshot would replace the link itself with
     // the tree it points at.
-    let target = restore_target(unit, to).resolved;
+    let target = restore_target(unit, to)?.resolved;
     let destination = unit.destination_dir();
     if super::is_at_or_within(
         &super::resolve_for_containment(&target),

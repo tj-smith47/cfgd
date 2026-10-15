@@ -21,7 +21,7 @@ fn diff_module_file(
 ) -> anyhow::Result<cfgd_core::providers::FileDriftResult> {
     match &file.patch {
         Some(spec) => {
-            let binding = crate::files::module_patch_binding(config_dir, resolved, module);
+            let binding = crate::files::module_patch_binding(config_dir, resolved, module)?;
             let evaluated =
                 cfgd_core::reconciler::evaluate_patch(spec, &file.target, &binding.context());
             Ok(crate::files::render_patch_diff(
@@ -102,6 +102,10 @@ pub fn cmd_diff(
     let module_cache = module_cache_dir(cli)?;
 
     let (cfg, profile_name, local_resolved) = run.config_and_profile()?;
+    // The live env check below folds the `PATH` line against the home, so a
+    // run with none is refused here, before the state store opens and leaves
+    // a `state.db` behind for a run that read nothing from it.
+    cfgd_core::home_dir()?;
     // Drift is reported under the same owner that would be named in the plan
     // that fixes it, so the two surfaces read as one coordinate system.
     let profile_owner = Owner::profile(profile_name.to_string());
@@ -215,20 +219,21 @@ pub fn cmd_diff(
             &resolved_modules,
             config_dir,
             registry.default_file_strategy,
-        );
+        )?;
         let mut drift = false;
         {
             let _group = files_phase.section_owner_or_collapse(&profile_owner.label());
             // Target order, as `fm.diff` sorted: two runs finding the same
             // drift read the same, whatever the declaration order was.
             for managed in crate::files::CfgdFileManager::sorted_managed_specs(&resolved.merged) {
+                let target = cfgd_core::expand_tilde(&managed.target, cfgd_core::FILE_TARGET_ROLE)?;
                 // absolute-path-ok: the recorded drift row id, matched against stored rows
-                let rid = cfgd_core::expand_tilde(&managed.target).display_posix();
+                let rid = target.display_posix();
                 if !drifted_ids.contains(rid.as_str()) {
                     continue;
                 }
                 let record = fm.diff_managed_one(managed, printer)?;
-                let strategy = strategies.for_target(&cfgd_core::expand_tilde(&managed.target));
+                let strategy = strategies.for_target(&target);
                 if record_file_drift(
                     &mut diff_payload,
                     record,
@@ -251,8 +256,7 @@ pub fn cmd_diff(
                 if !drifted_ids.contains(rid.as_str()) {
                     continue;
                 }
-                let strategy = strategies
-                    .for_target(&cfgd_core::expand_tilde(std::path::Path::new(&file.target)));
+                let strategy = strategies.for_target(&file.target);
                 let record =
                     diff_module_file(&fm, &resolved, module, file, config_dir, strategy, printer)?;
                 if record_file_drift(
@@ -315,7 +319,7 @@ pub fn cmd_diff(
             );
             let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &resolved_modules);
             let merged_env_items =
-                cfgd_core::reconciler::MergedEnvItems::new(&layered, &report.path_dirs);
+                cfgd_core::reconciler::MergedEnvItems::new(&layered, &report.path_dirs)?;
             for r in results {
                 drift = true;
                 // An env-var/alias row's `expected`/`actual` are opaque markers —
@@ -323,7 +327,7 @@ pub fn cmd_diff(
                 // drift record — so recompute both here, for this terminal/`-o json`
                 // display only. The recorder already stored the markers.
                 let (expected, actual) = merged_env_items
-                    .display_values(&r.resource_type, &r.resource_id)
+                    .display_values(&r.resource_type, &r.resource_id)?
                     .unwrap_or_else(|| (r.expected.clone(), r.actual.clone()));
                 let (expected, actual) =
                     cfgd_core::output::drift_operands(&r.resource_type, &expected, &actual);
@@ -432,7 +436,7 @@ pub fn cmd_diff(
     printer.emit(build_diff_doc(&diff_payload, DiffScope::Machine));
 
     if exit_code && let Some(code) = diff_exit_code(&diff_payload.summary) {
-        code.exit();
+        return Err(crate::cli::reported_exit(code));
     }
 
     Ok(())
@@ -551,6 +555,10 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
     let platform = Platform::current();
     let mgr_map = registry.manager_map();
     let cache_base = module_cache_dir(cli)?;
+    // With no home, the store stays closed until the env check below has
+    // asked the home its question: the package queries before it read the
+    // store read-only and record nothing.
+    let store_hold = ctx.hold_store_while_homeless();
     let pkg_cx = ctx.package_context()?;
     // The module resolution can clone a git-sourced module: it is this path's
     // first wait, and the title lands after it, not over it.
@@ -607,7 +615,19 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         &cfgd_core::output::HeaderModule::of_isolate(&resolved_modules),
     )?;
 
-    let state = ctx.state()?;
+    let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
+    // The isolate's own layered view, built once for both halves of the Shell
+    // section: the per-item check and the display recompute read one merge.
+    // The check reads the managed env file under the home whenever the chain
+    // declares env or aliases, so it runs before the store opens: a diff the
+    // home refuses leaves the store as it found it.
+    let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &resolved_modules);
+    let check = cfgd_core::reconciler::env_item_verify_results(&layered)?;
+    // The display recompute folds its `PATH` line against the home on every
+    // chain, so it asks before the store opens too. `path_dirs` feeds only
+    // that line, which the scoped check never renders a row for.
+    let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[])?;
+    let state = store_hold.release()?;
 
     let mut diff_payload = DiffOutput::default();
     // The scoped record's two halves (module doc in `live_drift`): every key
@@ -619,7 +639,6 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
     let mut findings: Vec<cfgd_core::reconciler::VerifyResult> = Vec::new();
     let mut has_file_diff = false;
     let mut has_pkg_drift = false;
-    let resolved = empty_resolved_profile(&[mod_name.to_string()], &ctx.active_profile_name());
 
     {
         // Mirror the full `cmd_diff` path: the `Files` heading, one
@@ -636,13 +655,12 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
             &resolved_modules,
             config_dir,
             ctx.base_registry().default_file_strategy,
-        );
+        )?;
         for module in modules_by_name(&resolved_modules) {
             let _group =
                 files_phase.section_owner_or_collapse(&OwnerLabel::new("module", &module.name));
             for file in files_by_target(module) {
-                let strategy = strategies
-                    .for_target(&cfgd_core::expand_tilde(std::path::Path::new(&file.target)));
+                let strategy = strategies.for_target(&file.target);
                 let record =
                     diff_module_file(&fm, &resolved, module, file, config_dir, strategy, printer)?;
                 let rid = super::live_drift::module_file_resource_id(&module.name, &record.target);
@@ -752,11 +770,6 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         // lines and the folded `PATH` line stay the machine-wide walk's — the
         // whole profile's shared artifacts, which one module's fragment can
         // neither vouch for nor blame.
-        // The isolate's own layered view, built once for both halves of this
-        // section: the per-item check and the display recompute below read one
-        // merge.
-        let layered = cfgd_core::reconciler::LayeredEnv::of(&resolved, &resolved_modules);
-        let check = cfgd_core::reconciler::env_item_verify_results(&layered);
         // The ONE ownership answer, asked once for the whole block: which
         // layer's declaration each checked name belongs to — the same fold
         // the isolate's merge just applied.
@@ -790,9 +803,6 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
         }
         let results = env_drift_ordered(owned);
         {
-            // `path_dirs` feeds only the folded `PATH` line, which the scoped
-            // check never renders a row for.
-            let merged_env_items = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]);
             // One pass: every finding lands in exactly one bucket — the
             // fold's recorded winner when that token names a chain module,
             // else the module under report (the only module the caller asked
@@ -833,7 +843,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
                     // real declared/deployed lines for this display only,
                     // exactly as the machine-wide Shell section does.
                     let (expected, actual) = merged_env_items
-                        .display_values(&r.resource_type, &r.resource_id)
+                        .display_values(&r.resource_type, &r.resource_id)?
                         .unwrap_or_else(|| (r.expected.clone(), r.actual.clone()));
                     let (expected, actual) =
                         cfgd_core::output::drift_operands(&r.resource_type, &expected, &actual);
@@ -920,7 +930,7 @@ fn cmd_diff_module(ctx: &RunContext<'_>, mod_name: &str, exit_code: bool) -> any
     printer.emit(build_diff_doc(&diff_payload, DiffScope::Module(mod_name)));
 
     if exit_code && let Some(code) = diff_exit_code(&diff_payload.summary) {
-        code.exit();
+        return Err(crate::cli::reported_exit(code));
     }
 
     Ok(())
@@ -1419,7 +1429,9 @@ mod tests {
             ),
             &[],
         )
+        .unwrap()
         .declared_line("alias", "ll")
+        .unwrap()
         .expect("alias renders a declared line");
         std::fs::write(
             cfgd_core::reconciler::primary_env_file(tmp_home.path()),
@@ -1461,7 +1473,9 @@ mod tests {
             ),
             &[],
         )
+        .unwrap()
         .declared_line("alias", "ll")
+        .unwrap()
         .expect("alias renders a declared line");
         assert!(
             human.contains(&cfgd_core::output::drift_detail(
@@ -1517,7 +1531,7 @@ mod tests {
             &[],
         );
         cfgd_core::test_helpers::plant_managed_env_files(
-            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]),
+            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]).unwrap(),
             tmp_home.path(),
             cfgd_core::config::EnvScope::default(),
         );
@@ -1595,7 +1609,7 @@ mod tests {
         )];
         let layered = cfgd_core::reconciler::LayeredEnv::from_parts("profile:test", &[], &[], &[]);
         let written: Vec<String> = cfgd_core::test_helpers::plant_managed_env_files(
-            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &path_dirs),
+            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &path_dirs).unwrap(),
             tmp_home.path(),
             cfgd_core::config::EnvScope::Interactive,
         )
@@ -1954,7 +1968,7 @@ mod tests {
             &[],
         );
         cfgd_core::test_helpers::plant_managed_env_files(
-            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]),
+            &cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]).unwrap(),
             tmp_home.path(),
             cfgd_core::config::EnvScope::default(),
         );

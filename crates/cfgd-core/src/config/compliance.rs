@@ -209,7 +209,7 @@ mod tests {
     fn default_compliance_path_expands_to_state_compliance_tail() {
         let dir = tempfile::tempdir().unwrap();
         let resolved = crate::with_test_home(dir.path(), || {
-            crate::expand_tilde(std::path::Path::new(&default_compliance_path()))
+            crate::expand_tilde(std::path::Path::new(&default_compliance_path()), "test").unwrap()
         });
         assert!(
             resolved.starts_with(dir.path()),

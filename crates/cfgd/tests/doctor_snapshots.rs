@@ -9,13 +9,11 @@
 
 use std::path::Path;
 
-use cfgd::cli::doctor::{
-    DoctorConfigSource, DoctorExtras, DoctorProfilesDir, DoctorStateStore, build_doctor_doc,
-};
+use cfgd::cli::doctor::{DoctorConfigSource, DoctorExtras, DoctorProfilesDir, build_doctor_doc};
 use cfgd::cli::output_types::{
-    DoctorConfigCheck, DoctorConfigState, DoctorConfiguratorCheck, DoctorManagerCheck,
-    DoctorModuleCheck, DoctorModuleManagerRoute, DoctorOutput, DoctorProviderCheck,
-    DoctorSecretsCheck,
+    DoctorConfigCheck, DoctorConfigState, DoctorConfiguratorCheck, DoctorHomeCheck,
+    DoctorManagerCheck, DoctorModuleCheck, DoctorModuleManagerRoute, DoctorOutput,
+    DoctorProviderCheck, DoctorRootCheck, DoctorSecretsCheck,
 };
 use cfgd_core::output::Printer;
 
@@ -38,6 +36,8 @@ fn happy_fixture() -> (DoctorOutput, DoctorExtras) {
             sops_version: Some("3.8.1".into()),
             age_key_exists: true,
             age_key_path: Some("/home/test/.config/sops/age/keys.txt".into()),
+            age_key_error: None,
+            age_key_blocks_run: false,
             sops_config_exists: true,
             sops_config_path: Some("/home/test/.config/cfgd/.sops.yaml".into()),
             providers: vec![
@@ -86,12 +86,22 @@ fn happy_fixture() -> (DoctorOutput, DoctorExtras) {
             available: true,
         }],
         profiles: Vec::new(),
-    };
-    let extras = DoctorExtras {
-        state_store: Some(DoctorStateStore {
+        state_store: DoctorRootCheck {
             accessible: true,
             message: None,
-        }),
+            created: None,
+        },
+        cache_dir: DoctorRootCheck {
+            accessible: true,
+            message: None,
+            created: None,
+        },
+        home: DoctorHomeCheck {
+            resolved: true,
+            refusal: None,
+        },
+    };
+    let extras = DoctorExtras {
         profiles_dir: Some(DoctorProfilesDir {
             path: "/home/test/.config/cfgd/profiles".into(),
             exists: true,
@@ -154,6 +164,8 @@ fn bare_fixture() -> (DoctorOutput, DoctorExtras) {
             sops_version: Some("3.8.1".into()),
             age_key_exists: true,
             age_key_path: Some("/home/test/.config/sops/age/keys.txt".into()),
+            age_key_error: None,
+            age_key_blocks_run: false,
             sops_config_exists: true,
             sops_config_path: Some("/home/test/.config/cfgd/.sops.yaml".into()),
             providers: vec![],
@@ -162,12 +174,22 @@ fn bare_fixture() -> (DoctorOutput, DoctorExtras) {
         modules: vec![],
         system_configurators: vec![],
         profiles: Vec::new(),
-    };
-    let extras = DoctorExtras {
-        state_store: Some(DoctorStateStore {
+        state_store: DoctorRootCheck {
             accessible: true,
             message: None,
-        }),
+            created: None,
+        },
+        cache_dir: DoctorRootCheck {
+            accessible: true,
+            message: None,
+            created: None,
+        },
+        home: DoctorHomeCheck {
+            resolved: true,
+            refusal: None,
+        },
+    };
+    let extras = DoctorExtras {
         profiles_dir: Some(DoctorProfilesDir {
             path: "/home/test/.config/cfgd/profiles".into(),
             exists: true,

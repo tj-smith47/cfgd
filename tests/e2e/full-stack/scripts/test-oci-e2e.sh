@@ -12,7 +12,7 @@ begin_test "OCI-E2E-01: Push module, create Module CRD, deploy pod, verify conte
 
 OCI01_NS="e2e-oci01-${E2E_RUN_ID}"
 OCI01_MOD="oci01-mod-${E2E_RUN_ID}"
-OCI01_REF="${REGISTRY}/cfgd-e2e/oci01:v1.0-${E2E_RUN_ID}"
+OCI01_REF="$(e2e_scratch_ref "oci01:v1.0-${E2E_RUN_ID}")"
 OCI01_DIR=$(mktemp -d)
 create_test_module_dir "$OCI01_DIR" "$OCI01_MOD" "1.0.0"
 PUSH_OK=true
@@ -83,7 +83,7 @@ begin_test "OCI-E2E-02: Push with --sign, Module CRD with signature, verify moun
 
 OCI02_NS="e2e-oci02-${E2E_RUN_ID}"
 OCI02_MOD="oci02-signed-${E2E_RUN_ID}"
-OCI02_REF="${REGISTRY}/cfgd-e2e/oci02-signed:v1.0-${E2E_RUN_ID}"
+OCI02_REF="$(e2e_scratch_ref "oci02-signed:v1.0-${E2E_RUN_ID}")"
 OCI02_DIR=$(mktemp -d)
 create_test_module_dir "$OCI02_DIR" "$OCI02_MOD" "1.0.0"
 
@@ -192,7 +192,7 @@ fi
 begin_test "OCI-E2E-03: Module with disallow unsigned policy rejects unsigned module"
 
 OCI03_MOD="oci03-unsigned-${E2E_RUN_ID}"
-OCI03_REF="${REGISTRY}/cfgd-e2e/oci03-unsigned:v1.0-${E2E_RUN_ID}"
+OCI03_REF="$(e2e_scratch_ref "oci03-unsigned:v1.0-${E2E_RUN_ID}")"
 OCI03_DIR=$(mktemp -d)
 create_test_module_dir "$OCI03_DIR" "$OCI03_MOD" "1.0.0"
 PUSH_OK=true
@@ -216,7 +216,7 @@ spec:
   security:
     allowUnsigned: false
     trustedRegistries:
-      - "${REGISTRY}/*"
+      - "$(e2e_scratch_ref "*")"
 EOF
 
     # Try to create a Module without signature; the webhook should reject it
@@ -257,7 +257,8 @@ fi
 begin_test "OCI-E2E-04: Push linux/amd64 then linux/arm64 to one tag, verify Module status"
 
 OCI04_MOD="oci04-multi-${E2E_RUN_ID}"
-OCI04_REF="${REGISTRY}/cfgd-e2e/oci04-multi:v1.0-${E2E_RUN_ID}"
+OCI04_REF="$(e2e_scratch_ref "oci04-multi:v1.0-${E2E_RUN_ID}")"
+OCI04_SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 # Push two platform-specific artifacts, then verify the Module CRD status
 OCI04_DIR_AMD=$(mktemp -d)
@@ -306,7 +307,17 @@ EOF
         echo "  Available platforms: $PLATFORMS"
         pass_test "OCI-E2E-04"
     else
-        fail_test "OCI-E2E-04" "Expected availablePlatforms to list linux/amd64 and linux/arm64, got: ${PLATFORMS:-none}"
+        # The controller's own account of the module: its conditions, and the
+        # operator lines naming the module or the artifact it reads.
+        OCI04_CONDITIONS=$(kubectl get module "$OCI04_MOD" \
+            -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.reason}: {.message}{"; "}{end}' \
+            2>/dev/null || echo "unreadable") # rc-ok: an unreadable status is reported as such
+        OCI04_LOG=$(kubectl logs -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" --since-time="$OCI04_SINCE" --tail=-1 2>/dev/null |
+            grep -F -e "$OCI04_MOD" -e "$OCI04_REF" || true) # rc-ok: no matching line is reported as none
+        fail_test "OCI-E2E-04" "Expected availablePlatforms to list linux/amd64 and linux/arm64, got: ${PLATFORMS:-none}
+  Conditions: ${OCI04_CONDITIONS:-none}
+  Operator log naming $OCI04_MOD or $OCI04_REF since $OCI04_SINCE:
+${OCI04_LOG:-none}"
     fi
 fi
 
@@ -317,7 +328,7 @@ begin_test "OCI-E2E-05: Module references @sha256:..., verify mount"
 
 OCI05_NS="e2e-oci05-${E2E_RUN_ID}"
 OCI05_MOD="oci05-digest-${E2E_RUN_ID}"
-OCI05_TAG_REF="${REGISTRY}/cfgd-e2e/oci05-digest:v1.0-${E2E_RUN_ID}"
+OCI05_TAG_REF="$(e2e_scratch_ref "oci05-digest:v1.0-${E2E_RUN_ID}")"
 OCI05_DIR=$(mktemp -d)
 create_test_module_dir "$OCI05_DIR" "$OCI05_MOD" "1.0.0"
 
@@ -338,7 +349,7 @@ elif [ -z "$DIGEST" ]; then
     fail_test "OCI-E2E-05" "Could not extract digest from push output"
 else
     # Build the digest-pinned reference (repo@sha256:...)
-    OCI05_REPO=$(echo "$OCI05_TAG_REF" | cut -d: -f1)
+    OCI05_REPO="${OCI05_TAG_REF%:*}"
     OCI05_DIGEST_REF="${OCI05_REPO}@${DIGEST}"
     echo "  Digest-pinned ref: $OCI05_DIGEST_REF"
 
@@ -403,7 +414,7 @@ begin_test "OCI-E2E-06: Push, Module CRD, CSI uses imagePullSecrets"
 
 OCI06_NS="e2e-oci06-${E2E_RUN_ID}"
 OCI06_MOD="oci06-auth-${E2E_RUN_ID}"
-OCI06_REF="${REGISTRY}/cfgd-e2e/oci06-auth:v1.0-${E2E_RUN_ID}"
+OCI06_REF="$(e2e_scratch_ref "oci06-auth:v1.0-${E2E_RUN_ID}")"
 OCI06_DIR=$(mktemp -d)
 create_test_module_dir "$OCI06_DIR" "$OCI06_MOD" "1.0.0"
 PUSH_OK=true

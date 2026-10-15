@@ -4,55 +4,128 @@ The suites under `tests/e2e/` run against a real Kubernetes cluster. `task e2e:s
 (`setup-cluster.sh`) builds and pushes the images, then deploys what the suites need;
 each `task e2e:<suite>` target runs one suite. `task e2e:pr-install:down`
 (`pr-install-down.sh`) removes what setup installed for the run, and `task e2e` runs it
-last whatever setup's and the suites' result. The full-stack suite also needs `cosign`
+last whatever setup's and the suites' result. `task e2e:heartbeat:age`
+(`age-heartbeat.sh`) makes the run read as dead to the next setup (see The PR install). The full-stack suite also needs `cosign`
 on PATH, and its setup stops without it.
 
 ## Environment
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `REGISTRY` | required | Registry every image is pulled from and pushed to |
+| `REGISTRY` | `registry.jarvispro.io` under `task`; required when a script runs directly | Registry setup pushes every image it builds to, and every suite pushes its scratch OCI artifacts to |
+| `RELEASE_REGISTRY` | unset | Registry an image whose tag override is set is pulled from (`function-cfgd` is copied from it into `REGISTRY`); unset, that image comes from `REGISTRY` |
 | `IMAGE_TAG` | `e2e-<short HEAD sha>` | Tag of every image that has no override below |
 | `CFGD_IMAGE_TAG` | `IMAGE_TAG` | Tag of `cfgd` (agent, test pod) |
-| `OPERATOR_IMAGE_TAG` | `IMAGE_TAG` | Tag of `cfgd-operator` (the PR install's operator; the device gateway where setup deploys it) |
+| `OPERATOR_IMAGE_TAG` | `IMAGE_TAG` | Tag of `cfgd-operator` (the PR install's operator and its device gateway) |
 | `CSI_IMAGE_TAG` | `IMAGE_TAG` | Tag of `cfgd-csi` (the PR install's CSI node plugin) |
 | `FUNCTION_IMAGE_TAG` | `IMAGE_TAG` | Tag of `function-cfgd` (Crossplane function) |
 
 A release tags each image at its own crate's version, so a released set needs the
 per-image overrides. `function-cfgd` is tagged with the cfgd version behind a `v`
-prefix, which the other three images do not carry. To run the suites against the
-images one release published:
+prefix, which the other three images do not carry.
+
+Each override must be at or above the tag `chart/cfgd/values.yaml` pins for that
+image (`cfgd` is pinned by the chart's `appVersion`); setup refuses an older one
+before it writes anything to the cluster, because the chart's templates and the
+PR install's values rely on what the pinned images ship. Every image the chart
+renders from `ghcr.io/tj-smith47` is checked. An override that is not a semver
+(`latest`, a commit sha, a PR tag) cannot be ordered and is not checked, and
+`function-cfgd` has no pin in the chart.
+
+A release cut tags every crate it releases on one commit (`v0.12.0`,
+`operator-v0.10.0` and `csi-v0.8.0` name the same commit), and the chart there pins,
+for every image, the version current at that cut, whether that cut published it or an
+earlier one did (a cut that releases only some crates leaves the other pins at their
+earlier versions). To run the suites against those images, check out one of the
+cut's tags, leave `REGISTRY` at its default and name the release registry with that
+commit's pins (`appVersion` in `chart/cfgd/Chart.yaml` for `cfgd`, the image tags in
+`chart/cfgd/values.yaml` for the others).
+
+`RELEASE_REGISTRY` first ships in the cut after `v0.12.0`, so this recipe needs that
+cut or a later one. For an older cut, follow the recipe in that checkout's own
+`tests/e2e/README.md`.
 
 ```bash
-export REGISTRY=ghcr.io/tj-smith47
-export CFGD_IMAGE_TAG=0.11.0 OPERATOR_IMAGE_TAG=0.9.0 CSI_IMAGE_TAG=0.7.2
-export FUNCTION_IMAGE_TAG=v0.11.0
-task e2e:operator
+git checkout <one of the cut's tags>
+export RELEASE_REGISTRY=ghcr.io/tj-smith47
+export CFGD_IMAGE_TAG=<cfgd pin> OPERATOR_IMAGE_TAG=<operator pin> CSI_IMAGE_TAG=<csi pin>
+export FUNCTION_IMAGE_TAG=v<cfgd pin>
+task e2e
 ```
 
-An overridden image is used as it is: setup never builds, pushes or retags it, and
-stops with an error naming the reference when the registry does not hold it.
+An override older than the pin stops setup with an error naming the pin:
 
-Every image reference the scripts compose comes from three functions in
-`common/helpers.sh`:
+```text
+ERROR: OPERATOR_IMAGE_TAG=0.9.0 is older than the cfgd-operator this chart requires (0.10.0, chart/cfgd). Use that tag or newer, or run the suites from a checkout of the release tag that shipped 0.9.0 (tests/e2e/README.md).
+```
+
+A released image at the pin passes that check, but a later checkout's chart can
+need what only a later release ships. When the PR install then fails, setup's
+error names the operator image the Deployment runs and the chart's pin.
+
+An overridden image is used as it is: setup never builds or retags it, and stops
+with an error naming the reference when the registry does not hold it. The suites'
+scratch artifacts (`cfgd module push` targets) still go to `REGISTRY`, so a run needs
+no write access to the release registry.
+
+`function-cfgd` is the one overridden image a run does not pull from
+`RELEASE_REGISTRY`. Crossplane keeps one package per repository in its lock, and
+ArgoCD's `function-cfgd` Function already installs from the release repository, so
+setup copies the released package into `REGISTRY` unchanged
+(`docker buildx imagetools create`) and the run's Function installs the copy. Setup
+then compares the manifest digest of the source and the copy and stops, naming both,
+when they differ:
 
 ```bash
-e2e_image cfgd-csi        # ghcr.io/tj-smith47/cfgd-csi:0.7.2
-e2e_image_repo cfgd-csi   # ghcr.io/tj-smith47/cfgd-csi
-e2e_image_tag cfgd-csi    # 0.7.2
+  COPY function-cfgd: ghcr.io/tj-smith47/function-cfgd:v0.12.0 -> registry.jarvispro.io/function-cfgd:v0.12.0 (Crossplane installs one Function per package repository, and the release repository is the one ArgoCD's Function installs from)
+#1 [internal] pushing registry.jarvispro.io/function-cfgd
+#1 0.000 copying sha256:c7f822de652d2b1b389cdc1f00315dd02531899aa6f5bdab08c630d0902ccf92 from ghcr.io/tj-smith47/function-cfgd:v0.12.0 to registry.jarvispro.io/function-cfgd
+#1 0.000 copying sha256:96ec9c0cec75e52a8cd7db09e9b6df8fc36b275340da8f0448f767cb1bcf2472 from ghcr.io/tj-smith47/function-cfgd:v0.12.0 to registry.jarvispro.io/function-cfgd
+#1 0.660 pushing sha256:5eef719e1bf813739274c53fd8746c38c36bc3f5b0903cd6c920582efc9d1847 to registry.jarvispro.io/function-cfgd:v0.12.0
+#1 DONE 0.7s
+  COPY function-cfgd: registry.jarvispro.io/function-cfgd:v0.12.0 carries ghcr.io/tj-smith47/function-cfgd:v0.12.0's digest sha256:5eef719e1bf813739274c53fd8746c38c36bc3f5b0903cd6c920582efc9d1847
+```
+
+Every push goes through `e2e_push`, which refuses a reference outside `REGISTRY`. The
+buildx layer cache CI writes (`--cache-to`) is a scratch artifact too, at
+`$REGISTRY/cfgd-e2e/<image>:buildcache`.
+
+Every registry reference the scripts compose comes from the functions in
+`common/helpers.sh`. With the released set above:
+
+```bash
+e2e_image cfgd-csi                    # ghcr.io/tj-smith47/cfgd-csi:0.8.0
+e2e_image_repo cfgd-csi               # ghcr.io/tj-smith47/cfgd-csi
+e2e_image_repo --release function-cfgd  # ghcr.io/tj-smith47/function-cfgd (the copy's source)
+e2e_image_tag cfgd-csi                # 0.8.0
+e2e_image function-cfgd               # registry.jarvispro.io/function-cfgd:v0.12.0 (the copy)
+e2e_scratch_ref "oci01:v1.0-$E2E_RUN_ID"  # $REGISTRY/cfgd-e2e/oci01:v1.0-<run id>
 ```
 
 `task e2e:tags:check` runs `common/test-image-tags.sh`, which needs no cluster: it
-resolves each image under every override and fails when a script under `tests/e2e/`
-spells `IMAGE_TAG` or a first-party image reference itself.
+resolves each image under every override, with and without `RELEASE_REGISTRY`,
+drives `e2e_push` against a stand-in docker and crossplane, checks that every
+buildcache ref is under `REGISTRY`, and fails when a script under `tests/e2e/` spells
+any of these itself:
+
+- `IMAGE_TAG`, `RELEASE_REGISTRY` or a path under `$REGISTRY`
+- a `docker push`, a `crossplane xpkg push` or an image copy
+- a `docker buildx build --push` or a `--cache-to` export
+
+`common/helpers.sh` is held to the same list one function at a time: only
+`e2e_image_repo` and `e2e_scratch_ref` compose a registry path, only `e2e_push` pushes,
+and only `buildcache_args` spells the cache export.
 
 ## The PR install
 
 Each run installs its own operator and CSI driver beside the live release, using
 `manifests/pr-install-values.yaml`. Every name it uses comes from the run id in
-`common/helpers.sh`. The run id is `GITHUB_RUN_ID` in CI and `local-<short HEAD sha>`
-on a workstation, so the setup process and every suite process of one checkout
-agree on it. For run 42:
+`common/helpers.sh`. The run id is `GITHUB_RUN_ID` in CI. On a workstation, setup takes
+`local-<short HEAD sha>` and, once no other run's install stands in its way, records it
+in `.cache/e2e/local-run-id` (git-ignored), and
+every later suite and teardown process reads it back, so a commit between setup and
+teardown still names the install setup made. Setup prints the run id and where it came
+from. For run 42:
 
 ```bash
 E2E_INSTALL_RELEASE     # cfgd-e2e-42 (the Helm release)
@@ -89,23 +162,85 @@ still deleting, and stops when it outlasts that.
 `e2e-teardown` job runs it after all of them, and `task e2e` runs it last. It deletes
 the run's MachineConfigs, ConfigPolicies, DriftAlerts, BackupPolicies,
 ClusterConfigPolicies and Modules (`-l "$E2E_RUN_LABEL"`) while the run's operator
-still clears their finalizers, then uninstalls `$E2E_INSTALL_RELEASE` and deletes
-`$E2E_INSTALL_NS` without waiting. It then reads back that `$CSI_DRIVER_NAME` no longer
+still clears their finalizers. It then deletes every other namespace labelled
+`$E2E_RUN_LABEL` (the suites' own, which their EXIT traps delete without waiting) and waits
+up to 180s until none is left. It is the one step that waits for them: a pod that mounts
+the install's `$CSI_DRIVER_NAME` volume finishes deleting only after the kubelet asks the
+running driver to unmount it, so removing the driver first leaves the pod and its
+namespace Terminating. When the wait times out, it names each namespace and each pod left
+in it with the CSI drivers its volumes use, and exits 1 with the install still there; a
+rerun finishes the teardown once they are gone. In CI nothing reruns it: the next run's
+setup refuses the kept install until its heartbeat is 900s (`HEARTBEAT_STALE_SECONDS`)
+old, then `reclaim_stale_install` removes it through this script (see the reclaim
+paragraph below), and the janitor in `/db/manifests/k3s` deletes its namespaces once they
+are 3600s old with no fresh heartbeat. The driver counts as serving only when the
+`$CSI_DRIVER_NAME` CSIDriver is registered and a node-plugin pod of the install that
+registered it is Running, and the message says which state it found. When no CSIDriver is
+registered (an earlier teardown removed it first), `task e2e:setup` registers the driver
+again, the kubelet unmounts those volumes within a few minutes and the namespaces finish
+deleting, and `task e2e:pr-install:down` then removes that new install. When one is
+registered from a namespace that is Terminating or gone, with no node plugin Running, the
+same remedy applies once that namespace is gone: setup deletes the CSIDriver it left.
+When its namespace is Active and no node-plugin pod runs, the message points at those
+pods. The teardown never force-deletes a pod. After the wait it uninstalls
+`$E2E_INSTALL_RELEASE` (the device
+gateway's Service, Role and RoleBinding with it) and deletes `$E2E_INSTALL_NS`, where
+the gateway's DriftAlerts and emptyDir store live, without waiting. It then reads back that `$CSI_DRIVER_NAME` no longer
 belongs to the install and that both webhook configurations are gone, and prints the
-namespace's phase. A release that is not installed counts as removed. Every step runs
-when one before it fails, and the script exits 1 naming each failed step.
+namespace's phase. A release that is not installed counts as removed when its namespace
+is still there. It first looks for every object it removes or reads back: the release,
+the namespace (one already Terminating counts as gone), every object labelled
+`$E2E_RUN_LABEL`, cluster-scoped ones and the suites' namespaces included, both webhook configurations, the
+Function, the Composition and a CSIDriver the install still owns. A rerun after a partly
+failed teardown removes what is left. When none is left, it prints what it looked for
+and exits 1 without touching anything; `GITHUB_RUN_ID=<run id> bash
+tests/e2e/pr-install-down.sh` removes another run's install. Every step runs when one
+before it fails, apart from the install removal after a timed-out namespace wait, and the
+script exits 1 naming each failed step.
+
+One PR install runs at a time, since every install registers the same CSIDriver. Setup
+reads the namespace that CSIDriver's Helm annotation names: when it is gone, setup deletes
+the CSIDriver whatever run left it, this run's id included; when it is Terminating, setup
+stops until it is gone. When setup finds another run's install, it reads that namespace's `cfgd.io/e2e-run` label
+and `cfgd.io/heartbeat`. A heartbeat `HEARTBEAT_STALE_SECONDS` (900, the janitor's value)
+or more old means that run is dead, and `reclaim_stale_install` removes its install with
+`GITHUB_RUN_ID=<owner> pr-install-down.sh` before setup continues. A fresher heartbeat
+stops setup, naming the owner and the heartbeat's age. `task e2e:heartbeat:age`
+(`age-heartbeat.sh`) sets the current run's heartbeat on every namespace it labels to
+`HEARTBEAT_STALE_SECONDS` ago, which makes that run's install one the next setup takes
+over:
+
+```bash
+task e2e:setup                           # run local-<sha>
+task e2e:heartbeat:age                   # local-<sha> now reads as dead
+GITHUB_RUN_ID=other task e2e:setup       # removes local-<sha>'s install, installs other's
+GITHUB_RUN_ID=other task e2e:pr-install:down
+```
 `test-pr-install.sh` runs it against the stubs in `common/fixtures/pr-install-down/bin/`.
 
 The operator suite runs against the PR install: its pods, Deployment, leader lease
 (`cfgd-operator-leader` in `$E2E_INSTALL_NS`), webhook Service and CSI driver name all
 come from the names above, and OP-PR-01 fails unless `$E2E_OPERATOR_DEPLOY` runs
-`e2e_image cfgd-operator`. The full-stack suite runs against the PR install too: its
-setup waits for `$E2E_OPERATOR_DEPLOY`, the endpoints of `$E2E_WEBHOOK_SVC` and
-`$E2E_CSI_DS`, and stops when the CSI driver is not ready or `cosign` is missing. No
-full-stack case calls `skip_test`, and `test-pr-install.sh` fails on one under
-`full-stack/`. The FS-CSI cases find the driver pods by `$E2E_CSI_PODS` in `$E2E_INSTALL_NS` and the
-injected volume by `$CSI_DRIVER_NAME`. `test-pr-install.sh` fails on a tracked `*.sh`
-under `operator/` or `full-stack/` that names a release target by hand:
+`e2e_image cfgd-operator`. The PR install runs two operator pods
+(`operator.replicaCount: 2` in `manifests/pr-install-values.yaml`), so the webhook keeps
+a ready endpoint when OP-LC-03 deletes the leader while other jobs apply through it.
+OP-LC-03 samples `$E2E_WEBHOOK_SVC`'s endpoints from the delete until the replacement is
+ready and fails on a sample with none, on the deleted pod's UID still listed, and on a
+lease that never moves to another live pod. After the roll it fails unless the new
+lease holder is the one pod labelled `cfgd.io/gateway-leader=true`, the gateway
+Service's one ready address is that pod's IP, and the gateway's unauthenticated
+`GET /api/v1/enroll/info` through `svc/$E2E_GATEWAY_SVC` answers 200 with an enrollment
+method. The error cases read every operator pod, and
+`test-pr-install.sh` fails on a script that picks one operator pod by index, by an
+unsorted slice or by `first`, on the kubectl line or later from its captured JSON. The
+full-stack suite runs against the PR install too: its setup waits for
+`$E2E_OPERATOR_DEPLOY`, the endpoints of `$E2E_WEBHOOK_SVC` and `$E2E_GATEWAY_SVC`, and
+`$E2E_CSI_DS`, and stops
+when the CSI driver is not ready or `cosign` is missing. No full-stack case calls
+`skip_test`, and `test-pr-install.sh` fails on one under `full-stack/`. The FS-CSI cases
+find the driver pods by `$E2E_CSI_PODS` in `$E2E_INSTALL_NS` and the injected volume by
+`$CSI_DRIVER_NAME`. `test-pr-install.sh` fails on a tracked `*.sh` under `operator/`,
+`full-stack/`, `gateway/` or `node/` that names a release target by hand:
 
 - `cfgd-system` or `$CFGD_NAMESPACE` / `${CFGD_NAMESPACE}`
 - `app=cfgd-operator` or `app.kubernetes.io/name=cfgd-operator`
@@ -113,19 +248,20 @@ under `operator/` or `full-stack/` that names a release target by hand:
   `deployment.apps`, `deployments.apps`, `endpoints`, `ep`, `svc`, `service` or
   `services`, joined by `/` or spaces
 - `cfgd-validating-webhooks`, `cfgd-mutating-webhooks` or `csi.cfgd.io`
+- `cfgd-server`, the release's device gateway
 
 A longer name that starts the same (`cfgd-systemd`, `cfgd-operator-leader`) passes.
-The full-stack suite names `cfgd-system` on purpose in two places, listed by file and
-line text in `common/release-targets-kept.tsv`: the device gateway `cfgd-server`,
-which the PR install does not replace, and the MachineConfigs, ConfigPolicy and
-DriftAlert of the fleet and drift cases, which live where the gateway works and reach
-the PR operator through the run label. Each row clears one line, so a text kept on
-three lines of a file has three rows; a further line with that text fails, as does a
-row no line uses. Each suite has a floor of scripts the scan must read. The
+A line that names a release target on purpose is listed by file and line text in
+`common/release-targets-kept.tsv` with its reason; no line needs one today. Each row
+clears one line, so a text kept on three lines of a file has three rows; a further line
+with that text fails, as does a row no line uses. Each suite has a floor of scripts the scan must read. The
 YAML under `operator/manifests/` is the release operator's own definition, which setup
 applies where ArgoCD does not run it, so the scan does not read it. `helpers.sh` names
 the release webhook configurations once, as `$E2E_RELEASE_VALIDATING_WEBHOOK` and
 `$E2E_RELEASE_MUTATING_WEBHOOK`, for setup and the check below.
+
+`test-pr-install.sh` also fails when `setup-cluster.sh` names `cfgd-server`: no suite reads the
+release's device gateway, so setup neither deploys nor waits for it.
 
 Setup scopes the release's webhooks away from run-labelled objects and namespaces
 (`cfgd.io/e2e-run DoesNotExist`), and a setup run from a branch without that scoping
@@ -227,18 +363,90 @@ cannot read (a script, say) is skipped. Every TeamConfig heredoc names the run's
 Composition (see below). No suite applies a manifest by path; the crossplane suite's
 Composition reaches `kubectl apply -f -` on a here-string from `render_run_composition`.
 
+## The PR install's device gateway
+
+The PR install runs the device gateway in its operator pods
+(`deviceGateway.enabled: true` in `manifests/pr-install-values.yaml`, with its store on
+an emptyDir, since the chart keeps a persistent store to one replica). The lease holder
+labels its pod `cfgd.io/gateway-leader=true` once its gateway accepts, and the gateway
+Service selects that label, so the standby stays a webhook endpoint and gateway traffic
+reaches the lease holder only. Setup passes the port and admin key from `helpers.sh` to
+Helm and waits for the gateway Service's endpoint. The gateway, node, full-stack and
+operator suites reach the gateway through these names alone:
+
+```bash
+E2E_GATEWAY_SVC=$E2E_INSTALL_RELEASE-gateway
+E2E_GATEWAY_PORT=8080
+E2E_GATEWAY_URL=http://$E2E_GATEWAY_SVC.$E2E_INSTALL_NS.svc.cluster.local:$E2E_GATEWAY_PORT
+E2E_GATEWAY_LEADER_LABEL=cfgd.io/gateway-leader
+E2E_GATEWAY_LEADER_PODS=$E2E_OPERATOR_PODS,$E2E_GATEWAY_LEADER_LABEL=true
+E2E_GATEWAY_API_KEY=${CFGD_E2E_API_KEY:-cfgd-e2e-admin-key}
+```
+
+`test-pr-install.sh` fails on a tracked `*.sh` under those four suites that spells an
+in-cluster `svc.cluster.local` URL, the gateway Service from `$E2E_INSTALL_RELEASE`, or
+the `cfgd.io/gateway-leader` label by hand, and fails when an `E2E_GATEWAY_*` name
+`helpers.sh` exports is not listed anywhere in this README. The fleet and drift cases put their
+MachineConfigs, ConfigPolicy and DriftAlert in `$E2E_INSTALL_NS`.
+
+## Device ids sent to the device gateway
+
+The gateway creates a DriftAlert in its own namespace, `$E2E_INSTALL_NS`, for a device
+that reports drift, labelled `cfgd.io/device-id=<id>` and carrying no run label. Every device id
+the gateway, node and full-stack suites send is set through `gateway_device` in
+`common/helpers.sh`, which records it, and `cleanup_e2e` deletes the alerts of every
+recorded id:
+
+```bash
+gateway_device DEVICE_1 "fullstack-device-1-${E2E_RUN_ID}"
+# cleanup_e2e:
+#   kubectl delete driftalert -n "$E2E_INSTALL_NS" \
+#     -l "cfgd.io/device-id in (fullstack-device-1-<run>,...)"
+```
+
+`gateway_device` refuses an id that is not already a label value (lowercase letters,
+digits and `-`, at most 63 characters, ending in a letter or digit, with at least one
+character after the prefix) or that does not start with `e2e-` or `fullstack-device-`,
+the prefixes the cluster janitor reaps a leaked alert by. An id is run-scoped
+(`<stem>-${E2E_RUN_ID}`); a case that needs a fresh device on every invocation adds
+`$(date +%s)` or `$$` before the run id. When the delete fails, `cleanup_e2e` prints
+`WARN: could not delete the DriftAlerts of <ids>: <kubectl stderr>` and finishes the
+teardown.
+
+`test-pr-install.sh` reads every tracked `*.sh` under `gateway/`, `node/` and
+`full-stack/` and fails on:
+
+- a `--device-id` argument, a `"deviceId"` JSON key, the `<id>` of a
+  `/api/v1/devices/<id>/drift` URL, or the id argument at a call of `gw_enroll_once`
+  or `gw_enroll_post` (the relays the check lists), whose value is not exactly
+  `$VAR` or `${VAR}` with `VAR` set by `gateway_device` in the same directory and by
+  nothing else there (`NAME=`, `read`, `mapfile`, `readarray`, `printf -v`,
+  `for NAME in`, `local` and `declare` all count);
+- a `cfgd` `checkin` or `enroll` command line (both always reach a gateway, and
+  `CFGD_SERVER_URL` can name it with no flag), or a `cfgd` `daemon` command line
+  aimed at a gateway by `--server-url` or by a `--config` path a script writes
+  with a heredoc holding a `type: Server` origin, that passes no `--device-id`
+  and carries no `# device-id-ok: <why>`. A quoted string holding whitespace (a
+  test title, a header) is not read as a command word:
+
+  ```bash
+  GW33_CHECKIN=$(dp_cfgd checkin --server-url "$GW_URL" 2>&1) # device-id-ok: the dp_write_profile profile declares only backups, so the checkin has no system setting drift to report
+  ```
+- a relay the check lists that no scanned script defines.
+
 ## Components ArgoCD owns
 
 On the shared cluster ArgoCD deploys the live operator, the device gateway and the
 CSI node plugin from `/db/manifests/k3s/namespaces/cfgd-system/`, so those run the
-release the manifests pin, whatever this run built. This run's operator and CSI
-images run in the PR install instead: Helm release `$E2E_INSTALL_RELEASE` in
+release the manifests pin, whatever this run built. This run's operator image, its
+device gateway included, and CSI image run in the PR install instead: Helm release
+`$E2E_INSTALL_RELEASE` in
 `$E2E_INSTALL_NS`, with CSI driver `e2e.csi.cfgd.io`, scoped to the objects and
 namespaces that carry the run label. `setup-cluster.sh` prints the image each live
-component and each PR install workload runs, and warns when `OPERATOR_IMAGE_TAG` is
-set while ArgoCD owns the gateway, which the override then does not reach. When
-`CFGD_DEPLOY_MANIFESTS` names a tree that `task deploy:operator` applied, that tree
-owns the operator and gateway Deployments, and setup warns the same way.
+component and each PR install workload runs. When `CFGD_DEPLOY_MANIFESTS` names a
+tree that `task deploy:operator` applied, that tree owns the operator Deployment, and
+setup restarts it to pull a rebuilt image. No suite reads the release's device
+gateway, so setup neither deploys nor waits for it.
 
 ArgoCD owns the Crossplane objects in
 `/db/manifests/k3s/namespaces/crossplane-system/` too: `Function/function-cfgd`, pinned

@@ -43,6 +43,7 @@ pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> 
     } else {
         std::process::Stdio::inherit()
     };
+    // unbounded-cosign-ok: generate-key-pair prompts for the key's password
     let status = cfgd_core::command_status(
         cfgd_core::cosign_cmd()
             .args(["generate-key-pair"])
@@ -102,19 +103,24 @@ pub fn cmd_module_keys_generate(printer: &Printer, output_dir: Option<&str>) -> 
 /// after being asked about a project directory would report a key the caller
 /// did not ask about. Given none, the two locations the other two verbs write
 /// to by default are probed, current directory first.
-fn key_pair_locations(dir: Option<&str>) -> Vec<std::path::PathBuf> {
-    match dir {
-        Some(d) => vec![cfgd_core::expand_tilde(Path::new(d))],
+fn key_pair_locations(dir: Option<&str>) -> cfgd_core::errors::Result<Vec<std::path::PathBuf>> {
+    Ok(match dir {
+        // home-refusal-ok: `module keys` alone reads it; no apply or plan path reaches it
+        Some(d) => vec![cfgd_core::expand_tilde(Path::new(d), KEY_DIR_ROLE)?],
         None => vec![
-            cfgd_core::expand_tilde(Path::new(".")),
-            cfgd_core::expand_tilde(Path::new("~/.cfgd")),
+            std::path::PathBuf::from("."),
+            // home-refusal-ok: `module keys` alone reads it; no apply or plan path reaches it
+            cfgd_core::expand_tilde(Path::new("~/.cfgd"), KEY_DIR_ROLE)?,
         ],
-    }
+    })
 }
+
+/// The role a no-home refusal names for a signing-key directory.
+const KEY_DIR_ROLE: &str = "signing key directory";
 
 pub fn cmd_module_keys_list(printer: &Printer, dir: Option<&str>) -> anyhow::Result<()> {
     let mut entries: Vec<super::KeyListEntry> = Vec::new();
-    for base in key_pair_locations(dir) {
+    for base in key_pair_locations(dir)? {
         let priv_path = base.join("cosign.key");
         let pub_path = base.join("cosign.pub");
 
@@ -224,6 +230,7 @@ pub fn cmd_module_keys_rotate(
     }
 
     // Generate new key pair
+    // unbounded-cosign-ok: generate-key-pair prompts for the key's password
     let status = cfgd_core::command_status(
         cfgd_core::cosign_cmd()
             .args(["generate-key-pair"])

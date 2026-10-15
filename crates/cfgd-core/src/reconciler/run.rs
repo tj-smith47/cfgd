@@ -228,10 +228,15 @@ pub enum RunDisposition {
     },
 }
 
-/// What [`ApplyRun::execute`] delegates the actual work to. One method, so the
-/// CLI's reconciler call and the daemon's are the same shape to the skeleton.
+/// What [`ApplyRun::execute`] delegates the actual work to, so the CLI's
+/// reconciler call and the daemon's are the same shape to the skeleton.
 pub trait RunExecutor {
     fn apply(&mut self, plan: &Plan, printer: &Printer) -> Result<ApplyResult>;
+
+    /// The module cache this executor's runs read. [`ApplyRun::execute`] sweeps
+    /// it after a run in which no action failed, and [`ApplyRun::converged`]
+    /// after an apply whose plan held nothing to execute.
+    fn module_checkouts(&self) -> super::ModuleCheckouts<'_>;
 }
 
 /// Everything a rollup reads, and nothing else.
@@ -344,6 +349,19 @@ fn status_severity(status: &ApplyStatus) -> u8 {
         ApplyStatus::Partial => 2,
         ApplyStatus::Aborted => 3,
         ApplyStatus::Failed => 4,
+    }
+}
+
+/// What [`ApplyRun::execute`] ends on, for an apply whose plan held nothing to
+/// execute and so never reached it: the module cache sweep. A converged
+/// machine still stops reading the checkouts an earlier run replaced, and that
+/// run kept them while they were in use. A command reaches it through
+/// [`ApplyRun::converged`]; the daemon's converged tick, which renders no
+/// header, calls it directly.
+pub(crate) fn settle_converged(exec: &dyn RunExecutor) {
+    match exec.module_checkouts() {
+        super::ModuleCheckouts::Sweep(cache) => super::files::sweep_module_checkouts(&cache),
+        super::ModuleCheckouts::NotOwned => {}
     }
 }
 
@@ -778,6 +796,14 @@ impl<'a> ApplyRun<'a> {
         }
     }
 
+    /// A run whose plan held nothing to execute: the header, then the module
+    /// cache sweep [`ApplyRun::execute`] ends on. It is the one way a command
+    /// reports a converged run, so no such arm can skip the sweep.
+    pub fn converged(&self, printer: &Printer, exec: &dyn RunExecutor) {
+        self.header(printer);
+        settle_converged(exec);
+    }
+
     /// header → (preview + confirm, when [`Confirm::Ask`] and the plan has
     /// work) → execute → `Backups` pseudo-phase → rollup. Never exits, and
     /// never prompts on [`Confirm::Skip`].
@@ -829,6 +855,11 @@ impl<'a> ApplyRun<'a> {
         let (backup_tally, backups) = self.render_backups(printer)?;
         tally.merge(backup_tally);
         render_run_rollup(&tally, self.ctx.title, printer, Some(started.elapsed()));
+        // A run that stopped short or failed an action removes nothing, so a
+        // retry finds every checkout the failed run was reading.
+        if result.failed() == 0 && result.aborted.is_none() {
+            settle_converged(&*exec);
+        }
         Ok(RunDisposition::Applied { result, backups })
     }
 
@@ -1798,8 +1829,8 @@ pub fn render_apply_result(
     printer: &Printer,
     elapsed: Option<Duration>,
 ) -> ApplyStatus {
-    // run-header-ok: a view over the rollup, not a run — the header belongs to
-    // whoever owns the run this result came out of.
+    // run-header-ok: a view over the rollup of a run already over; the header
+    // belongs to whoever owns the run this result came out of.
     render_run_rollup(&result.tally(), title, printer, elapsed)
 }
 

@@ -59,25 +59,67 @@ pub struct BackupUnit<'a> {
     state_dir: &'a Path,
     context: ReconcileContext,
     abort: Option<&'a crate::AbortFlag>,
+    source: PathBuf,
+    destination: PathBuf,
+}
+
+/// Whether `apply` snapshots `spec` as part of its run: a unit with no
+/// `schedule` of its own. A scheduled unit runs from the daemon's timer.
+pub fn runs_with_apply(spec: &BackupSpec) -> bool {
+    spec.schedule.is_none()
 }
 
 impl<'a> BackupUnit<'a> {
     /// Bind `spec` to the runtime paths, in the [`ReconcileContext::Apply`]
     /// context.
+    ///
+    /// The source and destination are expanded here, once, so every reader of
+    /// the unit sees the same paths.
+    ///
+    /// # Errors
+    ///
+    /// [`StateError::HomeUnresolved`](crate::errors::StateError::HomeUnresolved)
+    /// when `spec.source` or `spec.destination` starts with `~` and no home
+    /// directory is set.
     pub fn new(
         spec: &'a BackupSpec,
         config_dir: &'a Path,
         profile_name: &'a str,
         state_dir: &'a Path,
-    ) -> Self {
-        Self {
+    ) -> crate::errors::Result<Self> {
+        let (source, declared) = Self::declared_paths(spec)?;
+        // The default is derived here, at bind time, because the state dir
+        // depends on runtime scope and `CFGD_STATE_DIR`.
+        let destination = declared.unwrap_or_else(|| state_dir.join("backups").join(&spec.name));
+        Ok(Self {
             spec,
             config_dir,
             profile_name,
             state_dir,
             context: ReconcileContext::Apply,
             abort: None,
-        }
+            source,
+            destination,
+        })
+    }
+
+    /// The source `spec` declares and the destination it declares (`None`
+    /// when it declares none), each with a leading `~` expanded: the paths
+    /// [`Self::new`] binds, for a caller that must know the home can hold them
+    /// before it builds the unit.
+    ///
+    /// # Errors
+    ///
+    /// [`StateError::HomeUnresolved`](crate::errors::StateError::HomeUnresolved)
+    /// when either starts with `~` and no home directory is set.
+    pub fn declared_paths(spec: &BackupSpec) -> crate::errors::Result<(PathBuf, Option<PathBuf>)> {
+        let source = crate::expand_tilde(&spec.source, "backup source")?;
+        let destination = spec
+            .destination
+            .as_ref()
+            .map(|dir| crate::expand_tilde(dir, "backup destination"))
+            .transpose()?;
+        Ok((source, destination))
     }
 
     /// Run under [`ReconcileContext::Reconcile`] instead — the daemon path.
@@ -104,18 +146,13 @@ impl<'a> BackupUnit<'a> {
 
     /// The source path, with a leading `~` expanded.
     pub fn source(&self) -> PathBuf {
-        crate::expand_tilde(&self.spec.source)
+        self.source.clone()
     }
 
     /// The directory snapshots are written into: `spec.destination` when set,
-    /// otherwise `<state_dir>/backups/<name>/`. The default is derived here
-    /// rather than at parse time because the state dir depends on runtime
-    /// scope and `CFGD_STATE_DIR`.
+    /// otherwise `<state_dir>/backups/<name>/`.
     pub fn destination_dir(&self) -> PathBuf {
-        match &self.spec.destination {
-            Some(dir) => crate::expand_tilde(dir),
-            None => self.state_dir.join("backups").join(&self.spec.name),
-        }
+        self.destination.clone()
     }
 }
 

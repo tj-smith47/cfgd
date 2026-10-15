@@ -58,6 +58,16 @@ tag:
   release_branches:
     - master
   initial_version: "0.5.0"
+  # These hooks fire after the bump commit and tags are already on origin, and
+  # the tag job has no rollback: a failing hook would fail the job, skip every
+  # release job behind it and leave live tags with no release until someone
+  # runs `anodizer tag rollback` by hand. So the hook only records what was
+  # tagged on the run page and never fails. The summary variable exists only
+  # inside a GitHub Actions job, so local runs skip it.
+  tag_post_hooks:
+    - cmd: |
+        printf -- '- anodizer tag created `%s` (version %s)\n' "{{ Tag }}" "{{ Version }}" >> "$GITHUB_STEP_SUMMARY" || true
+      if: "{{ Env.GITHUB_STEP_SUMMARY }}"
 
 metadata:
   # homepage / license / maintainers are derived from [workspace.package]
@@ -147,9 +157,37 @@ upx:
     lzma: true
     targets:
       - x86_64-unknown-linux-gnu
-      - aarch64-unknown-linux-gnu
       - x86_64-apple-darwin
       - x86_64-pc-windows-msvc
+  # --brute costs far more than --best: on the 50 MB x86_64 cfgd binary
+  # `--best --lzma` took 37.7 s while `--brute` was still running after 1000 s.
+  # The determinism shard packs every binary at least twice and the nightly
+  # linux shard has a 60-minute limit, so brute covers one binary on one
+  # target: cfgd on aarch64 Linux, the smallest of the four cfgd outputs
+  # (10.8 MB linux-arm64 archive in v0.12.0).
+  - id: brute
+    ids: [cfgd]
+    enabled: true
+    binary: upx
+    args:
+      - "--best"
+      - "--lzma"
+    compress: "9"
+    lzma: true
+    brute: true
+    targets:
+      - aarch64-unknown-linux-gnu
+  - id: aarch64-linux
+    ids: [cfgd-operator, cfgd-csi]
+    enabled: true
+    binary: upx
+    args:
+      - "--best"
+      - "--lzma"
+    compress: "9"
+    lzma: true
+    targets:
+      - aarch64-unknown-linux-gnu
 
 # Self-extracting installer for Linux & macOS — bundles the binary
 # with a small bootstrap script that installs it to /usr/local/bin.
@@ -170,6 +208,29 @@ makeselfs:
 after:
   hooks:
     - echo "Release complete for {{ ProjectName }} {{ Tag }}"
+
+# A failed CI release otherwise leaves its record only in the job log. The run
+# summary shows on the run page which tag failed, the error, and how far the
+# pipeline got (what reached dist/) before anyone reruns it. The variable is
+# set only inside a GitHub Actions job, so local and snapshot runs skip it.
+on_error:
+  hooks:
+    - cmd: |
+        {
+          printf '### anodizer release failed: %s\n\n' "$ANODIZER_TAG"
+          printf '%s\n' "$ANODIZER_ERROR" | sed 's/^/    /'
+          printf '\n'
+          printf 'Top-level entries in dist/:\n\n```\n'
+          ls -1A dist 2>/dev/null || echo '(dist/ was never created)'
+          printf '```\n'
+        } >> "$GITHUB_STEP_SUMMARY"
+      if: "{{ Env.GITHUB_STEP_SUMMARY }}"
+
+# A probe that cannot reach a verdict (5xx, rate limit, network failure) blocks
+# the release: a half-published release costs more than a rerun, and the
+# `partial:` block already covers resuming one that stopped partway.
+preflight:
+  strict: true
 
 # Independent workspaces for per-component release cadences.
 workspaces:
@@ -447,6 +508,7 @@ workspaces:
             package_source_url: "https://github.com/tj-smith47/cfgd/tree/{{ .Tag }}/crates/cfgd"
             docs_url: "https://github.com/tj-smith47/cfgd/blob/{{ .Tag }}/docs/configuration.md"
             bug_tracker_url: "https://github.com/tj-smith47/cfgd/issues"
+            license_url: "https://github.com/tj-smith47/cfgd/blob/{{ .Tag }}/LICENSE"
             release_notes: "https://github.com/tj-smith47/cfgd/releases/tag/{{ .Tag }}"
             icon_url: "https://raw.githubusercontent.com/tj-smith47/cfgd/master/.github/gear.svg"
             tags:
@@ -482,6 +544,9 @@ workspaces:
             publisher: "TJ Smith"
             publisher_url: "https://github.com/tj-smith47"
             publisher_support_url: "https://github.com/tj-smith47/cfgd/issues"
+            # Pinned to the release tag so the manifest links the license text
+            # that version shipped under, which master may later revise.
+            license_url: "https://github.com/tj-smith47/cfgd/blob/{{ .Tag }}/LICENSE"
             release_notes: "See release-notes URL for the full changelog."
             release_notes_url: "https://github.com/tj-smith47/cfgd/releases/tag/{{ .Tag }}"
             installation_notes: "Run `cfgd --help` after installation."
@@ -1228,6 +1293,16 @@ homebrew_casks:
     # the path is relative to the unpacked cask artifact.
     manpages:
       - man/man1/cfgd.1
+    # The binary is ad-hoc signed and not notarized, so a quarantined copy waits
+    # on a Gatekeeper dialog at its first run and a headless caller hangs. The
+    # owner chose to clear the quarantine attribute on install (2026-10-10)
+    # because notarization is unavailable.
+    hooks:
+      post:
+        install: |
+          system_command "/usr/bin/xattr",
+                         args: ["-d", "com.apple.quarantine", "#{staged_path}/cfgd"],
+                         must_succeed: false
     caveats: |
       Run `cfgd init` to scaffold a config in your repo.
     dependencies:
@@ -1272,7 +1347,12 @@ nightly:
   # The three tracks share the name; the sweep scopes them apart by tag family.
   name_template: "{{ ProjectName }} nightly"
   publish_release: true
-  keep_single_release: true
+  # Three per track: a regression first seen in the newest nightly can be
+  # checked against the two builds before it without building from source.
+  # skip_if_no_changes cuts a nightly only when master moved, so the three are
+  # always three distinct master states.
+  retention:
+    keep_last: 3
   # The release workflow pushes its bump commit straight to master, so on most
   # nights master still sits at the last release commit and a nightly would
   # re-cut three releases whose changelog is empty.

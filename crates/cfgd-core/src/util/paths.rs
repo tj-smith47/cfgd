@@ -169,10 +169,15 @@ pub(crate) fn systemd_dir(env_var: &str) -> Option<std::path::PathBuf> {
 ///    - Windows: `%APPDATA%\cfgd`
 ///
 /// The home directory is resolved from `HOME`/`USERPROFILE` only, never the
-/// passwd database: when home cannot be resolved the path stays a literal
-/// `~/.config/cfgd` so the caller surfaces a clean error and writes nothing,
-/// instead of silently resolving to the account's real home.
-pub fn default_config_dir() -> std::path::PathBuf {
+/// passwd database.
+///
+/// # Errors
+///
+/// [`StateError::HomeUnresolved`](crate::errors::StateError::HomeUnresolved)
+/// when no home resolves the user-scope directory; see
+/// [`default_config_dir_spelling`] for the unexpanded form a `--config`
+/// default carries.
+pub fn default_config_dir() -> crate::errors::Result<std::path::PathBuf> {
     default_config_dir_for(Scope::User)
 }
 
@@ -186,7 +191,35 @@ pub fn default_config_dir() -> std::path::PathBuf {
 /// consults neither the test-home override nor XDG. Config has no
 /// `CFGD_CONFIG_DIR` short-circuit here — the CLI threads that as an explicit
 /// override. Pure path logic — never touches the filesystem.
-pub fn default_config_dir_for(scope: Scope) -> std::path::PathBuf {
+///
+/// # Errors
+///
+/// [`StateError::HomeUnresolved`](crate::errors::StateError::HomeUnresolved)
+/// when the scope's directory lies under a home no variable names.
+pub fn default_config_dir_for(scope: Scope) -> crate::errors::Result<std::path::PathBuf> {
+    // home-refusal-ok: cfgd's own config directory, where a `~` with no home refuses the run before
+    // it loads a config
+    expand_tilde(&default_config_dir_spelling(scope), "config directory")
+}
+
+/// `scope`'s default config directory when `dir` names it (through
+/// [`names_the_same_path`]), `None` otherwise.
+///
+/// With no home the default directory has no location, so no path names it:
+/// a config the caller pointed at explicitly is not the machine's default, and
+/// a comparison against the default is no reason to refuse a run that declares
+/// no `~` work.
+pub fn named_default_config_dir(dir: &std::path::Path, scope: Scope) -> Option<std::path::PathBuf> {
+    // home-optional-ok: with no home there is no default directory for a path to name
+    let default = default_config_dir_for(scope).ok()?;
+    names_the_same_path(dir, &default).then_some(default)
+}
+
+/// The scope's config directory as a user would write it: the resolved path,
+/// or, with no home to resolve it, the unexpanded `~` spelling. Only a
+/// `--config` default carries this form; every reader and writer resolves it
+/// through [`expand_tilde`], which refuses the `~`.
+pub fn default_config_dir_spelling(scope: Scope) -> std::path::PathBuf {
     if let Some(dir) = systemd_dir("CONFIGURATION_DIRECTORY") {
         return dir;
     }
@@ -198,29 +231,33 @@ pub fn default_config_dir_for(scope: Scope) -> std::path::PathBuf {
     if let Some(home) = test_home_override() {
         return home.join(".config").join("cfgd");
     }
-    if let Some(dir) = xdg_config_home_cfgd() {
+    if let Some(dir) = xdg_home_cfgd("XDG_CONFIG_HOME") {
         return dir;
     }
     #[cfg(target_os = "macos")]
     {
         match home_dir_var() {
             Some(home) => resolve_macos_config_dir(std::path::Path::new(&home), |p| p.is_dir()),
-            // HOME unresolved: keep the literal `~/.config/cfgd` so the caller
-            // fails cleanly instead of writing to a passwd-derived home.
-            None => expand_tilde(std::path::Path::new("~/.config/cfgd")),
+            None => std::path::PathBuf::from("~/.config/cfgd"),
         }
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        // `expand_tilde` resolves from HOME only and leaves `~` literal when
-        // HOME is unset — the clean-failure guarantee above.
-        expand_tilde(std::path::Path::new("~/.config/cfgd"))
+        match home_dir_var() {
+            Some(home) => std::path::PathBuf::from(home).join(".config").join("cfgd"),
+            None => std::path::PathBuf::from("~/.config/cfgd"),
+        }
     }
     #[cfg(windows)]
     {
-        directories::BaseDirs::new()
+        user_base_dirs()
             .map(|b| b.config_dir().join("cfgd"))
-            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData\cfgd"))
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from("~")
+                    .join("AppData")
+                    .join("Roaming")
+                    .join("cfgd")
+            })
     }
 }
 
@@ -256,17 +293,37 @@ pub(crate) fn program_data_dir() -> std::path::PathBuf {
         .unwrap_or_else(|| std::path::PathBuf::from(r"C:\ProgramData"))
 }
 
-/// `$XDG_CONFIG_HOME/cfgd` when the variable is a non-empty, absolute path;
-/// `None` otherwise (the spec treats empty/relative values as unset). Honored on
-/// every platform so an explicit `XDG_CONFIG_HOME` works on macOS and Windows
-/// too, not only Linux.
-fn xdg_config_home_cfgd() -> Option<std::path::PathBuf> {
-    let raw = std::env::var_os("XDG_CONFIG_HOME")?;
-    let path = std::path::PathBuf::from(raw);
-    if path.as_os_str().is_empty() || !path.is_absolute() {
-        return None;
-    }
-    Some(path.join("cfgd"))
+/// `$<var>/cfgd` when the environment variable `var` (an XDG base directory
+/// such as `XDG_STATE_HOME`, or Windows `LOCALAPPDATA`) holds a non-empty,
+/// absolute path; `None` otherwise, because the XDG Base Directory spec treats
+/// an empty or relative value as unset.
+///
+/// Every per-user directory cfgd resolves from such a variable reads it through
+/// here, so a relative value is ignored the same way for config, state, cache,
+/// data and runtime.
+///
+/// ```text
+/// XDG_STATE_HOME=/srv/state   xdg_home_cfgd("XDG_STATE_HOME") == Some("/srv/state/cfgd")
+/// XDG_STATE_HOME=state        xdg_home_cfgd("XDG_STATE_HOME") == None
+/// XDG_STATE_HOME=             xdg_home_cfgd("XDG_STATE_HOME") == None
+/// ```
+pub fn xdg_home_cfgd(var: &str) -> Option<std::path::PathBuf> {
+    let path = std::path::PathBuf::from(std::env::var_os(var)?);
+    (!path.as_os_str().is_empty() && path.is_absolute()).then(|| path.join("cfgd"))
+}
+
+/// `directories::BaseDirs` for this user, or `None` when [`home_dir_var`]
+/// resolves no home.
+///
+/// With `HOME` (Unix) or `USERPROFILE` and `HOME` (Windows) unset, `directories`
+/// still finds a home through the passwd database or the Windows known-folder
+/// API, which config discovery and `~` expansion cannot see. Gating on
+/// [`home_dir_var`] keeps every per-user directory on the same home, so a run
+/// that cannot place its config cannot quietly place its state somewhere else.
+#[allow(clippy::disallowed_methods)]
+pub(crate) fn user_base_dirs() -> Option<directories::BaseDirs> {
+    home_dir_var()?;
+    directories::BaseDirs::new()
 }
 
 /// Resolve the macOS config directory.
@@ -466,11 +523,8 @@ pub fn legacy_data_dir() -> Option<std::path::PathBuf> {
     #[cfg(not(any(target_os = "macos", windows)))]
     const DATA_VAR: &str = "XDG_DATA_HOME";
     #[cfg(not(target_os = "macos"))]
-    if let Some(data) = std::env::var_os(DATA_VAR)
-        .map(std::path::PathBuf::from)
-        .filter(|p| p.is_absolute())
-    {
-        return Some(data.join("cfgd"));
+    if let Some(data) = xdg_home_cfgd(DATA_VAR) {
+        return Some(data);
     }
     let home = std::path::PathBuf::from(home_dir_var()?);
     #[cfg(target_os = "macos")]
@@ -485,7 +539,8 @@ pub fn legacy_data_dir() -> Option<std::path::PathBuf> {
 /// Per-user runtime directory for short-lived sockets and pid files.
 ///
 /// Resolution order:
-/// - Linux: `$XDG_RUNTIME_DIR/cfgd` if set, else `$HOME/.cache/cfgd/runtime`.
+/// - Linux: `$XDG_RUNTIME_DIR/cfgd` when that is an absolute path, else
+///   `$HOME/.cache/cfgd/runtime`.
 ///   The base `$XDG_RUNTIME_DIR` is owner-private by spec; the cache fallback
 ///   nests under a `runtime/` subdir of the cache root so the socket/lock never
 ///   land directly in the cache root (where module/source caches live).
@@ -506,7 +561,7 @@ pub fn legacy_data_dir() -> Option<std::path::PathBuf> {
 /// tests can redirect the runtime dir without mutating process-global env
 /// state. Returns `Ok(None)` only when no home directory can be resolved at
 /// all, and an error when `CFGD_RUNTIME_DIR` leads with a `~` that no home
-/// directory resolves ([`expand_tilde_strict`]).
+/// directory resolves ([`expand_tilde`]).
 pub fn default_runtime_dir() -> crate::errors::Result<Option<std::path::PathBuf>> {
     default_runtime_dir_for(Scope::User)
 }
@@ -521,7 +576,9 @@ pub fn default_runtime_dir() -> crate::errors::Result<Option<std::path::PathBuf>
 /// and is therefore always `Some` — it needs no home directory. Pure path logic.
 pub fn default_runtime_dir_for(scope: Scope) -> crate::errors::Result<Option<std::path::PathBuf>> {
     if let Ok(dir) = std::env::var(crate::CFGD_RUNTIME_DIR_ENV) {
-        return expand_tilde_strict(std::path::Path::new(&dir), "runtime directory").map(Some);
+        // home-refusal-ok: cfgd's own runtime directory, which the daemon, its clients and `cfgd
+        // paths` resolve; no apply or plan reads it
+        return expand_tilde(std::path::Path::new(&dir), "runtime directory").map(Some);
     }
     Ok(default_runtime_dir_unexpanded(scope))
 }
@@ -540,11 +597,8 @@ fn default_runtime_dir_unexpanded(scope: Scope) -> Option<std::path::PathBuf> {
         // systems — prefer it. Test override of HOME does not shadow it
         // because tests that need a deterministic socket path point
         // XDG_RUNTIME_DIR at a tempdir directly.
-        if let Some(xdg) = std::env::var_os("XDG_RUNTIME_DIR") {
-            let xdg = std::path::PathBuf::from(xdg);
-            if !xdg.as_os_str().is_empty() {
-                return Some(xdg.join("cfgd"));
-            }
+        if let Some(dir) = xdg_home_cfgd("XDG_RUNTIME_DIR") {
+            return Some(dir);
         }
         let home = home_dir_var()?;
         Some(
@@ -570,7 +624,7 @@ fn default_runtime_dir_unexpanded(scope: Scope) -> Option<std::path::PathBuf> {
         if let Some(home) = test_home_override() {
             return Some(home.join("AppData").join("Local").join("cfgd"));
         }
-        directories::BaseDirs::new().map(|b| b.data_local_dir().join("cfgd"))
+        user_base_dirs().map(|b| b.data_local_dir().join("cfgd"))
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
@@ -596,9 +650,14 @@ fn default_runtime_dir_unexpanded(scope: Scope) -> Option<std::path::PathBuf> {
 /// `CFGD_CACHE_DIR` short-circuits all resolution when set, so the env form
 /// works at every call site (including non-CLI ones and the daemon).
 ///
+/// With no home directory (`HOME` unset, or both `USERPROFILE` and `HOME` on
+/// Windows), an absolute `$XDG_CACHE_HOME` places the root at
+/// `$XDG_CACHE_HOME/cfgd` on every platform, the same fallback the state
+/// directory takes; with neither, resolution errors.
+///
 /// Honors the [`TestHomeGuard`] thread-local override (test builds resolve a
 /// Linux-shaped `~/.cache/cfgd` under the override home) so tests never write
-/// to the real cache. Errors only when no home directory can be resolved.
+/// to the real cache.
 pub fn default_cache_dir() -> crate::errors::Result<std::path::PathBuf> {
     default_cache_dir_for(Scope::User)
 }
@@ -613,7 +672,9 @@ pub fn default_cache_dir() -> crate::errors::Result<std::path::PathBuf> {
 /// home directory. Pure path logic — never touches the filesystem.
 pub fn default_cache_dir_for(scope: Scope) -> crate::errors::Result<std::path::PathBuf> {
     if let Ok(dir) = std::env::var(crate::CFGD_CACHE_DIR_ENV) {
-        return expand_tilde_strict(std::path::Path::new(&dir), "cache directory");
+        // home-refusal-ok: cfgd's own cache directory, where a `~` with no home refuses the run
+        // before it opens a store or plans
+        return expand_tilde(std::path::Path::new(&dir), "cache directory");
     }
     if let Some(dir) = systemd_dir("CACHE_DIRECTORY") {
         return Ok(dir);
@@ -624,9 +685,13 @@ pub fn default_cache_dir_for(scope: Scope) -> crate::errors::Result<std::path::P
     if let Some(home) = test_home_override() {
         return Ok(home.join(".cache").join("cfgd"));
     }
-    let base = directories::BaseDirs::new()
-        .ok_or(crate::errors::StateError::HomeDirectoryUnresolved { role: "cache" })?;
-    Ok(base.cache_dir().join("cfgd"))
+    match user_base_dirs() {
+        Some(base) => Ok(base.cache_dir().join("cfgd")),
+        // With no home, an absolute `XDG_CACHE_HOME` is the one placement
+        // the environment still gives, on every platform.
+        None => xdg_home_cfgd("XDG_CACHE_HOME")
+            .ok_or(crate::errors::StateError::HomeDirectoryUnresolved { role: "cache" }.into()),
+    }
 }
 
 /// The machine-wide runtime root: Linux `/run/cfgd`, macOS
@@ -681,14 +746,16 @@ fn system_cache_dir() -> std::path::PathBuf {
 /// Pure path logic — never touches the filesystem or prints.
 ///
 /// A leading `~` in `over` expands to the home directory, and with no home
-/// directory to resolve it the override is refused ([`expand_tilde_strict`]).
+/// directory to resolve it the override is refused ([`expand_tilde`]).
 pub fn resolve_config_dir(
     over: Option<&std::path::Path>,
     scope: Scope,
 ) -> crate::errors::Result<std::path::PathBuf> {
     match over {
-        Some(p) => expand_tilde_strict(p, "config directory"),
-        None => Ok(default_config_dir_for(scope)),
+        // home-refusal-ok: cfgd's own config directory, where a `~` with no home refuses the run
+        // before it loads a config
+        Some(p) => expand_tilde(p, "config directory"),
+        None => default_config_dir_for(scope),
     }
 }
 
@@ -700,13 +767,15 @@ pub fn resolve_config_dir(
 /// [`crate::errors::StateError`] when no home can be resolved.
 ///
 /// A leading `~` in `over` expands to the home directory, and with no home
-/// directory to resolve it the override is refused ([`expand_tilde_strict`]).
+/// directory to resolve it the override is refused ([`expand_tilde`]).
 pub fn resolve_state_dir(
     over: Option<&std::path::Path>,
     scope: Scope,
 ) -> crate::errors::Result<std::path::PathBuf> {
     match over {
-        Some(p) => expand_tilde_strict(p, "state directory"),
+        // home-refusal-ok: cfgd's own state directory, where a `~` with no home refuses the run
+        // before it opens a store or plans
+        Some(p) => expand_tilde(p, "state directory"),
         None => crate::state::default_state_dir_for(scope),
     }
 }
@@ -717,13 +786,15 @@ pub fn resolve_state_dir(
 /// [`Scope`] (the single cache root shared by the source and module caches).
 ///
 /// A leading `~` in `over` expands to the home directory, and with no home
-/// directory to resolve it the override is refused ([`expand_tilde_strict`]).
+/// directory to resolve it the override is refused ([`expand_tilde`]).
 pub fn resolve_cache_dir(
     over: Option<&std::path::Path>,
     scope: Scope,
 ) -> crate::errors::Result<std::path::PathBuf> {
     match over {
-        Some(p) => expand_tilde_strict(p, "cache directory"),
+        // home-refusal-ok: cfgd's own cache directory, where a `~` with no home refuses the run
+        // before it opens a store or plans
+        Some(p) => expand_tilde(p, "cache directory"),
         None => default_cache_dir_for(scope),
     }
 }
@@ -748,13 +819,15 @@ pub fn module_cache_root(
 /// (e.g. `HOME` unset on Unix); [`Scope::System`] is always `Some`.
 ///
 /// A leading `~` in `over` expands to the home directory, and with no home
-/// directory to resolve it the override is refused ([`expand_tilde_strict`]).
+/// directory to resolve it the override is refused ([`expand_tilde`]).
 pub fn resolve_runtime_dir(
     over: Option<&std::path::Path>,
     scope: Scope,
 ) -> crate::errors::Result<Option<std::path::PathBuf>> {
     match over {
-        Some(p) => expand_tilde_strict(p, "runtime directory").map(Some),
+        // home-refusal-ok: cfgd's own runtime directory, which the daemon, its clients and `cfgd
+        // paths` resolve; no apply or plan reads it
+        Some(p) => expand_tilde(p, "runtime directory").map(Some),
         None => default_runtime_dir_for(scope),
     }
 }
@@ -844,41 +917,58 @@ pub fn fold_home_in_text(text: &str) -> String {
     text.replace(&format!("{home}/"), "~/")
 }
 
-/// Expand `~` and `~/...` paths to the user's home directory.
-///
-/// With no home directory to resolve, the path comes back as written; a path
-/// cfgd creates or writes goes through [`expand_tilde_strict`] instead.
-pub fn expand_tilde(path: &std::path::Path) -> std::path::PathBuf {
-    let path_str = path.display().to_string();
-    let home = home_dir_var();
-    if let Some(home) = home {
-        if path_str == "~" {
-            return std::path::PathBuf::from(home);
-        }
-        if path_str.starts_with("~/") || path_str.starts_with("~\\") {
-            return std::path::PathBuf::from(path_str.replacen('~', &home, 1));
-        }
+/// The `role` a declared file target names in [`expand_tilde`]'s refusal.
+pub const FILE_TARGET_ROLE: &str = "file target";
+
+/// The `role` a declared secret target names in [`expand_tilde`]'s refusal.
+pub const SECRET_TARGET_ROLE: &str = "secret target";
+
+/// The refusal a path resolution such as [`expand_tilde`] returned, or `None`
+/// when it resolved or failed for another reason: the shape a "would this
+/// refuse for want of a home" question asks of the resolution it shares with
+/// the code that later uses the path.
+pub fn home_refusal_of<T>(resolved: crate::errors::Result<T>) -> Option<crate::errors::StateError> {
+    match resolved {
+        Err(crate::errors::CfgdError::State(e)) => Some(e),
+        _ => None,
     }
-    path.to_path_buf()
 }
 
-/// [`expand_tilde`] for a path cfgd creates or writes: a leading `~` with no
-/// home directory to resolve it answers [`crate::errors::StateError::HomeUnresolved`]
-/// naming `role` (the `state directory`, the `daemon socket`).
-pub fn expand_tilde_strict(
+/// The `role` a lifecycle script's `workdir:` names in [`expand_tilde`]'s refusal.
+pub const SCRIPT_WORKDIR_ROLE: &str = "script workdir";
+
+/// The `role` a script's `creates:` guard names in [`expand_tilde`]'s refusal.
+pub const CREATES_GUARD_ROLE: &str = "creates guard";
+
+/// Expand a leading `~` (`~`, `~/...`, `~\...`) to the user's home directory;
+/// any other path comes back as written.
+///
+/// `role` names what the path is for (`state directory`, `file target`), and
+/// the refusal names it.
+///
+/// # Errors
+///
+/// [`StateError::HomeUnresolved`](crate::errors::StateError::HomeUnresolved)
+/// when the path leads with `~` and no home directory resolves it. Kept as
+/// written it would name a directory called `~` under the working directory,
+/// so there is no lossy form of this function.
+pub fn expand_tilde(
     path: &std::path::Path,
     role: &'static str,
 ) -> crate::errors::Result<std::path::PathBuf> {
-    let expanded = expand_tilde(path);
-    let text = expanded.display().to_string();
-    if text == "~" || text.starts_with("~/") || text.starts_with("~\\") {
-        return Err(crate::errors::StateError::HomeUnresolved {
-            role,
-            path: expanded,
-        }
-        .into());
+    let bytes = path.as_os_str().as_encoded_bytes();
+    if !matches!(bytes, [b'~'] | [b'~', b'/' | b'\\', ..]) {
+        return Ok(path.to_path_buf());
     }
-    Ok(expanded)
+    let path_str = path.display().to_string();
+    match home_dir_var() {
+        Some(home) => Ok(std::path::PathBuf::from(path_str.replacen('~', &home, 1))),
+        None => Err(crate::errors::StateError::HomeUnresolved {
+            role,
+            path: path.to_path_buf(),
+        }
+        .into()),
+    }
 }
 
 /// Expand `~`/`~/` segments in a colon-separated environment value to the user's
@@ -892,7 +982,12 @@ pub fn expand_tilde_strict(
 /// other segment byte-for-byte unchanged. `$VAR` references are NOT touched: in a
 /// double-quoted bash/zsh value the shell still expands those at source time, and
 /// pre-expanding `…:$PATH` would freeze a stale PATH into the file.
-pub fn expand_env_value_tilde(value: &str) -> String {
+///
+/// # Errors
+///
+/// [`StateError::HomeUnresolved`](crate::errors::StateError::HomeUnresolved)
+/// for a `~` segment no home directory resolves.
+pub fn expand_env_value_tilde(value: &str) -> crate::errors::Result<String> {
     value
         .split(':')
         .map(|seg| {
@@ -901,13 +996,13 @@ pub fn expand_env_value_tilde(value: &str) -> String {
             // `\` on Windows. Every other segment stays byte-for-byte (a literal
             // value like `C:\tools` is the user's, not ours to normalize).
             if seg == "~" || seg.starts_with("~/") || seg.starts_with("~\\") {
-                to_posix_string(expand_tilde(std::path::Path::new(seg)))
+                expand_tilde(std::path::Path::new(seg), "env value").map(to_posix_string)
             } else {
-                seg.to_string()
+                Ok(seg.to_string())
             }
         })
-        .collect::<Vec<_>>()
-        .join(":")
+        .collect::<crate::errors::Result<Vec<_>>>()
+        .map(|segs| segs.join(":"))
 }
 
 /// The character separating entries inside a `PATH` value on this host.
@@ -931,14 +1026,15 @@ pub fn is_inherited_path_ref(segment: &str) -> bool {
 
 /// Fold one PATH entry to the single form two spellings of the same directory
 /// compare equal in: `$HOME` / `${HOME}` / `~` resolved to `home`, separators
-/// folded to `/`, and any trailing `/` dropped.
+/// folded to `/`, and any trailing `/` dropped. With no home (`None`) the three
+/// spellings fold onto the one token `~`, which still makes them compare equal.
 ///
 /// Comparison only — never render the result. A generated env file is written
 /// by two producers (cfgd's own bootstrapped-manager line and whatever the
 /// merged `PATH` env var declares), and without one key they publish the same
 /// directory twice under two spellings.
-pub fn normalize_path_entry(entry: &str, home: &std::path::Path) -> String {
-    let home = to_posix_string(home);
+pub fn normalize_path_entry(entry: &str, home: Option<&std::path::Path>) -> String {
+    let home = home.map_or_else(|| "~".to_string(), to_posix_string);
     let home = home.trim_end_matches('/');
     let entry = posixify_text(entry.trim());
     // A prefix match must end at a segment boundary, or `$HOMEBREW_PREFIX`
@@ -1005,16 +1101,34 @@ pub(crate) fn home_dir_var() -> Option<String> {
     if let Some(home) = test_home_override() {
         return Some(home.to_string_lossy().into_owned());
     }
+    // An empty value is unset: `~/x` would otherwise expand to the root `/x`.
+    let set = |var: &str| std::env::var(var).ok().filter(|v| !v.is_empty());
     #[cfg(unix)]
     {
-        std::env::var("HOME").ok()
+        set("HOME")
     }
     #[cfg(windows)]
     {
-        std::env::var("USERPROFILE")
-            .or_else(|_| std::env::var("HOME"))
-            .ok()
+        set("USERPROFILE").or_else(|| set("HOME"))
     }
+}
+
+/// The invoking user's home directory.
+///
+/// The one home every per-user path derives from: `HOME` (`USERPROFILE`, then
+/// `HOME`, on Windows), an empty value counting as unset, and the test-home
+/// override under test.
+///
+/// # Errors
+///
+/// [`StateError::HomeUnset`](crate::errors::StateError::HomeUnset) when no
+/// home is set. A caller refuses with it, or skips the work that needed a home
+/// (`.ok()`); it never substitutes `/tmp`, the working directory or a relative
+/// path, each of which puts the user's files somewhere they do not look.
+pub fn home_dir() -> crate::errors::Result<std::path::PathBuf> {
+    home_dir_var()
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| crate::errors::StateError::HomeUnset.into())
 }
 
 /// Resolve `path` to an absolute path without requiring it to exist and
@@ -1160,6 +1274,10 @@ pub fn resolve_managed_file_source(
     if resolved.exists() && validate_path_within(&resolved, config_dir).is_err() {
         return None;
     }
+    // A saved plan replays these bytes without reading them again, so every
+    // resolved source is an input of the derivation, a directory's whole tree
+    // included.
+    crate::record_config_input_tree(&resolved);
     Some(resolved)
 }
 
@@ -1732,19 +1850,6 @@ pub fn posixify_os_error_text(s: &str) -> std::borrow::Cow<'_, str> {
         rest = &after_open[digits_end + 1..];
     }
     std::borrow::Cow::Owned(out)
-}
-
-/// User-input path tolerance: accept `C:\foo`, `C:/foo`, `~/foo`, `./foo`.
-/// Folds `\` → `/` and expands a leading `~` via [`expand_tilde`]. Use when
-/// loading config fields where a Linux author may write `/` and a Windows
-/// author may write `\` for the same logical location.
-pub fn from_user_input(s: &str) -> std::path::PathBuf {
-    let folded = if s.contains('\\') {
-        s.replace('\\', "/")
-    } else {
-        s.to_string()
-    };
-    expand_tilde(std::path::Path::new(&folded))
 }
 
 /// Display-only extension for human-facing path output. On Windows, folds

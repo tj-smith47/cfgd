@@ -140,7 +140,7 @@ impl SystemConfigurator for SeccompConfigurator {
                 Role::Info,
                 format!("Writing seccomp profile {}: {}", name, profile_path.posix()),
             );
-            // user-scope-ok: read by the container runtime as root, never by a user session
+            // user-scope-ok: read by the container runtime as root, outside any user session
             cfgd_core::atomic_write_str(&profile_path, content)?;
         }
 

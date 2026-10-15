@@ -100,12 +100,20 @@ impl PatchBinding {
     /// Binding for a file declared by the profile (`spec.files.managed`):
     /// scripts resolve against the config directory and see the standard
     /// `CFGD_*` metadata with no module attribution.
-    pub fn profile(config_dir: &Path, profile_name: &str, context: ReconcileContext) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// As `build_module_script_env`.
+    pub fn profile(
+        config_dir: &Path,
+        profile_name: &str,
+        context: ReconcileContext,
+    ) -> crate::errors::Result<Self> {
         let path_dirs: Vec<String> = crate::bootstrapped_path_dirs()
             .iter()
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
-        Self {
+        Ok(Self {
             script_dir: config_dir.to_path_buf(),
             env: build_module_script_env(
                 &ScriptEnvContext {
@@ -118,8 +126,8 @@ impl PatchBinding {
                     path_dirs: &path_dirs,
                 },
                 &[],
-            ),
-        }
+            )?,
+        })
     }
 
     /// Binding for a file deployed by a module (`spec.files` in `module.yaml`):
@@ -130,12 +138,12 @@ impl PatchBinding {
         profile_name: &str,
         context: ReconcileContext,
         module: &ResolvedModule,
-    ) -> Self {
+    ) -> crate::errors::Result<Self> {
         let path_dirs: Vec<String> = crate::bootstrapped_path_dirs()
             .iter()
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
-        Self {
+        Ok(Self {
             script_dir: module.dir.clone(),
             env: build_module_script_env(
                 &ScriptEnvContext {
@@ -148,8 +156,8 @@ impl PatchBinding {
                     path_dirs: &path_dirs,
                 },
                 &module.env,
-            ),
-        }
+            )?,
+        })
     }
 
     /// Binding for a file whose owner is known only as an [`Origin`] — the
@@ -170,13 +178,13 @@ impl PatchBinding {
     ) -> Result<Self> {
         let name = match origin {
             Origin::Module(name) => name,
-            Origin::Profile => return Ok(Self::profile(config_dir, profile_name, context)),
+            Origin::Profile => return Self::profile(config_dir, profile_name, context),
         };
         let module = modules
             .iter()
             .find(|m| &m.name == name)
             .ok_or_else(|| crate::errors::ModuleError::NotFound { name: name.clone() })?;
-        Ok(Self::module(config_dir, profile_name, context, module))
+        Self::module(config_dir, profile_name, context, module)
     }
 
     /// Borrow the binding as an execution context for `compute_patched` /

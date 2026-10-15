@@ -8,6 +8,8 @@
 /// through known-folder lookups that ignore the environment, so there the
 /// `CFGD_*` overrides are what steer them; its config root honors
 /// `XDG_CONFIG_HOME` and its legacy data directory follows `LOCALAPPDATA`.
+/// `DOCKER_CONFIG` names an empty directory, so the registry client finds no
+/// Docker credential to send.
 ///
 /// `CFGD_CONFIG_DIR` is left out: the CLI reads it as an explicit
 /// `--config-dir`, which turns off what a run does only at the default config
@@ -24,6 +26,7 @@ pub const ISOLATED_ENV: &[(&str, &str)] = &[
     (cfgd_core::CFGD_STATE_DIR_ENV, "state"),
     (cfgd_core::CFGD_CACHE_DIR_ENV, "home/.cache/cfgd"),
     (cfgd_core::CFGD_RUNTIME_DIR_ENV, "home/runtime"),
+    (cfgd_core::oci::DOCKER_CONFIG_ENV, "home/.docker"),
 ];
 
 /// Every environment variable `cfgd_bin()` removes outright: the directories

@@ -302,12 +302,34 @@ The probe server listens on `HEALTH_PORT` (default `8081`) and answers three pat
 | Path | 200 when | 503 when |
 |---|---|---|
 | `/healthz` | the process is up | — |
-| `/readyz` | every listener the pod's Services route to is accepting: the admission webhook when the pod has webhook certificates, and the device gateway when it is enabled (at once when the pod has neither) | the webhook has not loaded its certificates yet, or the gateway has not bound its listener; with the device gateway and leader election on, that includes a pod that does not hold the lease |
+| `/readyz` | the admission webhook is serving, or at once when the pod has no webhook certificates | the webhook has not loaded its certificates yet |
 | `/leaderz` | this pod holds the leader lease, or runs with leader election off | this pod is a standby |
 
-Readiness and leadership are separate signals. Only the lease holder runs the controllers, but every pod whose webhook is serving answers admission. With the device gateway off, a standby is therefore ready and stays an endpoint of the webhook Service: during a roll the replacement pod turns ready as soon as its webhook serves, joins the Service while the old pod still holds the lease, and admission (`failurePolicy: Fail`) always has a backend. The next paragraph and the update strategy section describe how the gateway changes this.
+Readiness and leadership are separate signals. Only the lease holder runs the controllers, but every pod whose webhook is serving answers admission. A standby is therefore ready and stays an endpoint of the webhook Service: during a roll the replacement pod turns ready as soon as its webhook serves, joins the Service while the old pod still holds the lease, and admission (`failurePolicy: Fail`) always has a backend.
 
-With the device gateway enabled, readiness also waits for the gateway's listener to bind, which happens after its database opens, so the gateway Service never routes a request to a port nothing listens on. The gateway starts only on the pod running the controllers, so with leader election on as well, a standby's `/readyz` waits for the lease.
+The device gateway runs only on the pod running the controllers, so readiness does not wait for it. Once its listener accepts, the operator labels its own pod `cfgd.io/gateway-leader: "true"`, and the chart's gateway Service selects that label, so gateway requests reach the lease holder alone. When the pod shuts down or loses the lease, the gateway stops accepting connections first, with no wait on the API server, and the label is then cleared beside the shutdown: each attempt is bounded to 3s and retried 500ms after each failed attempt, until the API server accepts one or the process exits. The label is cleared again when the container starts, so a restarted container never keeps it from an earlier run. The chart grants the operator `patch` on pods through a Role in the release namespace for this. With `serviceAccount.create: false` the chart renders no RBAC, so the ServiceAccount you supply needs that grant itself while the gateway is on: an operator that cannot clear the label at startup exits, and its webhook goes down with it.
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cfgd-operator-gateway
+  namespace: cfgd-system
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["patch"]
+```
+
+A pod that stops on a signal also gives the lease up once in-flight work has drained, so a standby takes it on its next attempt (`operator.leaderElection.retryPeriod`, `2s`) and does not wait out the lease duration. A release the API server has not answered within 3s is given up, and a standby then takes the lease once it expires (`operator.leaderElection.leaseDuration`, `15s`). A holder that cannot renew stops accepting gateway connections once `operator.leaderElection.renewDeadline` (`10s`) has passed since its last successful renewal, a renewal the API server never answers included. Its label is cleared by the first attempt the API server accepts, retried 500ms after each failed attempt until then or until the process exits, and cleared again when the container starts. The chart refuses `deviceGateway.enabled` with `operator.leaderElection.enabled: false` and `operator.replicaCount` above 1: with no lease every replica would serve the gateway from its own database.
+
+```sh
+$ kubectl -n cfgd-system get pods -l cfgd.io/gateway-leader=true
+NAME                             READY   STATUS    RESTARTS   AGE
+cfgd-operator-7c9d8b6f5d-x2k4q   1/1     Running   0          3m
+```
+
+Without persistence (`deviceGateway.persistence.enabled: false`) the gateway's database is an `emptyDir`, so a new lease holder starts with an empty one; persistence keeps it across a failover and needs `operator.replicaCount: 1`.
 
 ```sh
 $ kubectl -n cfgd-system port-forward pod/<operator-pod> 8081 &
@@ -317,18 +339,18 @@ standby
 
 The metrics endpoint carries the same fact as a gauge, `cfgd_operator_leader`: `1` on the lease holder and `0` on each standby.
 
-The chart's Deployment probes `/readyz` for readiness and `/healthz` for liveness. Its update strategy (`operator.strategy`, empty by default) is derived from what a replacement pod waits for before it turns ready:
+The chart's Deployment probes `/readyz` for readiness and `/healthz` for liveness. Its update strategy (`operator.strategy`, empty by default) is derived from whether a replacement pod can start beside the old one:
 
 | `deviceGateway.enabled` | `deviceGateway.persistence.enabled` | `operator.leaderElection.enabled` | Derived strategy |
 |---|---|---|---|
 | off | — | on or off | `RollingUpdate`, `maxSurge: 1`, `maxUnavailable: 0` |
-| on | on or off | on | `RollingUpdate`, `maxSurge: 1`, `maxUnavailable: 1` |
+| on | off | on or off | `RollingUpdate`, `maxSurge: 1`, `maxUnavailable: 0` |
+| on | on | on | `RollingUpdate`, `maxSurge: 1`, `maxUnavailable: 1` |
 | on | on | off | `Recreate` |
-| on | off | off | `RollingUpdate`, `maxSurge: 1`, `maxUnavailable: 0` |
 
 - `maxUnavailable: 0` keeps the old pod until its replacement serves, so the admission webhook always has a backend.
-- With the gateway and leader election on, readiness waits for a lease the old pod releases only as it terminates, so the old pod has to leave first (`maxUnavailable: 1`).
-- With the gateway on and leader election off, every pod runs the gateway. Its SQLite database lives on one ReadWriteOnce volume that a second pod cannot share, so the old pod stops before the new one starts, and the gateway (and the webhook) are down for the length of the roll.
+- With persistence on, every pod mounts the gateway's ReadWriteOnce volume, which a replacement on another node cannot attach while the old pod holds it, so the old pod has to leave first (`maxUnavailable: 1`).
+- With persistence on and leader election off, every pod also runs the gateway on that one SQLite file, so the old pod stops before the new one starts, and the gateway (and the webhook) are down for the length of the roll.
 
 Set `operator.strategy` to render your own:
 

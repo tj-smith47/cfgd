@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Checks without a cluster that:
 #   - helpers.sh names the PR-owned install (its release, namespace, workloads,
-#     pod selectors, webhook configurations, webhook certificate and CSI driver)
+#     pod selectors, webhook configurations, webhook certificate, CSI driver
+#     and device gateway)
 #     and the Crossplane suite's Function and Composition from one run id
 #   - a local run id is the same in every process of one checkout
 #   - ensure_namespace and running_image address the namespaces they are given
@@ -36,19 +37,42 @@
 #     full-stack and gateway suites call it
 #   - every ERROR line an e2e script prints goes to stderr
 #   - no full-stack case calls skip_test
+#   - every device id the gateway, node and full-stack suites send to the
+#     install's gateway in $E2E_INSTALL_NS comes from gateway_device, and
+#     cleanup_e2e deletes the DriftAlerts of each one it recorded
 #   - every full-stack helm install and upgrade scopes its operator, validating
 #     webhook and pod injector to its own namespace through HELM_SCOPE, an
 #     array of exactly the three flags that no line appends to or rewrites,
 #     and overrides none of its keys
-#   - no operator or full-stack suite script names the release's operator,
-#     namespace, webhooks or CSI driver by hand, outside the full-stack
-#     suite's kept gateway lines
+#   - no operator, full-stack, gateway or node suite script names the
+#     release's operator, gateway, namespace, webhooks or CSI driver by hand,
+#     outside the lines release-targets-kept.tsv lists
+#   - those suites reach the PR install's gateway only through the
+#     E2E_GATEWAY_* names helpers.sh sets: no in-cluster URL, gateway Service
+#     name or gateway leader label spelled by hand
 #   - pr-install-down.sh deletes the run's objects of every kind
 #     schemas/crds.yaml and the TeamConfig XRD declare, then the run's
 #     Composition and Function, uninstalls the release and deletes its
 #     namespace in that order, runs every step after an object delete, a
 #     release lookup or the uninstall fails and then exits 1, and treats a
-#     release that is not installed as removed
+#     release that is not installed as removed, and exits 1 naming what it
+#     looked for when neither the release nor its namespace exists, a
+#     Terminating namespace counting as gone
+#   - a local run id is the one setup recorded, setup mints a fresh one from
+#     HEAD, and GITHUB_RUN_ID wins over both
+#   - pr-install-down.sh removes what a partly failed teardown left, a lone
+#     cluster-scoped object included, and names the record path a local run
+#     without one looked in; age-heartbeat.sh ages the run's heartbeat
+#   - reclaim_stale_install removes an install whose run's heartbeat is
+#     HEARTBEAT_STALE_SECONDS old through a pr-install-down.sh that names every
+#     object from that run's id and leaves the caller's scratch root alone, and
+#     refuses a fresh, missing or unreadable heartbeat or an unlabelled owner
+#   - no e2e script picks one pod out of the operator pod list (an index, an
+#     unsorted slice or first), directly or from its captured JSON, since the
+#     PR install runs a leader and a standby
+#   - every e2e.yml job whose suite deletes operator pods runs after every
+#     job whose suite talks to the install's gateway, which runs in the leader
+#     pod
 # kubectl is a stub on PATH, so nothing reaches a cluster; the CRD check's stub
 # hands YAML reading to the real kubectl, which reads it offline.
 #
@@ -62,6 +86,9 @@ e2e_root="$(dirname "$here")"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 failures=0
+# Every helpers.sh this script sources reads the local run id record here, so
+# a record a real setup left in the checkout never changes a verdict.
+export E2E_LOCAL_RUN_ID_FILE="$scratch/local-run-id"
 
 pass() { echo "PASS  $1"; }
 fail() {
@@ -90,7 +117,7 @@ log="$scratch/kubectl.calls"
 # shellcheck disable=SC2016 # the inner script expands its own positional args
 in_helpers() {
     local script="$1"; shift
-    env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$scratch/bin:$PATH" KUBECTL_LOG="$log" \
+    env -u GITHUB_RUN_ID -u CFGD_NAMESPACE -u CFGD_E2E_API_KEY PATH="$scratch/bin:$PATH" KUBECTL_LOG="$log" \
         REGISTRY=r.example CLI_SCRATCH="$scratch" "$@" \
         bash -c 'source "$1/common/helpers.sh"; eval "$2"' _ "$e2e_root" "$script"
 }
@@ -111,6 +138,12 @@ expect_var E2E_VALIDATING_WEBHOOK cfgd-e2e-42
 expect_var E2E_MUTATING_WEBHOOK cfgd-e2e-42-pod-injector
 expect_var E2E_OPERATOR_PODS "app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io/component=operator"
 expect_var E2E_CSI_PODS "app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io/component=csi-driver"
+expect_var E2E_GATEWAY_SVC cfgd-e2e-42-gateway
+expect_var E2E_GATEWAY_PORT 8080
+expect_var E2E_GATEWAY_URL http://cfgd-e2e-42-gateway.cfgd-e2e-42-sys.svc.cluster.local:8080
+expect_var E2E_GATEWAY_LEADER_LABEL cfgd.io/gateway-leader
+expect_var E2E_GATEWAY_LEADER_PODS "app.kubernetes.io/instance=cfgd-e2e-42,app.kubernetes.io/component=operator,cfgd.io/gateway-leader=true"
+expect_var E2E_GATEWAY_API_KEY cfgd-e2e-admin-key
 expect_var CSI_DRIVER_NAME e2e.csi.cfgd.io
 expect_var E2E_FUNCTION function-cfgd-42
 expect_var E2E_COMPOSITION teamconfig-to-machineconfigs-42
@@ -127,6 +160,22 @@ if [ "$first" = "local-$sha" ] && [ "$second" = "$first" ]; then
 else
     fail "local E2E_RUN_ID: first=$first second=$second (want local-$sha twice)"
 fi
+
+# Setup records its run id, and every later process reads it back, so a commit
+# between setup and teardown still names the install setup made. Setup mints a
+# fresh one from HEAD, and GITHUB_RUN_ID wins over the record.
+echo local-recorded > "$E2E_LOCAL_RUN_ID_FILE"
+expect_run_id() {
+    local label="$1" want="$2" got
+    shift 2
+    # shellcheck disable=SC2016 # the inner shell expands the run's names
+    got="$(in_helpers 'printf "%s %s" "$E2E_RUN_ID" "$E2E_INSTALL_RELEASE"' "$@" 2>&1)" || got="(failed: $got)"
+    if [ "$got" = "$want" ]; then pass "$label: $got"; else fail "$label: got [$got], want [$want]"; fi
+}
+expect_run_id "a local process reads the run id setup recorded" "local-recorded cfgd-e2e-local-recorded"
+expect_run_id "a local setup mints its run id from HEAD over an old record" "local-$sha cfgd-e2e-local-$sha" E2E_NEW_LOCAL_RUN=1
+expect_run_id "GITHUB_RUN_ID wins over a local record" "42 cfgd-e2e-42" GITHUB_RUN_ID=42
+rm -f "$E2E_LOCAL_RUN_ID_FILE"
 
 if [ -s "$log" ]; then
     fail "sourcing helpers.sh called kubectl: $(tr '\n' ';' < "$log")"
@@ -2156,7 +2205,7 @@ run "${C[@]}" apply --yes
 exec_in_pod cfgd --config "$c" apply --yes
 cfgd --config "$c" apply -f x.yaml
 helm upgrade --install r chart -f values.yaml
-crossplane xpkg push "$img" -f "$xpkg"
+e2e_push xpkg "$img" -f "$xpkg"
 kubectl create namespace ns
 echo "  kubectl apply -f - < $f failed" | tee -a log
 yaml=$(cat)
@@ -2869,8 +2918,8 @@ else
     fail "an ERROR on stdout is lost where stdout is captured; add >&2 to: [${stdout_errors:-the scan failed}]"
 fi
 
-# A release target spelled by hand in the operator or full-stack suite reaches
-# the live release. helpers.sh names this run's install. The scan reads each
+# A release target spelled by hand in a suite that drives the PR install
+# reaches the live release. helpers.sh names this run's install. The scan reads each
 # suite's tracked *.sh files only: the YAML under operator/manifests/ is the
 # release operator's own definition, which setup applies where ArgoCD does not
 # run it.
@@ -2882,6 +2931,8 @@ release_target+='|\$\{?CFGD_NAMESPACE([^[:alnum:]_]|$)'
 release_target+='|app(\.kubernetes\.io/name)?='"$q"'cfgd-operator([^[:alnum:]-]|$)'
 release_target+='|(^|[^[:alnum:]_.-])(deploy|deployments?(\.apps)?|endpoints|ep|svc|services?)[/ ]+'"$q"'cfgd-operator([^[:alnum:]-]|$)'
 release_target+='|cfgd-(validating|mutating)-webhooks|csi\.cfgd\.io'
+release_gateway='(^|[^[:alnum:]_.-])cfgd-server([^[:alnum:]-]|$)'
+release_target+="|$release_gateway"
 # scan_release_targets FILE...: file:line:text of each line naming one.
 scan_release_targets() {
     local rc=0
@@ -2890,9 +2941,9 @@ scan_release_targets() {
 }
 targets_got="$(cd "$here/fixtures/release-targets" && scan_release_targets spelled.bash clean.bash | cut -d: -f1,2)" ||
     targets_got="(the scan failed)"
-targets_want="$(seq -f 'spelled.bash:%g' 1 26)"
+targets_want="$(seq -f 'spelled.bash:%g' 1 28)"
 if [ "$targets_got" = "$targets_want" ]; then
-    pass "the release-target scan reports the release namespace, CFGD_NAMESPACE, both operator label selectors, every kubectl spelling of the operator Deployment, Endpoints and Service, bare or quoted, the webhook configurations and the CSI driver, in code, comments and heredocs, and stays quiet on the PR install's names, the leader lease, longer names that start the same and other cfgd.io names"
+    pass "the release-target scan reports the release namespace, CFGD_NAMESPACE, both operator label selectors, every kubectl spelling of the operator Deployment, Endpoints and Service, bare or quoted, the webhook configurations, the CSI driver and the release gateway cfgd-server, in code, comments and heredocs, and stays quiet on the PR install's names, the leader lease, longer names that start the same and other cfgd.io names"
 else
     fail "the release-target scan printed [$targets_got], want [$targets_want]"
 fi
@@ -2940,19 +2991,17 @@ else
 fi
 
 # release-targets-kept.tsv lists the lines that name a release target on
-# purpose, one row per line, each with its reason.
+# purpose, one row per line, each with its reason. A list with no row is valid.
 kept_rc=0
 release_target_kept="$(grep -v -e '^#' -e '^$' "$here/release-targets-kept.tsv")" || kept_rc=$?
-if [ "$kept_rc" -eq 1 ]; then
-    fail "no entries in $here/release-targets-kept.tsv"
-elif [ "$kept_rc" -gt 1 ]; then
+if [ "$kept_rc" -gt 1 ]; then
     fail "could not read $here/release-targets-kept.tsv"
 fi
 
 # Each suite that drives the PR install has a floor of scripts; a pathspec
 # that matches fewer fails the check.
-release_target_suites=(operator full-stack)
-declare -A release_target_floors=([operator]=12 [full-stack]=10)
+release_target_suites=(operator full-stack gateway node)
+declare -A release_target_floors=([operator]=12 [full-stack]=10 [gateway]=10 [node]=11)
 for suite in "${release_target_suites[@]}"; do
     if [ -z "${release_target_floors[$suite]:-}" ]; then
         fail "release_target_floors has no floor for the $suite suite"
@@ -2969,9 +3018,82 @@ for suite in "${release_target_suites[@]}"; do
     elif [ -z "$release_verdict" ]; then
         pass "no $suite suite script names a release target by hand outside its kept list (${#suite_scripts[@]} scripts)"
     else
-        fail "the $suite suite drives the PR install; use \$E2E_INSTALL_NS, \$E2E_OPERATOR_PODS, \$E2E_OPERATOR_DEPLOY, \$E2E_WEBHOOK_SVC, \$E2E_CSI_DS, \$E2E_CSI_PODS, \$E2E_VALIDATING_WEBHOOK, \$E2E_MUTATING_WEBHOOK or \$CSI_DRIVER_NAME from helpers.sh. A line that names the release on purpose goes in common/release-targets-kept.tsv with its reason; a kept entry that matches no line is removed or updated. [$release_verdict]"
+        fail "the $suite suite drives the PR install; use \$E2E_INSTALL_NS, \$E2E_OPERATOR_PODS, \$E2E_OPERATOR_DEPLOY, \$E2E_WEBHOOK_SVC, \$E2E_GATEWAY_SVC, \$E2E_GATEWAY_URL, \$E2E_CSI_DS, \$E2E_CSI_PODS, \$E2E_VALIDATING_WEBHOOK, \$E2E_MUTATING_WEBHOOK or \$CSI_DRIVER_NAME from helpers.sh. A line that names the release on purpose goes in common/release-targets-kept.tsv with its reason; a kept entry that matches no line is removed or updated. [$release_verdict]"
     fi
 done
+# Setup reads the release operator, its webhooks and its CSI driver on purpose,
+# but no suite reads the release's device gateway, so a setup that deploys,
+# restarts or waits for it fails every PR on a release the run does not test.
+setup_script="$repo_root/tests/e2e/setup-cluster.sh"
+setup_gateway_rc=0
+setup_gateway="$(grep -HnE "$release_gateway" "$setup_script")" || setup_gateway_rc=$?
+case "$setup_gateway_rc" in
+    1) pass "setup-cluster.sh never names the release gateway cfgd-server, so a broken release gateway cannot fail a PR's setup" ;;
+    0) fail "setup-cluster.sh names the release gateway cfgd-server, which no suite reads; drop it from setup [$setup_gateway]" ;;
+    *) fail "the release gateway scan could not read $setup_script" ;;
+esac
+# The gateway's Service name, port, in-cluster URL, leader label and admin key
+# are spelled once, in helpers.sh, and setup hands the port and key to helm, so
+# a suite that spells one by hand drifts from the install it drives.
+# scan_gateway_bypass FILE...: file:line:text of each line that does.
+gateway_bypass='svc\.cluster\.local|\$\{?E2E_INSTALL_RELEASE\}?-gateway([^[:alnum:]-]|$)|cfgd\.io/gateway-leader'
+scan_gateway_bypass() {
+    local rc=0
+    grep -HnE "$gateway_bypass" "$@" || rc=$?
+    [ "$rc" -le 1 ]
+}
+bypass_got="$(cd "$here/fixtures/gateway-bypass" && scan_gateway_bypass spelled.bash clean.bash | cut -d: -f1,2)" ||
+    bypass_got="(the scan failed)"
+if [ "$bypass_got" = "$(seq -f 'spelled.bash:%g' 1 5)" ]; then
+    pass "the gateway scan reports an in-cluster URL, the gateway Service spelled from the release name, bare or braced, and the leader label, in code and comments, and stays quiet on the helpers.sh names and longer names that start the same"
+else
+    fail "the gateway scan printed [$bypass_got], want spelled.bash:1 to spelled.bash:5"
+fi
+if scan_gateway_bypass "$here/fixtures/gateway-bypass/absent.bash" >/dev/null 2>&1; then
+    fail "the gateway scan passed over a file it could not read"
+else
+    pass "the gateway scan fails over a file it cannot read"
+fi
+mapfile -t gateway_suite_scripts < <(for suite in "${release_target_suites[@]}"; do git -C "$repo_root" ls-files "tests/e2e/$suite/*.sh"; done)
+gateway_suite_floor=0
+for suite in "${release_target_suites[@]}"; do gateway_suite_floor=$((gateway_suite_floor + release_target_floors[$suite])); done
+if [ "${#gateway_suite_scripts[@]}" -lt "$gateway_suite_floor" ]; then
+    fail "the operator, full-stack, gateway and node suites matched ${#gateway_suite_scripts[@]} scripts, fewer than their floors' sum of $gateway_suite_floor, so the gateway scan missed part of them"
+elif ! gateway_bypass_hits="$(cd "$repo_root" && scan_gateway_bypass "${gateway_suite_scripts[@]}")"; then
+    fail "the gateway scan could not read the suites"
+elif [ -z "$gateway_bypass_hits" ]; then
+    pass "every suite reaches the PR install's gateway through helpers.sh (${#gateway_suite_scripts[@]} scripts)"
+else
+    fail "a suite spells the gateway by hand; use \$E2E_GATEWAY_URL, \$E2E_GATEWAY_SVC, \$E2E_GATEWAY_PORT, \$E2E_GATEWAY_LEADER_LABEL, \$E2E_GATEWAY_LEADER_PODS and \$E2E_GATEWAY_API_KEY from helpers.sh: [$gateway_bypass_hits]"
+fi
+# The README lists the gateway names a suite takes from helpers.sh, so a name
+# helpers.sh exports and the README leaves out sends a suite author to the
+# literal the scan above rejects.
+# undocumented_gateway_names HELPERS README: each exported E2E_GATEWAY_* name
+# with no `NAME=` line in README; returns 2 when either file cannot be read.
+undocumented_gateway_names() {
+    local names documented
+    names="$(grep -oE '^export E2E_GATEWAY_[A-Z_]+=' "$1")" || return 2
+    documented="$(cat "$2")" || return 2
+    names="$(sed -E 's/^export //; s/=$//' <<<"$names")"
+    while IFS= read -r name; do
+        grep -qE "^$name=" <<<"$documented" || echo "$name"
+    done <<<"$names"
+}
+gw_doc_red="$(undocumented_gateway_names <(printf 'export E2E_GATEWAY_SVC=x\nexport E2E_GATEWAY_PORT=1\n') <(printf 'E2E_GATEWAY_SVC=x\n'))"
+if [ "$gw_doc_red" = "E2E_GATEWAY_PORT" ] && ! undocumented_gateway_names "$here/fixtures/gateway-bypass/absent.bash" /dev/null >/dev/null; then
+    pass "the gateway-names check reports an exported name the README leaves out and fails over a file it cannot read"
+else
+    fail "the gateway-names check printed [$gw_doc_red] for a README missing E2E_GATEWAY_PORT, or passed over an unreadable file"
+fi
+if ! gw_undocumented="$(undocumented_gateway_names "$repo_root/tests/e2e/common/helpers.sh" "$repo_root/tests/e2e/README.md")"; then
+    fail "the gateway-names check could not read helpers.sh or tests/e2e/README.md"
+elif [ -n "$gw_undocumented" ]; then
+    fail "tests/e2e/README.md lists no NAME= line for these E2E_GATEWAY_* names helpers.sh exports: [$(paste -sd" " <<<"$gw_undocumented")]; add each to its gateway block"
+else
+    pass "tests/e2e/README.md lists every E2E_GATEWAY_* name helpers.sh exports"
+fi
+
 unscanned_kept="$(grep -vE "^tests/e2e/($(IFS='|'; echo "${release_target_suites[*]}"))/" <<<"$release_target_kept" || true)" # rc-ok: no entry outside the scanned suites is the passing outcome
 if [ -n "$unscanned_kept" ]; then
     fail "release-targets-kept.tsv lists lines of a file the release-target scan does not read, so they can never go stale; remove them: [$unscanned_kept]"
@@ -3087,7 +3209,7 @@ else
     pass "the Helm scope scan fails over a file it cannot read"
 fi
 # Eight installs and FS-HELM-05's upgrade.
-declare -A helm_scope_floors=([tests/e2e/full-stack/scripts/test-helm.sh]=9)
+declare -A helm_scope_floors=(["tests/e2e/full-stack/scripts/test-helm.sh"]=9)
 for scope_file in "${!helm_scope_floors[@]}"; do
     if ! git -C "$repo_root" ls-files --error-unmatch "$scope_file" >/dev/null 2>&1; then
         fail "$scope_file is not tracked, so the Helm scope scan cannot hold it to its floor"
@@ -3285,21 +3407,32 @@ fi
 down_bin="$here/fixtures/pr-install-down/bin"
 down_case() {
     : > "$scratch/down.calls"
+    rm -f "$scratch/down.calls.nsreads"
     local rc=0
     env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$down_bin:$PATH" GITHUB_RUN_ID=42 \
         DOWN_LOG="$scratch/down.calls" REGISTRY=r.example CLI_SCRATCH="$scratch" "$@" \
         bash "$e2e_root/pr-install-down.sh" </dev/null 2>&1 || rc=$?
     echo "rc=$rc"
 }
-down_objects="kubectl delete machineconfigs,configpolicies,driftalerts,backuppolicies -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
+down_labelled="get machineconfigs,configpolicies,driftalerts,backuppolicies,clusterconfigpolicies,modules,teamconfigs,composition,function -A -l cfgd.io/e2e-run=42 -o name"
+down_named="get validatingwebhookconfiguration/cfgd-e2e-42 mutatingwebhookconfiguration/cfgd-e2e-42-pod-injector function/function-cfgd-42 composition/teamconfig-to-machineconfigs-42 --ignore-not-found -o name"
+down_run_ns="get namespaces -l cfgd.io/e2e-run=42 --field-selector metadata.name!=cfgd-e2e-42-sys -o name"
+down_reads="kubectl get namespace cfgd-e2e-42-sys --ignore-not-found -o jsonpath={.status.phase}
+helm list -n cfgd-e2e-42-sys -a -q --filter ^cfgd-e2e-42\$
+kubectl $down_labelled
+kubectl $down_run_ns
+kubectl $down_named
+kubectl get csidriver e2e.csi.cfgd.io --ignore-not-found -o jsonpath={.metadata.annotations.meta\\.helm\\.sh/release-namespace}"
+down_objects="$down_reads
+kubectl delete machineconfigs,configpolicies,driftalerts,backuppolicies -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
 kubectl delete clusterconfigpolicies,modules -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
 kubectl delete teamconfigs -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
-kubectl delete composition,function -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
-helm list -n cfgd-e2e-42-sys -a -q --filter ^cfgd-e2e-42\$"
+kubectl delete composition,function -A -l cfgd.io/e2e-run=42 --wait=true --timeout=90s
+kubectl delete namespaces -l cfgd.io/e2e-run=42 --field-selector metadata.name!=cfgd-e2e-42-sys --wait=false
+kubectl $down_run_ns"
 down_rest="kubectl delete namespace cfgd-e2e-42-sys --ignore-not-found --wait=false
 kubectl get csidriver e2e.csi.cfgd.io --ignore-not-found -o jsonpath={.metadata.annotations.meta\\.helm\\.sh/release-namespace}
-kubectl get validatingwebhookconfiguration/cfgd-e2e-42 mutatingwebhookconfiguration/cfgd-e2e-42-pod-injector --ignore-not-found -o name
-kubectl get function/function-cfgd-42 composition/teamconfig-to-machineconfigs-42 --ignore-not-found -o name
+kubectl $down_named
 kubectl get namespace cfgd-e2e-42-sys --ignore-not-found -o jsonpath={.status.phase}"
 down_uninstall="helm uninstall cfgd-e2e-42 -n cfgd-e2e-42-sys --wait --timeout=120s"
 # expect_down <label> <want rc> <want calls> <want output pattern> [VAR=value...]
@@ -3333,25 +3466,122 @@ expect_down "pr-install-down.sh runs every later step after the Composition and 
 $down_uninstall
 $down_rest" "^ERROR: the PR install teardown failed at: delete composition,function$" \
     "DOWN_FAIL=delete composition,function *"
-expect_down "pr-install-down.sh exits 1 when it cannot read back the run's Function and Composition" \
+expect_down "pr-install-down.sh runs every step when it cannot read the run's webhook configurations, Function and Composition, then exits 1 naming both reads" \
     1 "$down_objects
 $down_uninstall
-$down_rest" "^ERROR: the PR install teardown failed at: read function$" \
-    "DOWN_FAIL=get function/*"
+$down_rest" "^ERROR: the PR install teardown failed at: find named objects, read named objects$" \
+    "DOWN_FAIL=$down_named"
 expect_down "pr-install-down.sh exits 1 when the run's Function is still there" \
     1 "$down_objects
 $down_uninstall
 $down_rest" "^ERROR: the PR install teardown failed at: function left$" \
-    "DOWN_PRINT=get function/*" "DOWN_PRINT_OUT=function.pkg.crossplane.io/function-cfgd-42"
+    "DOWN_PRINT=$down_named" "DOWN_PRINT_OUT=function.pkg.crossplane.io/function-cfgd-42"
 expect_down "pr-install-down.sh exits 1 when the run's Composition is still there" \
     1 "$down_objects
 $down_uninstall
 $down_rest" "^ERROR: the PR install teardown failed at: composition left$" \
-    "DOWN_PRINT=get function/*" "DOWN_PRINT_OUT=composition.apiextensions.crossplane.io/teamconfig-to-machineconfigs-42"
+    "DOWN_PRINT=$down_named" "DOWN_PRINT_OUT=composition.apiextensions.crossplane.io/teamconfig-to-machineconfigs-42"
 expect_down "pr-install-down.sh treats a release that is not installed as removed and still deletes the namespace" \
     0 "$down_objects
 $down_rest" "^  release cfgd-e2e-42 is not installed in cfgd-e2e-42-sys; nothing to uninstall$" \
     DOWN_RELEASE=absent
+expect_down "pr-install-down.sh exits 1 naming every object and the run id it looked for when none is left, and touches nothing" \
+    1 "$down_reads" "^ERROR: no PR install to remove for run 42 (from GITHUB_RUN_ID): no Helm release cfgd-e2e-42, namespace cfgd-e2e-42-sys absent, no machineconfigs,configpolicies,driftalerts,backuppolicies,clusterconfigpolicies,modules,teamconfigs,composition,function or other namespace labelled cfgd.io/e2e-run=42, none of validatingwebhookconfiguration/cfgd-e2e-42 mutatingwebhookconfiguration/cfgd-e2e-42-pod-injector function/function-cfgd-42 composition/teamconfig-to-machineconfigs-42, and csidriver/e2e.csi.cfgd.io is not this install's\.$" \
+    DOWN_RELEASE=absent DOWN_NAMESPACE=absent
+expect_down "pr-install-down.sh exits 1 when an earlier teardown left only a Terminating namespace" \
+    1 "$down_reads" "^ERROR: no PR install to remove for run 42 (from GITHUB_RUN_ID): no Helm release cfgd-e2e-42, namespace cfgd-e2e-42-sys Terminating," \
+    DOWN_RELEASE=absent DOWN_NAMESPACE=Terminating
+expect_down "pr-install-down.sh reruns after a partly failed teardown that left only a run-labelled cluster-scoped Function, deletes it and exits 0" \
+    0 "$down_objects
+$down_rest" "^Removed the PR install cfgd-e2e-42$" \
+    DOWN_RELEASE=absent DOWN_NAMESPACE=Terminating "DOWN_PRINT=$down_labelled" "DOWN_PRINT_OUT=function.pkg.crossplane.io/function-cfgd-42"
+expect_down "pr-install-down.sh reruns when only the run's webhook configuration is left, runs every step and exits 1 naming it" \
+    1 "$down_objects
+$down_rest" "^ERROR: the PR install teardown failed at: validatingwebhookconfiguration left$" \
+    DOWN_RELEASE=absent DOWN_NAMESPACE=absent "DOWN_PRINT=$down_named" "DOWN_PRINT_OUT=validatingwebhookconfiguration.admissionregistration.k8s.io/cfgd-e2e-42"
+expect_down "pr-install-down.sh reruns when only a CSIDriver this install owns is left, runs every step and exits 1 naming it" \
+    1 "$down_objects
+$down_rest" "^ERROR: the PR install teardown failed at: csidriver left$" \
+    DOWN_RELEASE=absent DOWN_NAMESPACE=absent "DOWN_PRINT=get csidriver *" "DOWN_PRINT_OUT=cfgd-e2e-42-sys"
+expect_down "pr-install-down.sh exits 1 touching nothing when the CSIDriver belongs to another install" \
+    1 "$down_reads" "^ERROR: no PR install to remove for run 42" \
+    DOWN_RELEASE=absent DOWN_NAMESPACE=absent "DOWN_PRINT=get csidriver *" "DOWN_PRINT_OUT=cfgd-e2e-7-sys"
+# Every kind a delete names is one the first lookup lists, and the read-back
+# reads the objects the first named lookup did, so nothing the teardown removes
+# is missing from its nothing-to-remove verdict.
+down_case >/dev/null
+lookup_kinds="$(sed -n 's/^kubectl get \([^ ]*\) \(-A \)\{0,1\}-l cfgd.io\/e2e-run=42 .*-o name$/\1/p' "$scratch/down.calls" | tr ',' '\n' | sort -u)"
+delete_kinds="$(sed -n 's/^kubectl delete \([^ ]*\) .*-l cfgd.io\/e2e-run=42 .*/\1/p' "$scratch/down.calls" | tr ',' '\n' | sort -u)"
+named_reads="$(grep -c "^kubectl get [a-z]*/" "$scratch/down.calls" || true)" # rc-ok: a count of 0 is judged below
+named_distinct="$(grep "^kubectl get [a-z]*/" "$scratch/down.calls" | sort -u | wc -l)"
+if [ -n "$lookup_kinds" ] && [ "$lookup_kinds" = "$delete_kinds" ] && [ "$named_reads" = 2 ] && [ "$named_distinct" = 1 ]; then
+    pass "pr-install-down.sh looks up first every kind it deletes ($(wc -l <<<"$delete_kinds") kinds) and reads back the named objects it looked up"
+else
+    fail "pr-install-down.sh lookup kinds [$(paste -sd ' ' <<<"$lookup_kinds")], delete kinds [$(paste -sd ' ' <<<"$delete_kinds")], named reads $named_reads ($named_distinct distinct); want the same kinds and two identical named reads"
+fi
+# A kind the declaration lists, spelled again anywhere else in the script (a
+# hint, a delete, a comment) is a second list the lookup cannot see. A kind
+# followed by / names one object, which named_objects owns.
+# scan_kind_spellings FILE prints `HANDLIST file:line` for each such spelling.
+# shellcheck disable=SC2016 # an awk program; the $ fields belong to awk
+scan_kind_spellings() {
+    awk '
+        FNR == NR {
+            if ($0 ~ /^delete_groups=\($/) { decl = 1; next }
+            if (decl && $0 ~ /^\)$/) { decl = 0; next }
+            if (decl && match($0, /"[^"|]*\|/)) {
+                n = split(substr($0, RSTART + 1, RLENGTH - 2), ks, ",")
+                for (i = 1; i <= n; i++) kinds[ks[i]] = 1
+                declared[FNR] = 1
+            }
+            next
+        }
+        !(FNR in declared) {
+            for (k in kinds) {
+                line = $0
+                while (match(line, "(^|[^A-Za-z0-9_])" k "([^A-Za-z0-9_/]|$)")) {
+                    printf "HANDLIST %s:%d %s\n", FILENAME, FNR, k
+                    line = substr(line, RSTART + RLENGTH)
+                }
+            }
+        }
+    ' "$1" "$1"
+}
+handlist="$(scan_kind_spellings "$e2e_root/pr-install-down.sh")"
+declared_kinds="$(awk '/^delete_groups=\($/{d=1;next} d&&/^\)$/{d=0} d' "$e2e_root/pr-install-down.sh" | grep -c '|' || true)" # rc-ok: a count of 0 is judged below
+if [ "$declared_kinds" -lt 4 ]; then
+    fail "the kind-spelling scan found $declared_kinds delete groups in pr-install-down.sh's delete_groups declaration, want 4 or more"
+elif [ -n "$handlist" ]; then
+    fail "pr-install-down.sh spells a declared kind outside delete_groups: $(paste -sd ';' <<<"$handlist")"
+else
+    pass "pr-install-down.sh spells each of its $declared_kinds delete groups' kinds only in delete_groups"
+fi
+printf '%s\n' 'delete_groups=(' '    "teamconfigs|hint"' ')' 'echo "the teamconfigs left"' 'kubectl get function/x' > "$scratch/handlist.sh"
+if [ "$(scan_kind_spellings "$scratch/handlist.sh")" = "HANDLIST $scratch/handlist.sh:4 teamconfigs" ]; then
+    pass "the kind-spelling scan reports a hand spelling and passes over a declared one"
+else
+    fail "the kind-spelling scan on its fixture printed [$(scan_kind_spellings "$scratch/handlist.sh")], want one HANDLIST at line 4"
+fi
+# A local teardown with no setup record names the file it looked in.
+missing_record_out="$(env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$down_bin:$PATH" DOWN_LOG="$scratch/down.calls" \
+    REGISTRY=r.example CLI_SCRATCH="$scratch" E2E_LOCAL_RUN_ID_FILE="$scratch/no-such-record" DOWN_RELEASE=absent DOWN_NAMESPACE=absent \
+    bash "$e2e_root/pr-install-down.sh" </dev/null 2>&1)" && missing_record_rc=0 || missing_record_rc=$?
+if [ "$missing_record_rc" = 1 ] &&
+    grep -qF "for run local-$sha (from HEAD; no setup record in $scratch/no-such-record)" <<<"$missing_record_out"; then
+    pass "pr-install-down.sh with no setup record names the record path it looked in"
+else
+    fail "pr-install-down.sh with no setup record: rc=$missing_record_rc, output [$missing_record_out], want rc=1 and the run local-$sha from HEAD with the path $scratch/no-such-record"
+fi
+expect_down "pr-install-down.sh uninstalls a release whose namespace lookup finds nothing" \
+    0 "$down_objects
+$down_uninstall
+$down_rest" "^Removed the PR install cfgd-e2e-42$" \
+    DOWN_NAMESPACE=absent
+expect_down "pr-install-down.sh runs every step after it cannot read the namespace, then exits 1 naming both reads" \
+    1 "$down_objects
+$down_uninstall
+$down_rest" "^ERROR: the PR install teardown failed at: find namespace, read namespace$" \
+    "DOWN_FAIL=get namespace cfgd-e2e-42-sys --ignore-not-found -o jsonpath=*"
 expect_down "pr-install-down.sh deletes the namespace and reads back after a failed helm uninstall, then exits 1 naming it" \
     1 "$down_objects
 $down_uninstall
@@ -3361,6 +3591,212 @@ expect_down "pr-install-down.sh skips the uninstall when it cannot list the rele
     1 "$down_objects
 $down_rest" "^ERROR: the PR install teardown failed at: find release$" \
     "DOWN_FAIL=list *"
+# The suites' namespaces go before the install: the uninstall that removes the
+# CSI driver is issued only once the wait reads none of them left, here on its
+# second read. When the wait times out, the teardown names each pod left with
+# its CSI drivers and exits 1 with the install still there, and when no
+# CSIDriver is registered (today's leftovers of an earlier teardown), or one is
+# registered from a Terminating namespace with no node plugin running, it says
+# how a running driver unmounts them.
+down_wait_left="kubectl $down_run_ns"
+down_pods="kubectl get pods -n e2e-inject-42 -o jsonpath={range .items[*]}{\"  \"}{.metadata.namespace}{\"/\"}{.metadata.name}{\" \"}{.status.phase}{\" csi: \"}{.spec.volumes[*].csi.driver}{\"\\n\"}{end}"
+down_csi_read="kubectl get csidriver e2e.csi.cfgd.io --ignore-not-found -o jsonpath={.metadata.annotations.meta\\.helm\\.sh/release-namespace}"
+down_pod_line="  e2e-inject-42/e2e-debug-pod Running csi: e2e.csi.cfgd.io"
+down_plugin_read="kubectl get pods -n cfgd-e2e-42-sys -l app.kubernetes.io/component=csi-driver --field-selector status.phase=Running -o name"
+down_owner_phase="kubectl get namespace cfgd-e2e-42-sys --ignore-not-found -o jsonpath={.status.phase}"
+expect_down "pr-install-down.sh deletes the run's namespaces and uninstalls the release only after the wait reads none of them left" \
+    0 "$down_objects
+$down_wait_left
+$down_uninstall
+$down_rest" "^Removed the PR install cfgd-e2e-42$" \
+    DOWN_RUN_NS=namespace/e2e-inject-42 DOWN_RUN_NS_READS=2 RUN_NS_TIMEOUT=30
+for want in "^ERROR: these namespaces labelled cfgd.io/e2e-run=42 are still there after 0s: e2e-inject-42\. " \
+    "^$down_pod_line$" "^  csidriver/e2e.csi.cfgd.io from cfgd-e2e-42-sys is registered and its node plugin runs there (Running node-plugin pods: 1), so it can unmount their volumes, and this install stays" \
+    "^ERROR: the PR install teardown failed at: run namespaces left$"; do
+    expect_down "pr-install-down.sh exits 1 keeping the install when the run's namespaces outlast the wait: $want" \
+        1 "$down_objects
+$down_pods
+$down_csi_read
+$down_plugin_read" "$want" \
+        DOWN_RUN_NS=namespace/e2e-inject-42 RUN_NS_TIMEOUT=0 "DOWN_PODS=$down_pod_line" "DOWN_PRINT=get csidriver *" DOWN_PRINT_OUT=cfgd-e2e-42-sys \
+        DOWN_CSI_PODS=pod/cfgd-e2e-42-csi-x7k2p
+done
+for want in "^$down_pod_line$" \
+    "^  csidriver/e2e.csi.cfgd.io from cfgd-e2e-42-sys is registered, but namespace cfgd-e2e-42-sys is Terminating and no node-plugin pod of it is Running, so the kubelet cannot unmount" \
+    "^  Once namespace cfgd-e2e-42-sys is gone, run task e2e:setup: it deletes the CSIDriver cfgd-e2e-42-sys left" \
+    "^ERROR: the PR install teardown failed at: run namespaces left$"; do
+    expect_down "pr-install-down.sh names the remedy when the run's namespaces outlast the wait and the CSIDriver's namespace is Terminating with no node plugin running: $want" \
+        1 "$down_objects
+$down_pods
+$down_csi_read
+$down_plugin_read
+$down_owner_phase" "$want" \
+        DOWN_NAMESPACE=Terminating DOWN_RUN_NS=namespace/e2e-inject-42 RUN_NS_TIMEOUT=0 "DOWN_PODS=$down_pod_line" \
+        "DOWN_PRINT=get csidriver *" DOWN_PRINT_OUT=cfgd-e2e-42-sys
+done
+# expect_csi_arm <label> <want line> <owner> <calls after the CSIDriver read>
+# [VAR=value...]: one more state report_csi_node_plugin tells apart, reached
+# when the run's namespaces outlast the wait and csidriver/e2e.csi.cfgd.io
+# belongs to <owner>.
+expect_csi_arm() {
+    local label="$1" want="$2" owner="$3" calls="$4"
+    shift 4
+    expect_down "pr-install-down.sh, when the run's namespaces outlast the wait, $label" \
+        1 "$down_objects
+$down_pods
+$down_csi_read
+$calls" "$want" \
+        DOWN_RUN_NS=namespace/e2e-inject-42 RUN_NS_TIMEOUT=0 "DOWN_PODS=$down_pod_line" \
+        "DOWN_PRINT=get csidriver *" "DOWN_PRINT_OUT=$owner" "$@"
+}
+down_plugin_read_7="kubectl get pods -n cfgd-e2e-7-sys -l app.kubernetes.io/component=csi-driver --field-selector status.phase=Running -o name"
+down_owner_phase_7="kubectl get namespace cfgd-e2e-7-sys --ignore-not-found -o jsonpath={.status.phase}"
+expect_csi_arm "names the CSIDriver's namespace gone and the setup remedy" \
+    "^  csidriver/e2e.csi.cfgd.io from cfgd-e2e-42-sys is registered, but namespace cfgd-e2e-42-sys is gone and no node-plugin pod of it is Running" \
+    cfgd-e2e-42-sys "$down_plugin_read
+$down_owner_phase" DOWN_NAMESPACE=absent
+expect_csi_arm "points at the node-plugin pods when the CSIDriver's namespace is Active and none of them runs" \
+    "^  csidriver/e2e.csi.cfgd.io from cfgd-e2e-42-sys is registered, but no node-plugin pod of it is Running in cfgd-e2e-42-sys, so the kubelet cannot unmount" \
+    cfgd-e2e-42-sys "$down_plugin_read
+$down_owner_phase"
+expect_csi_arm "says it could not read the node-plugin pods" \
+    "^  Could not read the node-plugin pods of csidriver/e2e.csi.cfgd.io in cfgd-e2e-42-sys\. " \
+    cfgd-e2e-42-sys "$down_plugin_read" "DOWN_FAIL=get pods -n cfgd-e2e-42-sys -l app.kubernetes.io/component=csi-driver *"
+expect_csi_arm "says it could not read the namespace of another install's CSIDriver with no node plugin running" \
+    "^  csidriver/e2e.csi.cfgd.io from cfgd-e2e-7-sys is registered and no node-plugin pod of it is Running there, and namespace cfgd-e2e-7-sys could not be read\. " \
+    cfgd-e2e-7-sys "$down_plugin_read_7
+$down_owner_phase_7" "DOWN_FAIL=get namespace cfgd-e2e-7-sys *"
+for want in "^$down_pod_line$" "^  No csidriver/e2e.csi.cfgd.io is registered, so the kubelet cannot unmount" \
+    "^  Run task e2e:setup: once its driver runs, the kubelet unmounts them" "^ERROR: the PR install teardown failed at: run namespaces left$"; do
+    expect_down "pr-install-down.sh names the remedy when only the run's namespaces are left and no CSIDriver is registered: $want" \
+        1 "$down_objects
+$down_pods
+$down_csi_read" "$want" \
+        DOWN_RELEASE=absent DOWN_NAMESPACE=absent DOWN_RUN_NS=namespace/e2e-inject-42 RUN_NS_TIMEOUT=0 "DOWN_PODS=$down_pod_line"
+done
+# claim_csidriver against the same stubs, from a run-42 process. Both
+# csidriver reads print DOWN_PRINT_OUT, the owner's namespace, so the object
+# exists and names that owner; DOWN_NAMESPACE is that namespace's phase.
+claim_reads="kubectl get csidriver e2e.csi.cfgd.io --ignore-not-found -o name
+kubectl get csidriver e2e.csi.cfgd.io -o jsonpath={.metadata.annotations.meta\\.helm\\.sh/release-namespace}"
+# expect_claim <label> <want rc> <want calls> <want output pattern> [VAR=value...]
+expect_claim() {
+    local label="$1" want_rc="$2" want_calls="$3" want_out="$4" out
+    shift 4
+    : > "$scratch/down.calls"
+    out="$(in_helpers 'claim_csidriver && echo rc=0 || echo "rc=$?"' \
+        GITHUB_RUN_ID=42 PATH="$down_bin:$PATH" DOWN_LOG="$scratch/down.calls" "DOWN_PRINT=get csidriver *" "$@" 2>&1)"
+    if [ "$(sed -n 's/^rc=//p' <<<"$out")" = "$want_rc" ] && [ "$(cat "$scratch/down.calls")" = "$want_calls" ] &&
+        grep -q -- "$want_out" <<<"$out"; then
+        pass "$label"
+    else
+        fail "$label: got [$out] with calls [$(cat "$scratch/down.calls")], want rc=$want_rc, calls [$want_calls] and a line matching [$want_out]"
+    fi
+}
+expect_claim "claim_csidriver deletes a CSIDriver this run's own install left once its namespace is gone" \
+    0 "$claim_reads
+kubectl get namespace cfgd-e2e-42-sys --ignore-not-found -o jsonpath={.status.phase}
+kubectl delete csidriver e2e.csi.cfgd.io" "was left by an install in cfgd-e2e-42-sys, which no longer exists; deleting it$" \
+    DOWN_PRINT_OUT=cfgd-e2e-42-sys DOWN_NAMESPACE=absent
+expect_claim "claim_csidriver stops setup while this run's own install namespace is still Terminating" \
+    1 "$claim_reads
+kubectl get namespace cfgd-e2e-42-sys --ignore-not-found -o jsonpath={.status.phase}" \
+    "^ERROR: namespace cfgd-e2e-42-sys, which owns csidriver/e2e.csi.cfgd.io, is being deleted; rerun setup once it is gone$" \
+    DOWN_PRINT_OUT=cfgd-e2e-42-sys DOWN_NAMESPACE=Terminating
+expect_claim "claim_csidriver keeps the CSIDriver of this run's own live install for the Helm upgrade" \
+    0 "$claim_reads
+kubectl get namespace cfgd-e2e-42-sys --ignore-not-found -o jsonpath={.status.phase}" "^rc=0$" \
+    DOWN_PRINT_OUT=cfgd-e2e-42-sys
+expect_claim "claim_csidriver deletes a CSIDriver another run's install left once its namespace is gone" \
+    0 "$claim_reads
+kubectl get namespace cfgd-e2e-7-sys --ignore-not-found -o jsonpath={.status.phase}
+kubectl delete csidriver e2e.csi.cfgd.io" "was left by an install in cfgd-e2e-7-sys, which no longer exists; deleting it$" \
+    DOWN_PRINT_OUT=cfgd-e2e-7-sys DOWN_NAMESPACE=absent
+
+# reclaim_stale_install against the same stubs, from a run-42 process: the
+# owner namespace's label and heartbeat come from DOWN_PRINT_OUT. A stale owner's
+# install is removed by a child pr-install-down.sh that names every object from
+# the owner's run id alone and leaves this process's scratch root in place.
+# reclaim_case <label|heartbeat> [VAR=value...] prints the output, then
+# `rc=<status>`, or `rc=aborted with <status>` when the shell itself died.
+reclaim_get="kubectl get namespace cfgd-e2e-7-sys --ignore-not-found -o jsonpath={.metadata.labels.cfgd\\.io/e2e-run}|{.metadata.annotations.cfgd\\.io/heartbeat}"
+reclaim_case() {
+    local meta="$1"
+    shift
+    : > "$scratch/down.calls"
+    mkdir -p "$scratch/owned"
+    in_helpers 'reclaim_stale_install cfgd-e2e-7-sys && echo rc=0 || echo "rc=$?"' \
+        GITHUB_RUN_ID=42 PATH="$down_bin:$PATH" DOWN_LOG="$scratch/down.calls" E2E_SCRATCH_OWNED="$scratch/owned" \
+        "DOWN_PRINT=get namespace cfgd-e2e-7-sys --ignore-not-found -o jsonpath={.metadata*" "DOWN_PRINT_OUT=$meta" "$@" 2>&1 || echo "rc=aborted with $?"
+}
+# expect_reclaim <label> <owner meta> <want rc> <want calls> <want output pattern> [VAR=value...]
+expect_reclaim() {
+    local label="$1" meta="$2" want_rc="$3" want_calls="$4" want_out="$5" out
+    shift 5
+    out="$(reclaim_case "$meta" "$@")"
+    if [ "$(sed -n 's/^rc=//p' <<<"$out")" = "$want_rc" ] && [ "$(cat "$scratch/down.calls")" = "$want_calls" ] &&
+        grep -q -- "$want_out" <<<"$out" && [ -d "$scratch/owned" ]; then
+        pass "$label"
+    else
+        fail "$label: got [$out] with calls [$(cat "$scratch/down.calls")] and the scratch root $([ -d "$scratch/owned" ] && echo kept || echo removed), want rc=$want_rc, calls [$want_calls], a line matching [$want_out] and the scratch root kept"
+    fi
+}
+now="$(date -u +%s)"
+down_7="$down_objects
+$down_uninstall
+$down_rest"
+down_7="${down_7//42/7}"
+expect_reclaim "reclaim_stale_install removes a run whose heartbeat is HEARTBEAT_STALE_SECONDS old through pr-install-down.sh under that run's id" \
+    "7|$((now - 900))" 0 "$reclaim_get
+$down_7" "^Removed the PR install cfgd-e2e-7$"
+if [ ! -s "$scratch/down.calls" ]; then
+    fail "the child pr-install-down.sh check saw no calls at all"
+elif grep -q 42 "$scratch/down.calls"; then
+    fail "the child pr-install-down.sh named this run (42) in: $(grep 42 "$scratch/down.calls" | paste -sd ';')"
+else
+    pass "the child pr-install-down.sh names no object of the run that called it"
+fi
+expect_reclaim "reclaim_stale_install refuses a run whose heartbeat is fresh, naming it and the heartbeat's age" \
+    "7|$now" 1 "$reclaim_get" "^ERROR: the PR install belongs to run 7 in cfgd-e2e-7-sys, whose heartbeat is [0-9]*s old (under 900s)"
+expect_reclaim "reclaim_stale_install refuses an owner namespace without a run label" \
+    "|1" 1 "$reclaim_get" "^ERROR: namespace cfgd-e2e-7-sys holds the PR install and carries no cfgd.io/e2e-run label"
+expect_reclaim "reclaim_stale_install refuses an owner without a readable heartbeat" \
+    "7|" 1 "$reclaim_get" "^ERROR: the PR install of run 7 in cfgd-e2e-7-sys has no readable cfgd.io/heartbeat"
+expect_reclaim "reclaim_stale_install reads a heartbeat with a leading zero as decimal and removes that stale run" \
+    "7|0900" 0 "$reclaim_get
+$down_7" "^Removed the PR install cfgd-e2e-7$"
+expect_reclaim "reclaim_stale_install refuses a heartbeat in the future, naming the clock skew" \
+    "7|$((now + 300))" 1 "$reclaim_get" "^ERROR: the PR install belongs to run 7 in cfgd-e2e-7-sys, whose heartbeat is [0-9]*s in the future (clock skew?)"
+expect_reclaim "reclaim_stale_install exits 1 when the owner namespace is gone by the time it reads it" \
+    "" 1 "$reclaim_get" "^ERROR: namespace cfgd-e2e-7-sys, which held the PR install, finished deleting while setup read it; rerun setup\.$"
+expect_reclaim "reclaim_stale_install exits 1 when the removal fails" \
+    "7|1" 1 "$reclaim_get
+${down_reads//42/7}" "^ERROR: could not remove the PR install of dead run 7" \
+    DOWN_RELEASE=absent DOWN_NAMESPACE=absent
+# age-heartbeat.sh sets the run's heartbeat to HEARTBEAT_STALE_SECONDS ago on
+# every namespace the run labels, and stops when none carries the label.
+age_case() {
+    : > "$scratch/down.calls"
+    env -u GITHUB_RUN_ID -u CFGD_NAMESPACE PATH="$down_bin:$PATH" GITHUB_RUN_ID=42 \
+        DOWN_LOG="$scratch/down.calls" REGISTRY=r.example CLI_SCRATCH="$scratch" "$@" \
+        bash "$e2e_root/age-heartbeat.sh" </dev/null 2>&1 && echo rc=0 || echo "rc=$?"
+}
+before="$(date -u +%s)"
+age_out="$(age_case "DOWN_PRINT=get namespaces -l cfgd.io/e2e-run=42 -o name" "DOWN_PRINT_OUT=namespace/cfgd-e2e-42-sys")"
+after="$(date -u +%s)"
+aged="$(sed -n 's/^kubectl annotate namespace -l cfgd.io\/e2e-run=42 cfgd.io\/heartbeat=\([0-9]*\) --overwrite$/\1/p' "$scratch/down.calls")"
+if grep -qx 'rc=0' <<<"$age_out" && [ -n "$aged" ] && [ "$aged" -ge $((before - 900)) ] && [ "$aged" -le $((after - 900)) ]; then
+    pass "age-heartbeat.sh sets the run's heartbeat to 900s ago on every namespace it labels"
+else
+    fail "age-heartbeat.sh: got [$age_out] with calls [$(cat "$scratch/down.calls")], want rc=0 and an annotate to between $((before - 900)) and $((after - 900))"
+fi
+age_out="$(age_case)"
+if grep -qx 'rc=1' <<<"$age_out" && grep -q '^ERROR: no namespace carries cfgd.io/e2e-run=42' <<<"$age_out" &&
+    ! grep -q annotate "$scratch/down.calls"; then
+    pass "age-heartbeat.sh stops when no namespace carries the run label, annotating nothing"
+else
+    fail "age-heartbeat.sh with no labelled namespace: got [$age_out] with calls [$(cat "$scratch/down.calls")]"
+fi
 # Every cfgd.io kind the cluster serves can hold a run-labelled object, so the
 # teardown's delete lists name each plural schemas/crds.yaml and the TeamConfig
 # XRD declare.
@@ -3369,11 +3805,518 @@ if ! crd_plurals="$(yq -N '.spec.names.plural' "$repo_root/schemas/crds.yaml" "$
     fail "yq could not read the plurals from schemas/crds.yaml and manifests/crossplane/xrd-teamconfig.yaml"
 else
     down_plurals="$(sed -n 's/^kubectl delete \([^ ]*\) -A -l cfgd.io\/e2e-run=42 .*/\1/p' "$scratch/down.calls" | tr ',' '\n' | sort)"
+    # Composition and Function are the Crossplane suite's own, outside cfgd.io.
+    down_plurals="$(grep -vx 'composition\|function' <<<"$down_plurals" || true)" # rc-ok: an empty list is judged below
     if [ "$down_plurals" = "$crd_plurals" ]; then
         pass "pr-install-down.sh deletes the run's objects of every kind schemas/crds.yaml and the TeamConfig XRD declare ($(wc -l <<<"$crd_plurals") kinds)"
     else
         fail "pr-install-down.sh deletes [$(paste -sd ' ' <<<"$down_plurals")], want every plural in schemas/crds.yaml and the TeamConfig XRD [$(paste -sd ' ' <<<"$crd_plurals")]"
     fi
+fi
+
+# The DriftAlerts the install's gateway in $E2E_INSTALL_NS creates for a
+# device carry no run label, so cleanup_e2e deletes them by the ids
+# gateway_device recorded, and an id sent any other way leaks its alerts.
+# scan_device_ids <relays> FILE... prints `DEVICEID file:line <value>` for
+# each id a line sends (a --device-id argument, a "deviceId" JSON key, the
+# <id> of a /api/v1/devices/<id>/drift URL, or the argument a relay is called
+# with) whose value is not one variable
+# that only gateway_device calls in the same directory assign (`NAME=`, read,
+# mapfile, readarray, printf -v, for and local or declare all assign);
+# `SENDER file:line` for a cfgd checkin or enroll, or a daemon aimed at a gateway
+# by --server-url or by a --config a script writes with a Server origin, that
+# passes no --device-id and carries no `# device-id-ok: <why>`; and
+# `RELAY <name>` for a relay no file defines. <relays> lists, as name:position,
+# the functions that send a positional argument as the id; that positional is
+# judged at their call sites, and a call inside a relay forwards it. Fails only
+# when a file cannot be read.
+# shellcheck disable=SC2016 # an awk program; the $ fields belong to awk
+scan_device_ids() {
+    local relays="$1" f
+    shift
+    for f in "$@"; do
+        [ -r "$f" ] || {
+            echo "UNREADABLE $f" >&2
+            return 1
+        }
+    done
+    awk -v relays="$relays" '
+        function judge(v) {
+            if (v ~ /^\$[1-9]$/ && (fn in pos) && pos[fn] == substr(v, 2)) return
+            name = ""
+            if (v ~ "^\\$\\{" ident "\\}$") name = substr(v, 3, length(v) - 3)
+            else if (v ~ "^\\$" ident "$") name = substr(v, 2)
+            if (name == "" || !((dir, name) in minted) || ((dir, name) in plain))
+                printf "DEVICEID %s:%d %s\n", FILENAME, FNR, v
+        }
+        function unquote(t) {
+            if (substr(t, 1, 1) == "\"") return substr(t, 2, length(t) - 2)
+            sub(/[);|&].*$/, "", t)
+            return t
+        }
+        # mark(s): every bare name among the words of s, up to a redirect or
+        # the end of the command, is a variable assigned other than through
+        # gateway_device.
+        function mark(s,    n, w, i) {
+            n = split(s, w, /[[:space:]]+/)
+            for (i = 1; i <= n; i++) {
+                if (w[i] ~ /^[0-9]*[<>|;&)]/) return
+                if (w[i] ~ "^" ident "$") plain[dir, w[i]] = 1
+            }
+        }
+        # judge_sender(L, ln): a cfgd checkin or enroll, or a daemon aimed at a
+        # gateway (by --server-url or a --config a script writes with a Server
+        # origin), lets the binary pick its device id unless it passes one.
+        # checkin and enroll need no aim test: both require a server URL, which
+        # CFGD_SERVER_URL can supply with no flag on the line.
+        # A quoted string holding whitespace is a message or a header, which
+        # holds no command word, so it is blanked before the subcommand is looked for:
+        # `begin_test "GW-32: cfgd enroll ..."` and a `cfgd_dk_` bearer token
+        # are not senders.
+        function judge_sender(L, ln,    c, aimed, s, q, n, i) {
+            gsub(/\\"/, "", L)
+            n = split(L, q, "\"")
+            s = q[1]
+            for (i = 2; i <= n; i++)
+                s = s ((i % 2 == 0 && q[i] ~ /[[:space:]]/) ? "\"\"" : (i % 2 == 0 ? "\"" q[i] "\"" : q[i]))
+            if (index(tolower(s), "cfgd") == 0) return
+            if (s !~ /(^|[[:space:](])(checkin|enroll|daemon)([[:space:]);|&]|$)/) return
+            aimed = (s ~ /(^|[[:space:](])(checkin|enroll)([[:space:]);|&]|$)/ || L ~ /--server-url/)
+            if (!aimed && match(L, /--config[ =]+("[^"]*"|[^ ]+)/)) {
+                c = substr(L, RSTART, RLENGTH)
+                sub(/^--config[ =]+/, "", c)
+                gsub(/"/, "", c)
+                aimed = ((dir, c) in server)
+            }
+            if (aimed && L !~ /--device-id/ && L !~ /# device-id-ok: [^ ]/)
+                printf "SENDER %s:%d\n", FILENAME, ln
+        }
+        # nth_arg(s, k): the k-th shell word of s, double quotes kept whole.
+        function nth_arg(s, k,    i, c, w, q, count) {
+            w = ""; q = 0; count = 0
+            for (i = 1; i <= length(s) + 1; i++) {
+                c = substr(s, i, 1)
+                if (c == "\"") q = !q
+                if ((c == "" || c ~ /[[:space:]]/) && !q) {
+                    if (w != "" && ++count == k) return w
+                    w = ""
+                } else w = w c
+            }
+            return ""
+        }
+        BEGIN {
+            n = split(relays, r, " ")
+            for (i = 1; i <= n; i++) { split(r[i], p, ":"); pos[p[1]] = p[2] }
+            ident = "[A-Za-z_][A-Za-z0-9_]*"
+        }
+        FNR == 1 { fn = ""; doc = ""; cont = ""; dir = FILENAME; sub(/[^\/]*$/, "", dir) }
+        /^[[:space:]]*#/ { next }
+        match($0, "^[[:space:]]*" ident "\\(\\)") {
+            d = substr($0, RSTART, RLENGTH - 2)
+            sub(/^[[:space:]]*/, "", d)
+            if (pass == 2) fn = d
+            else defined[d] = 1
+        }
+        /^}/ { fn = "" }
+        pass != 2 {
+            if (match($0, "gateway_device[[:space:]]+" ident)) {
+                v = substr($0, RSTART, RLENGTH)
+                sub(/^gateway_device[[:space:]]+/, "", v)
+                minted[dir, v] = 1
+            }
+            rest = $0
+            while (match(rest, "(^|[^A-Za-z0-9_${])" ident "=")) {
+                v = substr(rest, RSTART, RLENGTH - 1)
+                sub(/^[^A-Za-z_]/, "", v)
+                plain[dir, v] = 1
+                rest = substr(rest, RSTART + RLENGTH)
+            }
+            rest = $0
+            while (match(rest, "(^|[^A-Za-z0-9_-])(read|mapfile|readarray|local|declare|typeset)[[:space:]]")) {
+                rest = substr(rest, RSTART + RLENGTH)
+                mark(rest)
+            }
+            rest = $0
+            while (match(rest, "(^|[^A-Za-z0-9_-])(printf[[:space:]]+-v|for)[[:space:]]+" ident)) {
+                v = substr(rest, RSTART, RLENGTH)
+                sub(/^.*[[:space:]]/, "", v)
+                plain[dir, v] = 1
+                rest = substr(rest, RSTART + RLENGTH)
+            }
+            if (doc != "") {
+                t = $0
+                sub(/^[[:space:]]*/, "", t)
+                if (index(t, doc) == 1) doc = ""
+                else if ($0 ~ /type:[[:space:]]*Server/) server[dir, target] = 1
+            } else if (match($0, /cat[[:space:]]*>[[:space:]]*[^ <]+[[:space:]]*<<-?[[:space:]]*[^ ]+/)) {
+                target = substr($0, RSTART, RLENGTH)
+                doc = target
+                sub(/^cat[[:space:]]*>[[:space:]]*/, "", target)
+                sub(/[[:space:]]*<<.*$/, "", target)
+                gsub(/"/, "", target)
+                sub(/^.*<<-?/, "", doc)
+                gsub(/[^A-Za-z0-9_]/, "", doc)
+            }
+            next
+        }
+        {
+            if (cont == "") lstart = FNR
+            cont = cont " " $0
+            if ($0 !~ /\\[[:space:]]*$/) {
+                judge_sender(cont, lstart)
+                cont = ""
+            }
+            rest = $0
+            while (match(rest, /\/api\/v1\/devices\/[^\/" ]*\/drift/)) {
+                t = substr(rest, RSTART, RLENGTH)
+                sub(/^\/api\/v1\/devices\//, "", t)
+                sub(/\/drift$/, "", t)
+                judge(t)
+                rest = substr(rest, RSTART + RLENGTH)
+            }
+            rest = $0
+            while (match(rest, /--device-id[ =]+("[^"]*"|[^ ]+)/)) {
+                t = substr(rest, RSTART, RLENGTH)
+                sub(/^--device-id[ =]+/, "", t)
+                judge(unquote(t))
+                rest = substr(rest, RSTART + RLENGTH)
+            }
+            rest = $0
+            while (match(rest, /\\?"deviceId\\?"[[:space:]]*:[[:space:]]*\\?"[^"]*"/)) {
+                t = substr(rest, RSTART, RLENGTH)
+                sub(/^\\?"deviceId\\?"[[:space:]]*:[[:space:]]*\\?"/, "", t)
+                sub(/"$/, "", t)
+                sub(/\\$/, "", t)
+                judge(t)
+                rest = substr(rest, RSTART + RLENGTH)
+            }
+            if (fn in pos) next
+            for (rl in pos) {
+                if (match($0, "(^|[^A-Za-z0-9_])" rl "[[:space:]]"))
+                    judge(unquote(nth_arg(substr($0, RSTART + RLENGTH), pos[rl])))
+            }
+        }
+        END { for (rl in pos) if (!(rl in defined)) printf "RELAY %s\n", rl }
+    ' "$@" pass=2 "$@"
+}
+# shellcheck disable=SC2016 # the inner script expands its own variables
+expect_kubectl "cleanup_e2e deletes from the install namespace the DriftAlerts of each device id gateway_device recorded, once each, also after helpers.sh is sourced again" \
+    'gateway_device A e2e-a-42; gateway_device B fullstack-device-b-42; gateway_device C "$A"; source "$1/common/helpers.sh"; [ "$C" = e2e-a-42 ] && cleanup_e2e' \
+    "delete driftalert -n cfgd-e2e-42-sys -l cfgd.io/device-id in (e2e-a-42,fullstack-device-b-42) --ignore-not-found"
+: > "$log"
+in_helpers cleanup_e2e GITHUB_RUN_ID=42 >/dev/null 2>&1
+if grep -q driftalert "$log"; then
+    fail "cleanup_e2e with no device recorded called kubectl on DriftAlerts: $(grep driftalert "$log")"
+else
+    pass "cleanup_e2e with no device recorded leaves DriftAlerts alone"
+fi
+# shellcheck disable=SC2016 # the inner script expands its own variables
+delete_warn="$(in_helpers 'gateway_device A e2e-a-42; cleanup_e2e 2>&1 >/dev/null; echo "rc=$?"' GITHUB_RUN_ID=42 'KUBECTL_FAIL=delete driftalert *' 2>&1)"
+if [[ "$delete_warn" == "WARN: could not delete the DriftAlerts of e2e-a-42: "*$'\n'"rc=0" ]]; then
+    pass "cleanup_e2e warns on stderr naming the ids when the DriftAlert delete fails, and finishes the teardown"
+else
+    fail "cleanup_e2e with a failing DriftAlert delete printed [$delete_warn], want a WARN line naming e2e-a-42 and rc=0"
+fi
+for refused in e2e- fullstack-device- E2E-upper-42 e2e_under-42 dev-42 e2e-trailing- "e2e-$(printf 'x%.0s' {1..60})"; do
+    # shellcheck disable=SC2016 # the inner script expands its own variables
+    refused_out="$(in_helpers 'rc=0; gateway_device ID "$REFUSED" || rc=$?; echo "rc=$rc ID=${ID-unset} n=${#E2E_GATEWAY_DEVICES[@]}"' GITHUB_RUN_ID=42 REFUSED="$refused" 2>&1)"
+    if [[ "$refused_out" == "ERROR: gateway device id '$refused' "*$'\n'"rc=1 ID=unset n=0" ]]; then
+        pass "gateway_device refuses $refused, sets nothing and records nothing"
+    else
+        fail "gateway_device $refused printed [$refused_out], want an ERROR line and rc=1 ID=unset n=0"
+    fi
+done
+device_fixture_relays="relay_once:2 relay_post:2"
+device_got="$(cd "$here/fixtures/device-ids" && scan_device_ids "$device_fixture_relays" good.bash bad.bash other/uses.bash)" ||
+    device_got="(the scan failed)"
+# shellcheck disable=SC2016 # the scan prints the fixture's variable references as written
+device_want='DEVICEID bad.bash:6 literal-device
+DEVICEID bad.bash:7 $PLAIN_ID
+DEVICEID bad.bash:8 $REASSIGNED_ID
+DEVICEID bad.bash:9 ${GOOD_ID}-suffix
+DEVICEID bad.bash:10 e2e-literal
+DEVICEID bad.bash:11 $1
+DEVICEID bad.bash:12 e2e-literal
+DEVICEID bad.bash:13 $PLAIN_ID
+DEVICEID bad.bash:14 e2e-literal-drift
+SENDER bad.bash:15
+SENDER bad.bash:16
+SENDER bad.bash:18
+DEVICEID bad.bash:29 $READ_ID
+DEVICEID bad.bash:30 $MAP_ID
+DEVICEID bad.bash:31 $PRINTF_ID
+DEVICEID bad.bash:32 $FOR_ID
+DEVICEID bad.bash:33 $LOCAL_ID
+SENDER bad.bash:34
+DEVICEID other/uses.bash:2 $GOOD_ID'
+if [ "$device_got" = "$device_want" ]; then
+    pass "the device-id scan reports each id sent from a literal, a plain assignment, a variable also assigned by hand, a longer word, a stray positional, a relay call, a drift URL, a variable another directory sets or one read, mapfile, printf -v, for or local reassigns, and each unhatched checkin, enroll or daemon aimed at a gateway with no --device-id, and stays quiet on gateway_device variables, relays, jq paths, comments, a hatched or local-config daemon and a continued checkin that passes one"
+else
+    fail "the device-id scan printed [$device_got], want [$device_want]"
+fi
+device_stale="$(cd "$here/fixtures/device-ids" && scan_device_ids "$device_fixture_relays relay_gone:1" good.bash)" ||
+    device_stale="(the scan failed)"
+if [ "$device_stale" = "RELAY relay_gone" ]; then
+    pass "the device-id scan names a relay no scanned file defines"
+else
+    fail "the device-id scan over an undefined relay printed [$device_stale], want [RELAY relay_gone]"
+fi
+if scan_device_ids "$device_fixture_relays" "$here/fixtures/device-ids/absent.bash" >/dev/null 2>&1; then
+    fail "the device-id scan passed over a file it could not read"
+else
+    pass "the device-id scan fails over a file it cannot read"
+fi
+mapfile -t gateway_client_scripts < <(git -C "$repo_root" ls-files 'tests/e2e/gateway/*.sh' 'tests/e2e/node/*.sh' 'tests/e2e/full-stack/*.sh')
+if [ "${#gateway_client_scripts[@]}" -eq 0 ]; then
+    fail "git ls-files matched no gateway, node or full-stack script, so the device-id scan read nothing"
+elif ! device_found="$(cd "$repo_root" && scan_device_ids "gw_enroll_once:2 gw_enroll_post:2" "${gateway_client_scripts[@]}")"; then
+    fail "the device-id scan could not read the gateway, node and full-stack suites"
+elif [ -z "$device_found" ]; then
+    pass "every device id the gateway, node and full-stack suites send comes from gateway_device (${#gateway_client_scripts[@]} scripts)"
+else
+    fail "a device id reaches the gateway without gateway_device, or a checkin, enroll or daemon lets the binary pick it with no device-id-ok reason, so cleanup_e2e cannot delete its DriftAlerts: [$device_found]"
+fi
+
+# The PR install runs its operator with a standby, so a read that picks one pod
+# out of the operator pod list answers for whichever pod the API server lists
+# there: a crash or a restart on the other goes unseen, and after a roll the
+# survivor passes for the replacement. scan_operator_item_reads FILE...:
+# file:line of each command that picks one pod: `.items[N]`, a slice
+# `.items[A:B]`, or jq `first` of the list (`.items | first`, after a sort_by or
+# over `[.items[] ...]`, or `first(.items)`). Each file is parsed with
+# `shfmt --to-json` and the syntax tree is read by operator-item-reads.jq, so a
+# command is what bash runs: a pipeline spread over lines is one command, a
+# $(...) nested to any depth inside quotes is a command of its own, reported on
+# the line it starts, and a comment or a heredoc body is never a command. A
+# kubectl (or $KUBECTL) get of pods by an operator selector ($E2E_OPERATOR_PODS,
+# app=cfgd-operator or app.kubernetes.io/component=operator) is read with every
+# stage of its pipeline, and a stage that is a brace group, a subshell, a loop
+# or a conditional brings the commands inside it, so a jsonpath on the kubectl
+# and a jq after a pipe both count. A pick is named on the line of the command
+# whose words make it; a compound reported only for what it contains is not
+# named itself. Once such a kubectl keeps its `-o json` output in
+# a variable (NAME="$(...)", the kubectl being the first command the $(...)
+# runs, through an && or || list and a brace group or subshell, with no pipe
+# after it) or, alone in its pipeline, in a file (>, >>, >|, &> or &>> PATH),
+# so the raw document reaches it, every later command in the file that runs no
+# kubectl of its own and expands that variable ($NAME or ${NAME}, outside
+# single quotes) or names that path is read too, since that JSON can be
+# indexed in a second step. A slice passes only on a command, or after a capture, that
+# carries --sort-by, which picks its pod on purpose. Fails naming the file and
+# shfmt's error when a file does not parse, and when a file was listed and
+# never read.
+scan_operator_item_reads() {
+    local listed="$scratch/operator-items.listed" read="$scratch/operator-items.read"
+    local tree="$scratch/operator-items.json" err="$scratch/operator-items.err"
+    local file rc=0
+    printf '%s\n' "$@" > "$listed"
+    : > "$read"
+    for file in "$@"; do
+        [ -r "$file" ] || continue
+        echo "$file" >> "$read"
+        if ! shfmt -ln bash --to-json < "$file" > "$tree" 2> "$err"; then
+            echo "scan_operator_item_reads: shfmt cannot parse $file: $(cat "$err")" >&2
+            rc=1
+            continue
+        fi
+        jq -r --arg file "$file" -f "$here/operator-item-reads.jq" "$tree" || {
+            echo "scan_operator_item_reads: jq could not read the syntax tree of $file" >&2
+            rc=1
+        }
+    done
+    census_unread scan_operator_item_reads "$listed" "$read" || rc=1
+    return "$rc"
+}
+if ! command -v shfmt >/dev/null; then
+    fail "the operator item-read scan needs shfmt on PATH (the version .github/actions/setup-shfmt pins); its cases did not run"
+else
+    items_got="$(cd "$here/fixtures/operator-pods" && scan_operator_item_reads reads.bash 2>"$scratch/operator-items.stderr")" ||
+        items_got="(the scan failed: $(cat "$scratch/operator-items.stderr"))"
+    items_stderr="$(cat "$scratch/operator-items.stderr")"
+    items_want="$(printf 'reads.bash:%s\n' 1 2 4 5 6 17 18 19 20 21 24 25 27 30 33 34 35 36 37 43 44 45 47 48 49 51 53 54 55 57 59 61 62 63 65 67 69 73 76 76 77 78 80 81 83 85 88 93 94 99 100 105 106)"
+    if [ -n "$items_stderr" ]; then
+        fail "the operator item-read scan wrote [$items_stderr] on stderr over a fixture that parses"
+    elif [ "$items_got" = "$items_want" ]; then
+        pass "the operator item-read scan reports an index, an unsorted slice or a first of the operator pods by any operator selector, through kubectl or \$KUBECTL, on one line, continued, through jq, inside a \$(...) nested in quotes, spread over two lines, in a parameter default or a <(...), in a brace group, subshell, function, if, for or while, naming a pick in a loop stage on its own line once, each of two picks on one line and both a pick a kubectl or its jq stage makes and one in the loop or group it pipes into, or from a captured -o json variable (kept through ||, 2>/dev/null, a brace group or a subshell) or file (> or &>) read later in the file, including a loop's first stage that picks from one capture beside a held kubectl pick or a held read of another capture, and stays quiet on comments, a heredoc body, the capture itself, a read of a variable that piped the pod list through jq, a jq variable spelled like a capture, a capture read only inside a \$(...) or <(...) the picking command holds, a while loop over the pods, a loop fed by echo whose jq picks beside a picking kubectl, a jq sort before .[0], a pick from another capture, .items[*], a sorted slice, a jq sort over every pod, other pods, Deployments and a command that reads no items"
+    else
+        fail "the operator item-read scan printed [$items_got], want [$items_want]"
+    fi
+    # shellcheck disable=SC2016  # shfmt's own message quotes the $( it found unclosed
+    items_broken_want='scan_operator_item_reads: shfmt cannot parse unparsable.bash: 1:7: reached EOF without matching `$(` with `)`'
+    if items_broken="$(cd "$here/fixtures/operator-pods" && scan_operator_item_reads reads.bash unparsable.bash 2>&1 >/dev/null)"; then
+        fail "the operator item-read scan passed over a file shfmt cannot parse"
+    elif [ "$items_broken" = "$items_broken_want" ]; then
+        pass "the operator item-read scan fails over a file shfmt cannot parse, naming the file and shfmt's error"
+    else
+        fail "the operator item-read scan over a file shfmt cannot parse wrote [$items_broken], want the file named with shfmt's error"
+    fi
+    if scan_operator_item_reads "$here/fixtures/operator-pods/absent.bash" >/dev/null 2>&1; then
+        fail "the operator item-read scan passed over a file it could not read"
+    else
+        pass "the operator item-read scan fails over a file it cannot read"
+    fi
+    mapfile -t operator_item_scripts < <(git -C "$repo_root" ls-files 'tests/e2e/*.sh' ':!tests/e2e/common/fixtures/*')
+    if [ "${#operator_item_scripts[@]}" -lt 60 ]; then
+        fail "git ls-files 'tests/e2e/*.sh' matched ${#operator_item_scripts[@]} scripts outside the fixtures, fewer than the floor of 60, so the operator item-read scan missed part of the suites"
+    elif ! operator_items_found="$(cd "$repo_root" && scan_operator_item_reads "${operator_item_scripts[@]}" 2>"$scratch/operator-items.stderr")"; then
+        fail "the operator item-read scan could not read every e2e script: $(cat "$scratch/operator-items.stderr")"
+    elif [ -z "$operator_items_found" ]; then
+        pass "no e2e script picks one pod out of the operator pod list (${#operator_item_scripts[@]} scripts)"
+    else
+        fail "an e2e script picks one operator pod (an index, an unsorted slice or first), and the operator runs a leader and a standby; read every pod ({.items[*]...} or one line per pod) or the leader (operator_leader_pod): [$operator_items_found]"
+    fi
+fi
+
+# OP-LC-03 deletes the operator leader, and the device gateway runs in the
+# leader pod, so a job that deletes operator pods runs after every job whose
+# suite talks to the install's gateway. job_order_problems <workflow>
+# <taskfile> <repo root> reads the job graph with job-graph.awk, follows each
+# job's `task e2e:*` target to the scripts it runs (a run-all.sh to the files
+# it sources beside it), and prints one line per pair the graph leaves
+# concurrent. It prints `NO_DELETER` or `NO_GATEWAY_JOB` when it finds no job
+# of that kind, so a parse that sees nothing cannot pass.
+# shellcheck disable=SC2016 # awk programs; the $ fields belong to awk
+job_order_problems() {
+    local workflow="$1" taskfile="$2" root="$3" graph
+    graph="$(awk -f "$here/job-graph.awk" "$workflow")" || { echo "UNREADABLE $workflow"; return 0; }
+    local -A job_needs=() job_scripts=()
+    local job needs tasks task script dir sourced
+    while IFS=$'\x1f' read -r job needs tasks; do
+        job_needs[$job]="$needs"
+        job_scripts[$job]=""
+        for task in $tasks; do
+            while IFS= read -r script; do
+                [ -n "$script" ] || continue
+                job_scripts[$job]+=" $script"
+                [ "${script##*/}" = run-all.sh ] || continue
+                dir="${script%/*}"
+                while IFS= read -r sourced; do
+                    job_scripts[$job]+=" $dir/$sourced"
+                done < <(sed -n 's|^[[:space:]]*source "\$SCRIPT_DIR/\([^/"]*\)".*|\1|p' "$root/$script")
+            done < <(awk -v target="  $task:" '
+                $0 == target { on = 1; next }
+                on && /^  [^ ]/ { on = 0 }
+                on && /^[ \t]+- bash[ \t]/ { sub(/^[ \t]+- bash[ \t]+/, ""); sub(/[ \t].*/, ""); print }
+            ' "$taskfile")
+        done
+    done <<<"$graph"
+
+    local -a deleters=() talkers=() scripts=()
+    local hit
+    for job in "${!job_scripts[@]}"; do
+        read -ra scripts <<<"${job_scripts[$job]}"
+        for script in "${scripts[@]}"; do
+            if [ ! -r "$root/$script" ]; then
+                echo "UNREADABLE $script (run by $job)"
+                continue
+            fi
+            hit="$(grep -nE '^[^#]*(kubectl|\$\{?KUBECTL\}?)[^|;&#]*(delete[[:space:]]+pods?|rollout[[:space:]]+restart)[^|;&#]*\$\{?E2E_(INSTALL_NS|OPERATOR_DEPLOY)' "$root/$script" | head -n1 | cut -d: -f1)" || true
+            [ -n "$hit" ] && deleters+=("$job $script:$hit")
+            grep -qE '^[^#]*E2E_GATEWAY_' "$root/$script" && talkers+=("$job")
+        done
+    done
+    [ "${#deleters[@]}" -gt 0 ] || echo "NO_DELETER"
+    [ "${#talkers[@]}" -gt 0 ] || echo "NO_GATEWAY_JOB"
+
+    local entry deleter where talker seen next n
+    local -a frontier=() unique_talkers=()
+    for entry in "${deleters[@]}"; do
+        deleter="${entry%% *}"
+        where="${entry#* }"
+        seen=" "
+        read -ra frontier <<<"${job_needs[$deleter]}"
+        while [ "${#frontier[@]}" -gt 0 ]; do
+            next=""
+            for n in "${frontier[@]}"; do
+                case "$seen" in *" $n "*) continue ;; esac
+                seen+="$n "
+                next+=" ${job_needs[$n]:-}"
+            done
+            read -ra frontier <<<"$next"
+        done
+        mapfile -t unique_talkers < <(printf '%s\n' "${talkers[@]}" | sort -u)
+        for talker in "${unique_talkers[@]}"; do
+            [ "$talker" = "$deleter" ] && continue
+            case "$seen" in *" $talker "*) ;; *) echo "$deleter deletes operator pods ($where) and does not run after $talker, which talks to the install's gateway" ;; esac
+        done
+    done | sort -u
+}
+
+workflow="$repo_root/.github/workflows/e2e.yml"
+taskfile="$repo_root/Taskfile.yml"
+job_order="$(job_order_problems "$workflow" "$taskfile" "$repo_root")"
+if [ -z "$job_order" ]; then
+    pass "every e2e job that deletes operator pods runs after every job that talks to the install's gateway"
+else
+    fail "e2e.yml lets a job delete operator pods while another talks to the install's gateway, which runs in the leader pod; add the gateway job to the deleting job's needs: [$job_order]"
+fi
+
+# The same check over copies of e2e.yml: the deleting job's needs dropped to
+# setup, written as a block list, and reaching node-tests only through
+# server-tests.
+mkdir -p "$scratch/job-graph"
+awk '
+    /^  operator-tests:/ { job = 1 }
+    /^  [A-Za-z0-9_-]+:[ \t]*$/ && !/^  operator-tests:/ { job = 0 }
+    job && /^    needs:/ { print "    needs: [setup]"; skip = 1; next }
+    skip && /^      / { next }
+    { skip = 0; print }
+' "$workflow" > "$scratch/job-graph/setup-only.yml"
+got="$(job_order_problems "$scratch/job-graph/setup-only.yml" "$taskfile" "$repo_root" | sed 's/ (.*) / /')"
+want="$(printf "operator-tests deletes operator pods and does not run after %s, which talks to the install's gateway\n" \
+    full-stack-tests gateway-tests helm-tests node-tests server-tests)"
+if [ "$got" = "$want" ]; then
+    pass "the job order check names each gateway job a pod-deleting job does not wait for"
+else
+    fail "the job order check over a pod-deleting job that needs only setup printed [$got], want [$want]"
+fi
+awk '
+    /^  operator-tests:/ { job = 1 }
+    /^  [A-Za-z0-9_-]+:[ \t]*$/ && !/^  operator-tests:/ { job = 0 }
+    job && /^    needs:/ { print "    needs:"; print "      - setup"; print "      - server-tests # node-tests through this one"; print "      - gateway-tests"; print "      - full-stack-tests"; print "      - helm-tests"; skip = 1; next }
+    skip && /^      / { next }
+    { skip = 0; print }
+' "$workflow" > "$scratch/job-graph/block-transitive.yml"
+got="$(job_order_problems "$scratch/job-graph/block-transitive.yml" "$taskfile" "$repo_root")"
+if [ -z "$got" ]; then
+    pass "the job order check reads a block needs list and follows needs through another job"
+else
+    fail "the job order check over a block needs list reaching node-tests through server-tests printed [$got]"
+fi
+sed '/^      - helm-tests$/d' "$scratch/job-graph/block-transitive.yml" > "$scratch/job-graph/block-missing.yml"
+got="$(job_order_problems "$scratch/job-graph/block-missing.yml" "$taskfile" "$repo_root" | sed 's/ (.*) / /')"
+want="operator-tests deletes operator pods and does not run after helm-tests, which talks to the install's gateway"
+if [ "$got" = "$want" ]; then
+    pass "the job order check names the one gateway job a block needs list leaves out"
+else
+    fail "the job order check over a block needs list without helm-tests printed [$got], want [$want]"
+fi
+# A job with no needs keeps its targets in their own field: cli-tests has no
+# needs, and a needs-less copy of the gateway job is a gateway job the
+# pod-deleting job does not wait for.
+cli_graph="$(awk -f "$here/job-graph.awk" "$workflow" | grep "^cli-tests"$'\x1f')" || true
+if [ "$cli_graph" = "cli-tests"$'\x1f'$'\x1f'"e2e:cli" ]; then
+    pass "the job graph reads cli-tests with no needs and its e2e:cli target"
+else
+    fail "the job graph read cli-tests as [$(printf '%s' "$cli_graph" | tr '\037' '|')], want [cli-tests||e2e:cli]"
+fi
+{
+    cat "$workflow"
+    printf '  gateway-again:\n    runs-on: x\n    steps:\n      - name: Gateway suite\n        run: task e2e:gateway\n'
+} > "$scratch/job-graph/needs-less-gateway.yml"
+got="$(job_order_problems "$scratch/job-graph/needs-less-gateway.yml" "$taskfile" "$repo_root" | sed 's/ (.*) / /')"
+want="operator-tests deletes operator pods and does not run after gateway-again, which talks to the install's gateway"
+if [ "$got" = "$want" ]; then
+    pass "the job order check names a gateway job that has no needs"
+else
+    fail "the job order check over a needs-less gateway job printed [$got], want [$want]"
+fi
+printf 'jobs:\n  lone:\n    runs-on: x\n' > "$scratch/job-graph/empty.yml"
+got="$(job_order_problems "$scratch/job-graph/empty.yml" "$taskfile" "$repo_root")"
+if [ "$got" = "$(printf 'NO_DELETER\nNO_GATEWAY_JOB')" ]; then
+    pass "the job order check fails a workflow in which it finds no pod-deleting job and no gateway job"
+else
+    fail "the job order check over a workflow with no suite jobs printed [$got], want NO_DELETER and NO_GATEWAY_JOB"
 fi
 
 if [ "$failures" -gt 0 ]; then

@@ -10,6 +10,8 @@ use cfgd::cli::module;
 use cfgd_core::assert_snapshot_golden as assert_snapshot;
 use cfgd_core::output::Printer;
 
+mod cfgd_binary;
+
 const SNAPSHOT_ROOT: &str = "tests/output_snapshots";
 
 fn strip_ansi(s: &str) -> String {
@@ -31,7 +33,9 @@ fn strip_ansi(s: &str) -> String {
 }
 
 #[test]
+#[serial_test::serial]
 fn module_push_missing_yaml_human() {
+    let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
     let dir = tempfile::tempdir().unwrap();
     let (printer, cap) = Printer::for_test_doc();
 
@@ -138,7 +142,9 @@ fn pushable_module() -> tempfile::TempDir {
 /// sits between the header block and the closing hint, so a `--sign` run
 /// reads as two verdicts in a row rather than a verdict, a fact, a verdict.
 #[test]
+#[serial_test::serial]
 fn module_push_pushed_human() {
+    let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
     let dir = pushable_module();
     let (server, artifact) = mock_registry();
     let registry = server.url().trim_start_matches("http://").to_string();
@@ -180,5 +186,100 @@ fn module_push_pushed_human() {
         Path::new(SNAPSHOT_ROOT),
         "module_push/pushed.txt",
         &normalized,
+    );
+}
+
+/// `cfgd module pull <artifact>` into a scratch directory: its exit code and stderr.
+fn pull_through_the_binary(artifact: &str) -> (Option<i32>, String) {
+    let out = tempfile::tempdir().unwrap();
+    let output = cfgd_binary::cfgd_bin()
+        .unwrap()
+        .args(["module", "pull", artifact, "--dir"])
+        .arg(out.path())
+        .output()
+        .unwrap();
+    (
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// A registry nothing answers for is a failed request: only a registry's own
+/// 404 says the manifest is missing.
+#[test]
+fn module_pull_reports_an_unreachable_registry_as_a_request_failure() {
+    let (code, stderr) = pull_through_the_binary("127.0.0.1:1/x/y:v1");
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        !stderr.contains("manifest not found"),
+        "an unreachable registry reported as a missing manifest:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("registry request failed"),
+        "no request failure named:\n{stderr}"
+    );
+}
+
+/// A token the registry issued that still does not open the repository is a
+/// refused credential, the way the docs word it.
+#[test]
+fn module_pull_reports_a_credential_refused_after_the_token_exchange_as_an_auth_failure() {
+    let mut server = mockito::Server::new();
+    let challenge = format!(r#"Bearer realm="{}/token",service="svc""#, server.url());
+    server
+        .mock("GET", "/v2/x/y/manifests/v1")
+        .match_header("authorization", mockito::Matcher::Missing)
+        .with_status(401)
+        .with_header("Www-Authenticate", &challenge)
+        .create();
+    server
+        .mock("GET", mockito::Matcher::Regex(r"^/token".to_string()))
+        .with_status(200)
+        .with_body(r#"{"token":"tok"}"#)
+        .create();
+    let retry = server
+        .mock("GET", "/v2/x/y/manifests/v1")
+        .match_header("authorization", "Bearer tok")
+        .with_status(401)
+        .with_body(r#"{"errors":[{"code":"UNAUTHORIZED","message":"authentication required"}]}"#)
+        .expect(1)
+        .create();
+    let registry = server.url().trim_start_matches("http://").to_string();
+
+    let (code, stderr) = pull_through_the_binary(&format!("{registry}/x/y:v1"));
+    retry.assert();
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("registry authentication failed"),
+        "a refused token not named an authentication failure:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("UNAUTHORIZED: authentication required"),
+        "the registry's own reason is missing:\n{stderr}"
+    );
+}
+
+/// A registry that answers 403 refuses the credential.
+#[test]
+fn module_pull_reports_a_403_as_an_auth_failure() {
+    let mut server = mockito::Server::new();
+    let manifest = server
+        .mock("GET", "/v2/x/y/manifests/v1")
+        .with_status(403)
+        .with_body(r#"{"errors":[{"code":"DENIED","message":"requested access is denied"}]}"#)
+        .expect(1)
+        .create();
+    let registry = server.url().trim_start_matches("http://").to_string();
+
+    let (code, stderr) = pull_through_the_binary(&format!("{registry}/x/y:v1"));
+    manifest.assert();
+    assert_eq!(code, Some(1), "{stderr}");
+    assert!(
+        stderr.contains("registry authentication failed"),
+        "a 403 not named an authentication failure:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("DENIED: requested access is denied"),
+        "the registry's own reason is missing:\n{stderr}"
     );
 }

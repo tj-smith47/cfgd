@@ -1,0 +1,44 @@
+name: "Setup shfmt"
+description: "Download a pinned shfmt release and verify it against a known SHA256 before use (composite, no Node runtime)."
+
+# The defaults below are the repo's single source of truth for the shfmt pin;
+# version and checksum move together. `task e2e:tags:check` parses every e2e
+# script with `shfmt --to-json` and reads the tree's node types and fields,
+# which a different shfmt can rename. `_shfmt:pin` in Taskfile.yml reads the
+# `default:` under `version:` and refuses any other local version, so keep
+# that shape. The release publishes no checksum file; GitHub's asset digest is
+# the cross-check. Recompute on a version bump:
+#   v=<ver>; base=https://github.com/mvdan/sh/releases/download
+#   curl -fsSL "$base/$v/shfmt_${v}_linux_amd64" | sha256sum
+#   gh api "repos/mvdan/sh/releases/tags/$v" \
+#     -q '.assets[] | select(.name | endswith("linux_amd64")) | .digest'
+inputs:
+  version:
+    description: "shfmt version to install (with leading 'v')."
+    required: false
+    default: "v3.14.1"
+  sha256:
+    description: "Expected SHA256 of the linux amd64 release binary; the download is rejected on mismatch. Must be recomputed together with any version bump."
+    required: false
+    default: "76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install shfmt
+      # Prepended to PATH, so it shadows any shfmt the runner image ships.
+      shell: bash
+      env:
+        SHFMT_VERSION: ${{ inputs.version }}
+        SHFMT_SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        dest="${RUNNER_TEMP}/shfmt"
+        mkdir -p "$dest"
+        curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 10 \
+          "https://github.com/mvdan/sh/releases/download/${SHFMT_VERSION}/shfmt_${SHFMT_VERSION}_linux_amd64" \
+          -o "$dest/shfmt"
+        echo "${SHFMT_SHA256}  $dest/shfmt" | sha256sum -c -
+        chmod 0755 "$dest/shfmt"
+        echo "$dest" >> "$GITHUB_PATH"
+        "$dest/shfmt" --version

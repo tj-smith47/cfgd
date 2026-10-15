@@ -209,17 +209,17 @@ pub(super) fn env_targets(
     home: &Path,
     probe: &EnvHostProbe,
     platform: EnvPlatform,
-) -> Vec<EnvTarget> {
+) -> crate::errors::Result<Vec<EnvTarget>> {
     let mut targets = Vec::new();
     let (env, aliases, _) = content.merged();
     if env.is_empty() && aliases.is_empty() && content.path_dirs.is_empty() {
-        return targets;
+        return Ok(targets);
     }
 
     match platform {
-        EnvPlatform::Windows => windows_targets(content, home, probe, &mut targets),
+        EnvPlatform::Windows => windows_targets(content, home, probe, &mut targets)?,
         EnvPlatform::Linux | EnvPlatform::MacOs | EnvPlatform::FreeBsd => {
-            unix_targets(content, scope, home, probe, platform, &mut targets)
+            unix_targets(content, scope, home, probe, platform, &mut targets)?
         }
     }
 
@@ -231,7 +231,7 @@ pub(super) fn env_targets(
         }
     }
 
-    targets
+    Ok(targets)
 }
 
 /// The desired-state inputs every generated shell file is derived from,
@@ -441,13 +441,13 @@ fn effective_path_dirs(
         .iter()
         .filter(|e| e.name == "PATH")
         .flat_map(|e| e.value.split(separator))
-        .map(|entry| crate::normalize_path_entry(entry, home))
+        .map(|entry| crate::normalize_path_entry(entry, Some(home)))
         .collect();
     let home_str = crate::to_posix_string(home);
     let home_str = home_str.trim_end_matches('/');
     path_dirs
         .iter()
-        .filter(|d| !declared.contains(&crate::normalize_path_entry(&d.dir, home)))
+        .filter(|d| !declared.contains(&crate::normalize_path_entry(&d.dir, Some(home))))
         .map(|d| {
             let dir = match home_token {
                 Some(token) => home_spelled(&d.dir, home_str, token),
@@ -570,20 +570,20 @@ pub(super) fn fold_path_line(
     home: &Path,
     platform: EnvPlatform,
     home_token: Option<&str>,
-) -> Option<FoldedPath> {
+) -> crate::errors::Result<Option<FoldedPath>> {
     let derived = effective_path_dirs(path_dirs, env, home, platform, home_token);
     let declared = env
         .iter()
         .rfind(|e| e.name == "PATH" && crate::validate_env_var_name(&e.name).is_ok());
     if derived.is_empty() && declared.is_none() {
-        return None;
+        return Ok(None);
     }
 
     let home_str = crate::to_posix_string(home);
     let home_str = home_str.trim_end_matches('/');
-    let spell = |dir: &str| {
-        let expanded = crate::expand_env_value_tilde(dir);
-        match home_token {
+    let spell = |dir: &str| -> crate::errors::Result<String> {
+        let expanded = crate::expand_env_value_tilde(dir)?;
+        Ok(match home_token {
             // A DECLARED entry keeps the spelling it was written with: this
             // line is the only place the user's own text appears, and a
             // dialect that interpolates resolves it either way.
@@ -593,11 +593,11 @@ pub(super) fn fold_path_line(
             // declared `$HOME/...` beside a literal derived directory would
             // otherwise be the one dead entry on a working line.
             None => home_spelled_literal(&expanded, home_str),
-        }
+        })
     };
 
     let Some(declared) = declared else {
-        return Some(FoldedPath::derived(&derived));
+        return Ok(Some(FoldedPath::derived(&derived)));
     };
 
     let mut parts = Vec::new();
@@ -611,7 +611,7 @@ pub(super) fn fold_path_line(
             spliced = true;
             parts.push(PathPart::Inherited);
         } else {
-            parts.push(PathPart::Dir(spell(segment)));
+            parts.push(PathPart::Dir(spell(segment)?));
         }
     }
     if !spliced {
@@ -626,10 +626,10 @@ pub(super) fn fold_path_line(
     .flatten()
     .collect::<Vec<_>>()
     .join(" ");
-    Some(FoldedPath {
+    Ok(Some(FoldedPath {
         parts,
         comment: comment((!token.is_empty()).then_some(token.as_str())),
-    })
+    }))
 }
 
 /// The primary managed file's PATH fold — the spelling BOTH platform target
@@ -641,7 +641,7 @@ pub(super) fn primary_folded_path(
     origins: &EnvOrigins,
     home: &Path,
     platform: EnvPlatform,
-) -> Option<FoldedPath> {
+) -> crate::errors::Result<Option<FoldedPath>> {
     fold_path_line(env, path_dirs, origins, home, platform, Some(HOME_TOKEN))
 }
 
@@ -716,9 +716,12 @@ pub const ENV_VERB_INJECT: &str = "inject";
 /// hunts them, so a dialect this engine gains or renames reaches that walk with
 /// it; each target contributes its file name, plus the parent directory whose
 /// `.d` suffix is what gives the file its dialect.
+///
+/// # Errors
+///
+/// Whatever `env_targets` refuses for one of the fixed hosts it is driven over.
 #[cfg(any(test, feature = "test-helpers"))]
-#[must_use]
-pub fn env_target_basenames() -> Vec<String> {
+pub fn env_target_basenames() -> crate::errors::Result<Vec<String>> {
     let hosts = [
         (EnvPlatform::Linux, Path::new("/home/tj")),
         (EnvPlatform::MacOs, Path::new("/Users/tj")),
@@ -781,7 +784,7 @@ pub fn env_target_basenames() -> Vec<String> {
                     home,
                     probe,
                     platform,
-                ) {
+                )? {
                     let path = match &target {
                         EnvTarget::ManagedFile { path, .. } => path.clone(),
                         EnvTarget::SourceLine { rc_path, .. } => rc_path.clone(),
@@ -803,7 +806,7 @@ pub fn env_target_basenames() -> Vec<String> {
             }
         }
     }
-    names.into_iter().collect()
+    Ok(names.into_iter().collect())
 }
 
 fn unix_targets(
@@ -813,15 +816,15 @@ fn unix_targets(
     probe: &EnvHostProbe,
     platform: EnvPlatform,
     out: &mut Vec<EnvTarget>,
-) {
+) -> crate::errors::Result<()> {
     let EnvContent { layered, path_dirs } = content;
     let (env, aliases, origins) = content.merged();
     // Interactive (all scopes): the cfgd-owned env file + a source line in the
     // user's interactive rc, plus fish when it's in use.
-    let posix_path = primary_folded_path(env, path_dirs, origins, home, platform);
+    let posix_path = primary_folded_path(env, path_dirs, origins, home, platform)?;
     out.push(EnvTarget::ManagedFile {
         path: primary_env_file_path(home, platform),
-        content: generate_env_file_content(layered, posix_path.as_ref()),
+        content: generate_env_file_content(layered, posix_path.as_ref())?,
         rendered: RenderedCounts::of(env, aliases, posix_path.is_some()),
     });
     let interactive_rc = interactive_rc_for(&probe.shell, home);
@@ -830,10 +833,10 @@ fn unix_targets(
         line: UNIX_SOURCE_LINE.to_string(),
     });
     if probe.fish_present {
-        let fish_path = fold_path_line(env, path_dirs, origins, home, platform, None);
+        let fish_path = fold_path_line(env, path_dirs, origins, home, platform, None)?;
         out.push(EnvTarget::ManagedFile {
             path: home.join(".config/fish/conf.d/cfgd-env.fish"),
-            content: generate_fish_env_content(layered, fish_path.as_ref()),
+            content: generate_fish_env_content(layered, fish_path.as_ref())?,
             rendered: RenderedCounts::of(env, aliases, fish_path.is_some()),
         });
     }
@@ -899,6 +902,7 @@ fn unix_targets(
             }
         }
     }
+    Ok(())
 }
 
 /// The interactive rc file this host's login shell reads.
@@ -923,14 +927,14 @@ fn windows_targets(
     home: &Path,
     probe: &EnvHostProbe,
     out: &mut Vec<EnvTarget>,
-) {
+) -> crate::errors::Result<()> {
     let EnvContent { layered, path_dirs } = content;
     let (env, aliases, origins) = content.merged();
     // PowerShell env file + dot-source into both profile locations.
-    let ps_path = primary_folded_path(env, path_dirs, origins, home, EnvPlatform::Windows);
+    let ps_path = primary_folded_path(env, path_dirs, origins, home, EnvPlatform::Windows)?;
     out.push(EnvTarget::ManagedFile {
         path: primary_env_file_path(home, EnvPlatform::Windows),
-        content: generate_powershell_env_content(layered, ps_path.as_ref()),
+        content: generate_powershell_env_content(layered, ps_path.as_ref())?,
         rendered: RenderedCounts::of(env, aliases, ps_path.is_some()),
     });
     for dir in ["Documents/PowerShell", "Documents/WindowsPowerShell"] {
@@ -943,7 +947,7 @@ fn windows_targets(
     if probe.git_bash_present {
         out.push(EnvTarget::ManagedFile {
             path: home.join(".cfgd.env"),
-            content: generate_env_file_content(layered, ps_path.as_ref()),
+            content: generate_env_file_content(layered, ps_path.as_ref())?,
             rendered: RenderedCounts::of(env, aliases, ps_path.is_some()),
         });
         out.push(EnvTarget::SourceLine {
@@ -951,6 +955,7 @@ fn windows_targets(
             line: UNIX_SOURCE_LINE.to_string(),
         });
     }
+    Ok(())
 }
 
 /// How many entries a generated file actually holds.
@@ -1180,6 +1185,7 @@ mod tests {
             &probe,
             platform,
         )
+        .unwrap()
     }
 
     /// bash/zsh: ONE `export PATH=`, the declared entry first and the surviving
@@ -1254,7 +1260,8 @@ mod tests {
             home,
             &probe(),
             EnvPlatform::Windows,
-        );
+        )
+        .unwrap();
         let (content, rendered) = managed_file(&targets, ".cfgd-env.ps1");
         let line = path_line(content, "$env:PATH = ");
         assert_eq!(
@@ -1303,7 +1310,8 @@ mod tests {
             home,
             &probe(),
             EnvPlatform::MacOs,
-        );
+        )
+        .unwrap();
         let (content, rendered) = managed_file(&targets, "com.cfgd.user-environment.plist");
         assert!(
             !content.contains("/opt/brewroot/bin"),
@@ -1333,7 +1341,8 @@ mod tests {
             home,
             &probe(),
             EnvPlatform::Linux,
-        );
+        )
+        .unwrap();
         let (content, _) = managed_file(&targets, ".cfgd.env");
         let line = path_line(content, "export PATH=");
         assert!(
@@ -1420,7 +1429,9 @@ mod tests {
                 home,
                 &probe(),
                 platform,
-            ) {
+            )
+            .unwrap()
+            {
                 let EnvTarget::ManagedFile { path, content, .. } = target else {
                     continue;
                 };
@@ -1488,7 +1499,9 @@ mod tests {
                 home,
                 &probe(),
                 platform,
-            ) {
+            )
+            .unwrap()
+            {
                 let EnvTarget::ManagedFile { path, content, .. } = target else {
                     continue;
                 };
@@ -1598,7 +1611,9 @@ mod tests {
                         home,
                         probe,
                         platform,
-                    ) {
+                    )
+                    .unwrap()
+                    {
                         // The recorded id is `to_posix_string(path)` for both verbs
                         // (`format_action_description`'s env arms), so the walk
                         // folds the same way before asking.
@@ -1746,6 +1761,7 @@ mod tests {
         // into. Only the blockless names are written down; which dialects must
         // carry blocks is whatever this leaves.
         let mut written: Vec<String> = env_target_basenames()
+            .unwrap()
             .into_iter()
             .filter(|name| recorded_env_method(name) == ENV_VERB_WRITE)
             .collect();
@@ -1785,7 +1801,9 @@ mod tests {
                 home,
                 &probe,
                 platform,
-            ) {
+            )
+            .unwrap()
+            {
                 let EnvTarget::ManagedFile { path, content, .. } = target else {
                     continue;
                 };

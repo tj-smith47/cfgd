@@ -603,8 +603,7 @@ fn process_source_decisions_first_run_records_decisions() {
 
     // The decision path is not the plan's vocabulary: translated, it withholds
     // `bat` from a cargo batch and leaves every unrelated package alone.
-    let exclusions =
-        DecisionExclusions::from_decision_paths(withheld_paths(&store), crate::expand_tilde);
+    let exclusions = DecisionExclusions::from_decision_paths(withheld_paths(&store)).unwrap();
     assert!(exclusions.withholds_package("cargo", "bat"));
     assert!(!exclusions.withholds_package("cargo", "ripgrep"));
     assert!(!exclusions.withholds_package("npm", "bat"));
@@ -625,16 +624,14 @@ fn process_source_decisions_first_run_records_decisions() {
 /// type — or the very rows a pending decision is about are resolved blind.
 #[test]
 fn a_withheld_resource_is_recognized_under_every_recorded_grammar() {
-    let exclusions = DecisionExclusions::from_decision_paths(
-        [
-            "files./tmp/w/app.conf".to_string(),
-            r"files./home/u/od\d.conf".to_string(),
-            "packages.brew.jq".to_string(),
-            "env.EDITOR".to_string(),
-            "system.gsettings".to_string(),
-        ],
-        crate::expand_tilde,
-    );
+    let exclusions = DecisionExclusions::from_decision_paths([
+        "files./tmp/w/app.conf".to_string(),
+        r"files./home/u/od\d.conf".to_string(),
+        "packages.brew.jq".to_string(),
+        "env.EDITOR".to_string(),
+        "system.gsettings".to_string(),
+    ])
+    .unwrap();
     let cases: &[(&str, &str, bool)] = &[
         // The daemon's file rows carry the exclusion set's own id...
         ("file", "/tmp/w/app.conf", true),
@@ -690,10 +687,7 @@ fn a_withheld_resource_is_recognized_under_every_recorded_grammar() {
     }
     // No env decision → the env surface is not withheld, and its rows resolve
     // on the plan's own say-so.
-    let no_env = DecisionExclusions::from_decision_paths(
-        ["packages.brew.jq".to_string()],
-        crate::expand_tilde,
-    );
+    let no_env = DecisionExclusions::from_decision_paths(["packages.brew.jq".to_string()]).unwrap();
     assert!(!no_env.withholds_recorded_row("env-var", "EDITOR"));
     assert!(!no_env.withholds_recorded_row("alias", "ll"));
 }
@@ -1192,7 +1186,7 @@ fn a_pending_row_auto_accepts_once_its_package_is_installed() {
     assert!(review.to_mint.is_empty());
 
     // Read-only paths release the row without writing anything…
-    let scope = DecisionScope::new(["acme".to_string()], &MergedProfile::default());
+    let scope = DecisionScope::new(["acme".to_string()], &MergedProfile::default()).unwrap();
     let withheld = WithheldDecisions::read(&store, &scope)
         .unwrap()
         .with_auto_accepted(&review.auto_accepted);
@@ -1508,9 +1502,9 @@ fn only_what_the_source_delivered_is_minted_as_a_decision() {
     // Feeding the whole composed profile instead would mint the subscriber's own
     // declaration as if a source had sent it — and now that a pending row
     // withholds its resource, that row would block the operator's own package.
-    let scope = DecisionScope::new(["acme"], &local_profile(&composed.resolved));
+    let scope = DecisionScope::new(["acme"], &local_profile(&composed.resolved)).unwrap();
     let withheld = WithheldDecisions::read(&store, &scope).expect("read withheld decisions");
-    let exclusions = DecisionExclusions::from_withheld(&withheld);
+    let exclusions = DecisionExclusions::from_withheld(&withheld).unwrap();
     assert!(exclusions.withholds_package("brew", "k9s"));
     assert!(
         !exclusions.withholds_package("cargo", "bat"),
@@ -1554,7 +1548,7 @@ fn a_decision_never_withholds_a_resource_the_operator_declares_themselves() {
         .resolve_decision("packages.cargo.bat", "rejected")
         .unwrap();
 
-    let scope = DecisionScope::new(["acme"], &local_profile(&composed.resolved));
+    let scope = DecisionScope::new(["acme"], &local_profile(&composed.resolved)).unwrap();
     let withheld = WithheldDecisions::read(&store, &scope).expect("read withheld decisions");
     assert!(
         withheld.is_empty(),
@@ -1562,7 +1556,9 @@ fn a_decision_never_withholds_a_resource_the_operator_declares_themselves() {
          same path"
     );
     assert!(
-        !DecisionExclusions::from_withheld(&withheld).withholds_package("cargo", "bat"),
+        !DecisionExclusions::from_withheld(&withheld)
+            .unwrap()
+            .withholds_package("cargo", "bat"),
         "declining a source's offer must not uninstall what the operator asked for"
     );
 }
@@ -1609,7 +1605,9 @@ fn local_profile_declaring_file(target: &str) -> crate::config::ResolvedProfile 
 #[serial_test::serial]
 fn a_decision_never_withholds_a_local_declaration_spelled_differently() {
     let _home = crate::with_test_home_guard(std::path::Path::new("/home/decision-guard"));
-    let expanded = crate::to_posix_string(crate::expand_tilde(std::path::Path::new("~/.zshrc")));
+    let expanded = crate::to_posix_string(
+        crate::expand_tilde(std::path::Path::new("~/.zshrc"), "test").unwrap(),
+    );
 
     for (declared, decided) in [
         ("~/.zshrc", format!("files.{expanded}")),
@@ -1621,7 +1619,7 @@ fn a_decision_never_withholds_a_local_declaration_spelled_differently() {
             .upsert_pending_decision("acme", &decided, "recommended", "install", "zshrc", None)
             .unwrap();
 
-        let scope = DecisionScope::new(["acme"], &local_profile(&local));
+        let scope = DecisionScope::new(["acme"], &local_profile(&local)).unwrap();
         let withheld = WithheldDecisions::read(&store, &scope).expect("read withheld decisions");
         assert!(
             withheld.is_empty(),
@@ -1630,7 +1628,10 @@ fn a_decision_never_withholds_a_local_declaration_spelled_differently() {
         );
         assert!(
             !DecisionExclusions::from_withheld(&withheld)
-                .withholds_file(&crate::expand_tilde(std::path::Path::new(declared))),
+                .unwrap()
+                .withholds_file(
+                    &crate::expand_tilde(std::path::Path::new(declared), "test").unwrap()
+                ),
             "and the prune must leave the operator's file action in the plan"
         );
     }
@@ -1675,7 +1676,7 @@ fn a_decision_stops_withholding_once_its_source_is_gone() {
         .resolve_decision("packages.brew.stern", "rejected")
         .unwrap();
 
-    let scope = DecisionScope::new(["acme"], &local_profile(&composed.resolved));
+    let scope = DecisionScope::new(["acme"], &local_profile(&composed.resolved)).unwrap();
     let withheld = WithheldDecisions::read(&store, &scope).expect("read withheld decisions");
     assert_eq!(
         withheld
@@ -1865,8 +1866,10 @@ async fn a_service_daemon_naming_the_default_config_still_sweeps_dead_decision_r
 
     // The same file the bare default would resolve, passed the way a generated
     // service unit passes it: as an explicit path.
-    let config_path =
-        inert_config_named(&crate::default_config_dir(), crate::config::CONFIG_FILENAME);
+    let config_path = inert_config_named(
+        &crate::default_config_dir().unwrap(),
+        crate::config::CONFIG_FILENAME,
+    );
     tick_against_default_store(config_path).await;
 
     assert!(
@@ -1919,10 +1922,8 @@ fn installed_batches(phase: &crate::reconciler::Phase) -> Vec<(String, Vec<Strin
 
 #[test]
 fn pending_package_decision_drops_the_action_only_when_its_batch_empties() {
-    let exclusions = DecisionExclusions::from_decision_paths(
-        ["packages.cargo.bat".to_string()],
-        crate::expand_tilde,
-    );
+    let exclusions =
+        DecisionExclusions::from_decision_paths(["packages.cargo.bat".to_string()]).unwrap();
 
     let mut shrunk = packages_phase_of(vec![install_of("cargo", &["bat", "ripgrep"])]);
     prune_with(&mut shrunk, &exclusions);
@@ -1945,10 +1946,8 @@ fn pending_package_decision_leaves_a_skip_alone() {
     // A `Skip` names no package — nothing on it could ever match a decision
     // path — so pruning never withholds it, unlike an Install action, whose
     // per-package matches can shrink it down to nothing.
-    let exclusions = DecisionExclusions::from_decision_paths(
-        ["packages.cargo.bat".to_string()],
-        crate::expand_tilde,
-    );
+    let exclusions =
+        DecisionExclusions::from_decision_paths(["packages.cargo.bat".to_string()]).unwrap();
     let mut phase = packages_phase_of(vec![
         crate::reconciler::Action::Package(crate::providers::PackageAction::Skip {
             manager: "cargo".into(),
@@ -1984,10 +1983,8 @@ fn pending_package_decision_withholds_from_a_module_batch_too() {
         unless: None,
         min_version: None,
     };
-    let exclusions = DecisionExclusions::from_decision_paths(
-        ["packages.cargo.bat".to_string()],
-        crate::expand_tilde,
-    );
+    let exclusions =
+        DecisionExclusions::from_decision_paths(["packages.cargo.bat".to_string()]).unwrap();
     let mut phase = packages_phase_of(vec![Action::Module(ModuleAction {
         module_name: "cli-tools".into(),
         kind: ModuleActionKind::InstallPackages {
@@ -2262,10 +2259,8 @@ fn an_all_withheld_manager_is_withheld_with_its_packages() {
     // still refreshes an index nothing left will read.
     use crate::reconciler::{Action, ManagerAction, Owner, Phase, PhaseName, Plan};
 
-    let exclusions = DecisionExclusions::from_decision_paths(
-        ["packages.cargo.bat".to_string()],
-        crate::expand_tilde,
-    );
+    let exclusions =
+        DecisionExclusions::from_decision_paths(["packages.cargo.bat".to_string()]).unwrap();
     let mut plan = Plan {
         phases: vec![
             Phase::from_actions(
@@ -2323,10 +2318,8 @@ fn a_module_whose_only_package_awaits_a_decision_reports_no_drift() {
     // and an undecided resource is work it will not do.
     use crate::reconciler::{Action, ModuleAction, ModuleActionKind};
 
-    let exclusions = DecisionExclusions::from_decision_paths(
-        ["packages.cargo.bat".to_string()],
-        crate::expand_tilde,
-    );
+    let exclusions =
+        DecisionExclusions::from_decision_paths(["packages.cargo.bat".to_string()]).unwrap();
     let mut phase = packages_phase_of(vec![Action::Module(ModuleAction {
         module_name: "cli-tools".into(),
         kind: ModuleActionKind::InstallPackages {
@@ -2374,19 +2367,15 @@ fn a_module_whose_only_package_awaits_a_decision_reports_no_drift() {
 fn pending_brew_decision_reaches_a_cask_installed_by_brew_cask() {
     // `declared_decision_paths` mints a cask as `packages.brew.<name>`, but the
     // planner installs it through the `brew-cask` manager.
-    let exclusions = DecisionExclusions::from_decision_paths(
-        ["packages.brew.firefox".to_string()],
-        crate::expand_tilde,
-    );
+    let exclusions =
+        DecisionExclusions::from_decision_paths(["packages.brew.firefox".to_string()]).unwrap();
     assert!(exclusions.withholds_package("brew-cask", "firefox"));
     assert!(exclusions.withholds_package("brew", "firefox"));
     assert!(!exclusions.withholds_package("brew-cask", "ripgrep"));
     // The fold is one-directional: a decision naming the cask manager outright
     // must not reach a formula of the same name.
-    let cask_only = DecisionExclusions::from_decision_paths(
-        ["packages.brew-cask.slack".to_string()],
-        crate::expand_tilde,
-    );
+    let cask_only =
+        DecisionExclusions::from_decision_paths(["packages.brew-cask.slack".to_string()]).unwrap();
     assert!(cask_only.withholds_package("brew-cask", "slack"));
     assert!(!cask_only.withholds_package("brew", "slack"));
 }
@@ -2397,10 +2386,11 @@ fn pending_file_decision_matches_the_expanded_action_target() {
     let home = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(home.path());
 
-    let exclusions = DecisionExclusions::from_decision_paths(
-        ["files.~/.zshrc".to_string(), "files./etc/hosts".to_string()],
-        crate::expand_tilde,
-    );
+    let exclusions = DecisionExclusions::from_decision_paths([
+        "files.~/.zshrc".to_string(),
+        "files./etc/hosts".to_string(),
+    ])
+    .unwrap();
 
     let file_action = |target: PathBuf| {
         crate::reconciler::Action::File(crate::providers::FileAction::Create {
@@ -2424,10 +2414,8 @@ fn pending_file_decision_reaches_a_module_deployed_target_too() {
     let home = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(home.path());
 
-    let exclusions = DecisionExclusions::from_decision_paths(
-        ["files.~/.zshrc".to_string()],
-        crate::expand_tilde,
-    );
+    let exclusions =
+        DecisionExclusions::from_decision_paths(["files.~/.zshrc".to_string()]).unwrap();
 
     let resolved_file = |target: PathBuf| crate::modules::ResolvedFile {
         source: PathBuf::from("/src/file"),
@@ -2484,10 +2472,8 @@ fn pending_file_decision_drops_a_module_deploy_action_it_empties() {
     let home = tempfile::tempdir().unwrap();
     let _g = crate::with_test_home_guard(home.path());
 
-    let exclusions = DecisionExclusions::from_decision_paths(
-        ["files.~/.zshrc".to_string()],
-        crate::expand_tilde,
-    );
+    let exclusions =
+        DecisionExclusions::from_decision_paths(["files.~/.zshrc".to_string()]).unwrap();
     let deploy = crate::reconciler::Action::Module(crate::reconciler::ModuleAction {
         module_name: "shell".to_string(),
         kind: {
@@ -2530,8 +2516,7 @@ fn pending_env_decision_withholds_the_whole_env_surface() {
     // the unit it is generated as.
     use crate::reconciler::{Action, EnvAction};
 
-    let exclusions =
-        DecisionExclusions::from_decision_paths(["env.EDITOR".to_string()], crate::expand_tilde);
+    let exclusions = DecisionExclusions::from_decision_paths(["env.EDITOR".to_string()]).unwrap();
     assert!(
         exclusions.withholds_action(&Action::Env(EnvAction::WriteEnvFile {
             path: PathBuf::from("/home/user/.cfgd.env"),
@@ -2552,10 +2537,8 @@ fn pending_env_decision_withholds_the_whole_env_surface() {
         }))
     );
     // No env decision, no env withholding.
-    let unrelated = DecisionExclusions::from_decision_paths(
-        ["packages.cargo.bat".to_string()],
-        crate::expand_tilde,
-    );
+    let unrelated =
+        DecisionExclusions::from_decision_paths(["packages.cargo.bat".to_string()]).unwrap();
     assert!(
         !unrelated.withholds_action(&Action::Env(EnvAction::WriteEnvFile {
             path: PathBuf::from("/home/user/.cfgd.env"),
@@ -2573,7 +2556,7 @@ fn pending_system_decision_withholds_every_action_for_its_configurator() {
     use crate::reconciler::{Action, SystemAction};
 
     let exclusions =
-        DecisionExclusions::from_decision_paths(["system.sysctl".to_string()], crate::expand_tilde);
+        DecisionExclusions::from_decision_paths(["system.sysctl".to_string()]).unwrap();
     assert!(
         exclusions.withholds_action(&Action::System(SystemAction::SetValue {
             configurator: "sysctl".into(),
@@ -2606,18 +2589,16 @@ fn pending_system_decision_withholds_every_action_for_its_configurator() {
 fn pending_decision_in_no_known_vocabulary_withholds_nothing() {
     // A malformed or unknown decision path cannot be translated, so it must
     // withhold nothing rather than withhold everything (or panic).
-    let exclusions = DecisionExclusions::from_decision_paths(
-        [
-            "packages.cargo".to_string(),
-            "packages..bat".to_string(),
-            "files.".to_string(),
-            "env.".to_string(),
-            "system.".to_string(),
-            "secrets.op://vault/item".to_string(),
-            String::new(),
-        ],
-        crate::expand_tilde,
-    );
+    let exclusions = DecisionExclusions::from_decision_paths([
+        "packages.cargo".to_string(),
+        "packages..bat".to_string(),
+        "files.".to_string(),
+        "env.".to_string(),
+        "system.".to_string(),
+        "secrets.op://vault/item".to_string(),
+        String::new(),
+    ])
+    .unwrap();
     assert!(exclusions.is_empty());
     assert!(!exclusions.withholds_package("cargo", "bat"));
 
@@ -2632,15 +2613,13 @@ fn pending_decisions_never_withhold_a_secret_script_or_module_action() {
     // pending row can name one of these.
     use crate::reconciler::{Action, ModuleAction, ModuleActionKind, ScriptAction, ScriptPhase};
 
-    let exclusions = DecisionExclusions::from_decision_paths(
-        [
-            "packages.cargo.bat".to_string(),
-            "files./etc/hosts".to_string(),
-            "env.EDITOR".to_string(),
-            "system.sysctl".to_string(),
-        ],
-        crate::expand_tilde,
-    );
+    let exclusions = DecisionExclusions::from_decision_paths([
+        "packages.cargo.bat".to_string(),
+        "files./etc/hosts".to_string(),
+        "env.EDITOR".to_string(),
+        "system.sysctl".to_string(),
+    ])
+    .unwrap();
     assert!(!exclusions.withholds_action(&Action::Secret(
         crate::providers::SecretAction::Decrypt {
             source: PathBuf::from("/etc/secret.enc.yaml"),
@@ -3924,10 +3903,9 @@ fn a_scoop_item_mints_and_withholds_under_notify_exactly_like_a_brew_item() {
 
     // The minted paths translate into the plan vocabulary and prune a scoop
     // batch the same way a brew batch is pruned.
-    let exclusions = DecisionExclusions::from_decision_paths(
-        review.to_mint.iter().map(|m| m.resource.clone()),
-        crate::expand_tilde,
-    );
+    let exclusions =
+        DecisionExclusions::from_decision_paths(review.to_mint.iter().map(|m| m.resource.clone()))
+            .unwrap();
     assert!(exclusions.withholds_package("scoop", "wget"));
     let mut phase = packages_phase_of(vec![install_of("scoop", &["wget", "curl"])]);
     prune_with(&mut phase, &exclusions);
@@ -3974,10 +3952,10 @@ fn a_locked_tier_scoop_item_still_applies_when_the_policy_accepts_locked() {
 /// `brew-tap` batch verbatim.
 #[test]
 fn a_brew_tap_decision_prunes_the_tap_batch_it_names() {
-    let exclusions = DecisionExclusions::from_decision_paths(
-        ["packages.brew-tap.homebrew/cask-fonts".to_string()],
-        crate::expand_tilde,
-    );
+    let exclusions = DecisionExclusions::from_decision_paths([
+        "packages.brew-tap.homebrew/cask-fonts".to_string(),
+    ])
+    .unwrap();
     assert!(exclusions.withholds_package("brew-tap", "homebrew/cask-fonts"));
     let mut phase = packages_phase_of(vec![install_of(
         "brew-tap",
@@ -4050,7 +4028,7 @@ fn a_dotted_custom_manager_source_batch_is_withheld_fail_closed_with_a_warning()
     );
 
     let withheld = WithheldDecisions::default().with_undecidable(batches);
-    let exclusions = DecisionExclusions::from_withheld(&withheld);
+    let exclusions = DecisionExclusions::from_withheld(&withheld).unwrap();
     let mut plan = crate::reconciler::Plan {
         phases: vec![packages_phase_of(vec![install_of(
             "pip3.11",
@@ -7726,11 +7704,7 @@ fn discover_managed_paths_with_no_config_returns_empty() {
     use std::path::Path;
 
     // Non-existent config file should return empty paths
-    let paths = discover_managed_paths(
-        Path::new("/nonexistent/config.yaml"),
-        None,
-        &crate::test_helpers::NoopDaemonHooks,
-    );
+    let paths = discover_managed_paths(Path::new("/nonexistent/config.yaml"), None);
     assert!(
         paths.is_empty(),
         "non-existent config should return no managed paths"
@@ -8420,9 +8394,6 @@ async fn handle_reconcile_with_valid_config_records_drift_events() {
             _: &config::PackagesSpec,
         ) {
         }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
     }
 
     let state = Arc::new(Mutex::new(DaemonState::new()));
@@ -8524,9 +8495,6 @@ async fn handle_reconcile_notify_only_drift_policy_does_not_apply() {
             _: &config::PackagesSpec,
         ) {
         }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
     }
 
     let state = Arc::new(Mutex::new(DaemonState::new()));
@@ -8609,9 +8577,6 @@ async fn handle_reconcile_no_drift_when_no_actions() {
             _: &mut ProviderRegistry,
             _: &config::PackagesSpec,
         ) {
-        }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
         }
     }
 
@@ -8810,9 +8775,6 @@ async fn a_tick_that_refreshed_a_deployed_file_says_so_instead_of_reading_idle()
             _: &config::PackagesSpec,
         ) {
         }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
     }
 
     let state = Arc::new(Mutex::new(DaemonState::new()));
@@ -8943,9 +8905,6 @@ async fn handle_reconcile_clean_tick_clears_outstanding_drift() {
             _: &config::PackagesSpec,
         ) {
         }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
     }
 
     let state = Arc::new(Mutex::new(DaemonState::new()));
@@ -9059,9 +9018,6 @@ async fn a_tick_over_a_platform_gated_module_records_no_drift_and_no_tracking_ro
             _: &mut ProviderRegistry,
             _: &config::PackagesSpec,
         ) {
-        }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
         }
     }
 
@@ -9211,9 +9167,6 @@ async fn a_tick_over_a_module_whose_files_it_refused_keeps_their_rows() {
             _: &mut ProviderRegistry,
             _: &config::PackagesSpec,
         ) {
-        }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
         }
     }
 
@@ -9396,9 +9349,6 @@ async fn handle_reconcile_multiple_actions_records_all_drift() {
             _: &config::PackagesSpec,
         ) {
         }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
     }
 
     let state = Arc::new(Mutex::new(DaemonState::new()));
@@ -9483,9 +9433,6 @@ impl DaemonHooks for DriftingFileHooks {
         Ok(vec![])
     }
     fn extend_registry_custom_managers(&self, _: &mut ProviderRegistry, _: &config::PackagesSpec) {}
-    fn expand_tilde(&self, path: &Path) -> PathBuf {
-        crate::expand_tilde(path)
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -9557,6 +9504,106 @@ async fn handle_reconcile_auto_policy_with_drift_invokes_apply_success() {
     assert!(
         store.unresolved_drift().unwrap().is_empty(),
         "successful auto-apply must leave no outstanding drift rows"
+    );
+}
+
+/// Plans nothing, so an Auto tick under it finds the machine converged.
+struct ConvergedHooks;
+
+impl DaemonHooks for ConvergedHooks {
+    fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
+        ProviderRegistry::new()
+    }
+    fn plan_files(&self, _: &Path, _: &ResolvedProfile) -> crate::errors::Result<Vec<FileAction>> {
+        Ok(vec![])
+    }
+    fn plan_packages(
+        &self,
+        _: &MergedProfile,
+        _: &[&dyn PackageManager],
+        _: &std::collections::HashSet<String>,
+        _: &PackageContext<'_>,
+    ) -> crate::errors::Result<Vec<PackageAction>> {
+        Ok(vec![])
+    }
+    fn extend_registry_custom_managers(&self, _: &mut ProviderRegistry, _: &config::PackagesSpec) {}
+}
+
+/// Run one Auto tick under `hooks` against a `--cache-dir` whose module cache
+/// holds two clones last touched before the in-use window: one of the
+/// registry the config names and one of a registry it no longer names.
+/// Returns `(registry clone kept, dropped clone kept)`.
+async fn auto_tick_over_two_stale_clones(hooks: impl DaemonHooks + 'static) -> (bool, bool) {
+    let tmp = tempfile::tempdir().unwrap();
+    let _g = crate::with_test_home_guard(tmp.path());
+    let state_dir = tmp.path().join("state");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    let config_path = tmp.path().join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  modules:\n    registries:\n      - name: kept\n        url: https://example.invalid/kept.git\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: true\n      driftPolicy: Auto\n",
+    )
+    .unwrap();
+    let profiles_dir = tmp.path().join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec: {}\n",
+    )
+    .unwrap();
+
+    let cache_over = tmp.path().join("cache");
+    let root = crate::module_cache_root(Some(&cache_over), crate::Scope::User).unwrap();
+    let stale_clone = |url: &str| {
+        let clone = crate::modules::git_cache_dir(&root, url);
+        std::fs::create_dir_all(&clone).unwrap();
+        std::fs::write(clone.join("module.yaml"), "x").unwrap();
+        crate::test_helpers::set_dir_modified(
+            &clone,
+            std::time::SystemTime::now() - crate::modules::IN_USE_WINDOW * 2,
+        );
+        clone
+    };
+    let kept = stale_clone("https://example.invalid/kept.git");
+    let dropped = stale_clone("https://example.invalid/dropped.git");
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    let sd = state_dir.clone();
+    crate::spawn_blocking_with_test_home(move || {
+        let printer = test_printer();
+        let mut ctx = quiet_reconcile_ctx(&state, &notifier, false, &hooks, &sd, &printer);
+        ctx.cache_dir_override = Some(&cache_over);
+        handle_reconcile(&config_path, None, ctx);
+    })
+    .await
+    .unwrap();
+    (kept.is_dir(), dropped.exists())
+}
+
+/// The daemon's Auto tick applies through `ApplyRun::execute`, so the module
+/// checkouts its apply stops reading are swept there, keeping the clone of
+/// every registry the config still names.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_auto_tick_that_applies_sweeps_the_module_cache() {
+    let src = tempfile::tempdir().unwrap();
+    let source = src.path().join("src.txt");
+    std::fs::write(&source, "hello").unwrap();
+    let hooks = DriftingFileHooks {
+        source,
+        target: src.path().join("dst.txt"),
+    };
+    assert_eq!(auto_tick_over_two_stale_clones(hooks).await, (true, false));
+}
+
+/// A converged Auto tick plans nothing and never reaches `execute`; it
+/// settles through `settle_converged`, so a machine the daemon keeps current
+/// still loses the checkouts nothing reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_converged_auto_tick_sweeps_the_module_cache() {
+    assert_eq!(
+        auto_tick_over_two_stale_clones(ConvergedHooks).await,
+        (true, false)
     );
 }
 
@@ -9770,9 +9817,6 @@ async fn handle_reconcile_runs_on_drift_scripts() {
             _: &config::PackagesSpec,
         ) {
         }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
     }
 
     let state = Arc::new(Mutex::new(DaemonState::new()));
@@ -9800,6 +9844,230 @@ async fn handle_reconcile_runs_on_drift_scripts() {
         "onDrift script should have created marker file at {}",
         marker.display()
     );
+}
+
+/// Run one tick with no home directory over `dir`, whose config carries
+/// `drift_policy` and whose `default` profile's spec is `profile_spec`, and
+/// return the tick's log lines. Each of `modules` is a module name beside the
+/// spec of its `module.yaml`, read from `dir/modules`.
+async fn homeless_tick<H: DaemonHooks + Send + 'static>(
+    dir: &Path,
+    drift_policy: &str,
+    profile_spec: &str,
+    modules: &[(&str, &str)],
+    hooks: H,
+    module_filter: Option<&'static str>,
+) -> String {
+    let _home = [
+        crate::test_helpers::EnvVarGuard::set("HOME", ""),
+        crate::test_helpers::EnvVarGuard::set("USERPROFILE", ""),
+    ];
+    let state_dir = dir.join("state");
+    let cache_dir = dir.join("cache");
+    std::fs::create_dir_all(&state_dir).unwrap();
+    std::fs::create_dir_all(&cache_dir).unwrap();
+    let config_path = dir.join("cfgd.yaml");
+    std::fs::write(
+        &config_path,
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: test\nspec:\n  profile: default\n  daemon:\n    enabled: true\n    reconcile:\n      interval: 60s\n      autoApply: false\n      driftPolicy: {drift_policy}\n"
+        ),
+    )
+    .unwrap();
+    let profiles_dir = dir.join("profiles");
+    std::fs::create_dir_all(&profiles_dir).unwrap();
+    std::fs::write(
+        profiles_dir.join("default.yaml"),
+        format!(
+            "apiVersion: cfgd.io/v1alpha1\nkind: Profile\nmetadata:\n  name: default\nspec:\n{profile_spec}"
+        ),
+    )
+    .unwrap();
+    for (name, spec) in modules {
+        let mod_dir = dir.join("modules").join(name);
+        std::fs::create_dir_all(&mod_dir).unwrap();
+        std::fs::write(
+            mod_dir.join("module.yaml"),
+            format!(
+                "apiVersion: cfgd.io/v1alpha1\nkind: Module\nmetadata:\n  name: {name}\nspec:\n{spec}"
+            ),
+        )
+        .unwrap();
+    }
+
+    let state = Arc::new(Mutex::new(DaemonState::new()));
+    let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
+    crate::spawn_blocking_with_test_home(move || {
+        let printer = test_printer();
+        let mut ctx = quiet_reconcile_ctx(&state, &notifier, false, &hooks, &state_dir, &printer);
+        ctx.cache_dir_override = Some(&cache_dir);
+        ctx.module_filter = module_filter;
+        capture_run_logs(|| {
+            handle_reconcile(&config_path, None, ctx);
+        })
+    })
+    .await
+    .unwrap()
+}
+
+/// A tool shim in its own directory under `dir`, and the `argv.log` witness
+/// it writes when it runs.
+fn hook_shim(dir: &Path, name: &str) -> (PathBuf, PathBuf) {
+    let shim_dir = dir.join(name);
+    std::fs::create_dir_all(&shim_dir).unwrap();
+    (
+        crate::test_helpers::write_tool_shim(&shim_dir, name, &[]),
+        shim_dir.join("argv.log"),
+    )
+}
+
+/// The rows a tick left standing in `dir`'s state store.
+fn standing_drift(dir: &Path) -> Vec<crate::state::DriftEvent> {
+    StateStore::open_in_dir(&dir.join("state"))
+        .unwrap()
+        .unresolved_drift()
+        .unwrap()
+}
+
+/// A homeless tick asks the home question of every hook it would run before
+/// it runs any of them. The profile's `onDrift` entry works in `~/x`, the
+/// tick finds drift, and its policy auto-applies: with no home the tick logs
+/// one refusal at `warn` naming the slot, and stops with nothing run. Neither
+/// hook's witness appears, the drifted file is never written, and the store
+/// holds no drift row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_homeless_tick_refuses_before_any_hook_runs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (drift_shim, drift_witness) = hook_shim(tmp.path(), "on-drift");
+    let (reconcile_shim, reconcile_witness) = hook_shim(tmp.path(), "post-reconcile");
+    let target = tmp.path().join("target.txt");
+    let source = tmp.path().join("source.txt");
+    std::fs::write(&source, "content").unwrap();
+    // Each shim is named by its NATIVE path inside a single-quoted YAML
+    // scalar, the shape `a_tick_over_a_module_declaring_only_hooks_records_no_drift_row`
+    // explains: both hosts' shells run it.
+    let logs = homeless_tick(
+        tmp.path(),
+        "Auto",
+        &format!(
+            "  scripts:\n    postReconcile:\n      - '\"{}\"'\n    onDrift:\n      - run: '\"{}\"'\n        workdir: ~/x\n",
+            reconcile_shim.display(), // native-ok: a command line the host's own shell parses
+            drift_shim.display(), // native-ok: a command line the host's own shell parses
+        ),
+        &[],
+        DriftingFileHooks {
+            source,
+            target: target.clone(),
+        },
+        None,
+    )
+    .await;
+
+    let refusals: Vec<&str> = logs
+        .lines()
+        .filter(|l| l.contains("reconcile: tick refused"))
+        .collect();
+    assert_eq!(refusals.len(), 1, "the tick logs its refusal once: {logs}");
+    assert!(
+        refusals[0].contains("WARN") && refusals[0].contains("slot=\"script workdir\""),
+        "at warn, naming the slot: {logs}"
+    );
+    assert!(!drift_witness.exists(), "the onDrift hook never ran");
+    assert!(!reconcile_witness.exists(), "nor the postReconcile hook");
+    assert!(!target.exists(), "and no action was applied");
+    let standing = standing_drift(tmp.path());
+    assert!(
+        standing.is_empty(),
+        "the tick records no drift row: {standing:?}"
+    );
+}
+
+/// A tick that only reports runs no `onChange` or `postReconcile` hook, so a
+/// `~` path in one asks it nothing. Homeless under `NotifyOnly`, with both
+/// hooks working in `~/x`, the tick logs no refusal, reports and records the
+/// drift it finds, and runs neither hook.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_homeless_notify_only_tick_reports_drift_past_a_home_hook_it_never_runs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (change_shim, change_witness) = hook_shim(tmp.path(), "on-change");
+    let (reconcile_shim, reconcile_witness) = hook_shim(tmp.path(), "post-reconcile");
+    let target = tmp.path().join("target.txt");
+    let source = tmp.path().join("source.txt");
+    std::fs::write(&source, "content").unwrap();
+    let logs = homeless_tick(
+        tmp.path(),
+        "NotifyOnly",
+        &format!(
+            "  scripts:\n    postReconcile:\n      - run: '\"{}\"'\n        workdir: ~/x\n    onChange:\n      - run: '\"{}\"'\n        workdir: ~/x\n",
+            reconcile_shim.display(), // native-ok: a command line the host's own shell parses
+            change_shim.display(), // native-ok: a command line the host's own shell parses
+        ),
+        &[],
+        DriftingFileHooks {
+            source,
+            target: target.clone(),
+        },
+        None,
+    )
+    .await;
+
+    assert!(
+        !logs.contains("reconcile: tick refused"),
+        "a hook the tick never runs refuses nothing: {logs}"
+    );
+    assert!(
+        logs.contains("drift detected in 1 resource"),
+        "the tick reports its drift: {logs}"
+    );
+    assert!(!standing_drift(tmp.path()).is_empty(), "and records it");
+    assert!(!change_witness.exists(), "the onChange hook never ran");
+    assert!(!reconcile_witness.exists(), "nor the postReconcile hook");
+    assert!(!target.exists(), "and nothing was applied");
+}
+
+/// A per-module tick runs only its own module's hooks, so another module's
+/// `~` hook asks it nothing. Homeless, auto-applying, scoped to module `a`
+/// while module `b`'s `postReconcile` and `onChange` hooks work in `~/x`, the
+/// tick logs no refusal and runs `a`'s `postReconcile` hook, and neither of
+/// `b`'s.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[serial_test::serial]
+async fn a_homeless_per_module_tick_runs_past_another_modules_home_hook() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (a_shim, a_witness) = hook_shim(tmp.path(), "a-post-reconcile");
+    let (b_shim, b_witness) = hook_shim(tmp.path(), "b-post-reconcile");
+    let (b_change_shim, b_change_witness) = hook_shim(tmp.path(), "b-on-change");
+    let a_spec = format!(
+        "  scripts:\n    postReconcile:\n      - '\"{}\"'\n",
+        a_shim.display(), // native-ok: a command line the host's own shell parses
+    );
+    let b_spec = format!(
+        "  scripts:\n    postReconcile:\n      - run: '\"{}\"'\n        workdir: ~/x\n    onChange:\n      - run: '\"{}\"'\n        workdir: ~/x\n",
+        b_shim.display(), // native-ok: a command line the host's own shell parses
+        b_change_shim.display(), // native-ok: a command line the host's own shell parses
+    );
+    let logs = homeless_tick(
+        tmp.path(),
+        "Auto",
+        "  modules:\n    - a\n    - b\n",
+        &[("a", &a_spec), ("b", &b_spec)],
+        EmptyPlanHooks,
+        Some("a"),
+    )
+    .await;
+
+    assert!(
+        !logs.contains("reconcile: tick refused"),
+        "another module's hook refuses nothing: {logs}"
+    );
+    assert!(
+        a_witness.exists(),
+        "the tick runs its own module's hook: {logs}"
+    );
+    assert!(!b_witness.exists(), "and none of the other module's");
+    assert!(!b_change_witness.exists(), "onChange included");
 }
 
 /// A module whose whole declaration is lifecycle hooks reports no drift, records
@@ -10415,7 +10683,7 @@ async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
     let source_file = tmp.path().join("src.txt");
     std::fs::write(&source_file, "hello").unwrap();
     let kept_target = tmp.path().join("kept.txt");
-    let withheld_target = crate::expand_tilde(Path::new("~/withheld.txt"));
+    let withheld_target = crate::expand_tilde(Path::new("~/withheld.txt"), "test").unwrap();
 
     struct DecisionHooks {
         installed: Arc<Mutex<Vec<String>>>,
@@ -10473,9 +10741,6 @@ async fn auto_apply_tick_withholds_the_resources_awaiting_a_source_decision() {
             _: &mut ProviderRegistry,
             _: &config::PackagesSpec,
         ) {
-        }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
         }
     }
 
@@ -10707,9 +10972,6 @@ async fn a_tick_that_cannot_record_a_decision_still_withholds_the_item() {
             _: &config::PackagesSpec,
         ) {
         }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
     }
 
     let installed = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -10867,9 +11129,6 @@ async fn secret_env_tick_leaks(seed_pending_decision: bool) -> Vec<PathBuf> {
             _: &mut ProviderRegistry,
             _: &config::PackagesSpec,
         ) {
-        }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
         }
     }
 
@@ -11048,9 +11307,6 @@ async fn handle_reconcile_auto_policy_prunes_tracked_dropped_package() {
             _: &config::PackagesSpec,
         ) {
         }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
     }
 
     let seen = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -11189,9 +11445,6 @@ async fn handle_reconcile_auto_policy_gcs_stale_tracking_row() {
             _: &config::PackagesSpec,
         ) {
         }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
     }
 
     let hooks = GcHooks {
@@ -11283,9 +11536,6 @@ async fn handle_reconcile_notify_only_with_notify_on_drift_sends_notification() 
             _: &config::PackagesSpec,
         ) {
         }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
     }
 
     let state = Arc::new(Mutex::new(DaemonState::new()));
@@ -11337,7 +11587,7 @@ fn discover_managed_paths_returns_targets_from_profile() {
         )
         .unwrap();
 
-    let paths = discover_managed_paths(&config_path, None, &crate::test_helpers::NoopDaemonHooks);
+    let paths = discover_managed_paths(&config_path, None);
     assert_eq!(paths.len(), 2);
     assert!(paths.contains(&PathBuf::from("/home/user/.zshrc")));
     assert!(paths.contains(&PathBuf::from("/home/user/.vimrc")));
@@ -11345,11 +11595,7 @@ fn discover_managed_paths_returns_targets_from_profile() {
 
 #[test]
 fn discover_managed_paths_returns_empty_for_missing_config() {
-    let paths = discover_managed_paths(
-        Path::new("/nonexistent/config.yaml"),
-        None,
-        &crate::test_helpers::NoopDaemonHooks,
-    );
+    let paths = discover_managed_paths(Path::new("/nonexistent/config.yaml"), None);
     assert!(paths.is_empty());
 }
 
@@ -11372,11 +11618,7 @@ fn discover_managed_paths_with_profile_override() {
         )
         .unwrap();
 
-    let paths = discover_managed_paths(
-        &config_path,
-        Some("custom"),
-        &crate::test_helpers::NoopDaemonHooks,
-    );
+    let paths = discover_managed_paths(&config_path, Some("custom"));
     assert_eq!(paths.len(), 1);
     assert_eq!(paths[0], PathBuf::from("/home/user/.bashrc"));
 }
@@ -12157,7 +12399,7 @@ async fn wait_for_daemon_log(needle: &str, timeout: std::time::Duration) {
              {needle:?}; got: {snapshot}"
         );
         // long-line-ok: a hatch is read off its own line, so it cannot wrap
-        // sleep-ok: this loop IS the observable — a bounded deadline poll, not a fixed-duration guess
+        // sleep-ok: this loop IS the observable: a bounded deadline poll that ends the moment its condition holds
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
 }
@@ -12221,7 +12463,7 @@ fn log_capture() -> (impl tracing::Subscriber + Send + Sync, LogBuf) {
     let buf: LogBuf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let subscriber = tracing_subscriber::fmt()
         // long-line-ok: a hatch is read off its own line, so it cannot wrap
-        // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
+        // unfolded-writer-ok: a test capture read back as a String that nobody watches
         .with_writer(LogCapture(buf.clone()))
         .with_max_level(tracing::Level::INFO)
         // Styled field names would put escape sequences between `holder`
@@ -12233,7 +12475,7 @@ fn log_capture() -> (impl tracing::Subscriber + Send + Sync, LogBuf) {
 
 fn captured_logs(buf: &LogBuf) -> String {
     // long-line-ok: a hatch is read off its own line, so it cannot wrap
-    // raw-capture-ok: this buf is a tracing-log Arc<Mutex<Vec<u8>>>, not a Printer::for_test* text capture — captured_text doesn't type-check against it
+    // raw-capture-ok: this buf is a tracing-log Arc<Mutex<Vec<u8>>>, and captured_text type-checks only against a Printer::for_test* capture
     let bytes = buf.lock().expect("lock").clone();
     String::from_utf8(bytes).expect("utf8 logs")
 }
@@ -13739,10 +13981,6 @@ spec:
             _: &config::PackagesSpec,
         ) {
         }
-
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
     }
 
     /// A manager this host holds that has slipped below the floor a module
@@ -14496,9 +14734,6 @@ spec:
             _: &config::PackagesSpec,
         ) {
         }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
     }
 
     /// `DaemonHooks` that panics in `build_registry`. Used to drive
@@ -14531,9 +14766,6 @@ spec:
             _: &mut ProviderRegistry,
             _: &config::PackagesSpec,
         ) {
-        }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
         }
     }
 
@@ -14880,9 +15112,6 @@ spec:
             _: &mut ProviderRegistry,
             _: &config::PackagesSpec,
         ) {
-        }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
         }
     }
 
@@ -15561,9 +15790,6 @@ spec:
             _: &config::PackagesSpec,
         ) {
         }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -15601,7 +15827,7 @@ spec:
         let source = tmp.path().join("src.txt");
         std::fs::write(&source, "hello").unwrap();
         let kept = tmp.path().join("kept.txt");
-        let withheld = crate::expand_tilde(Path::new("~/withheld.txt"));
+        let withheld = crate::expand_tilde(Path::new("~/withheld.txt"), "test").unwrap();
 
         let (mut ctx, _state, _buf) = make_test_ctx(&tmp, false, false, None);
         ctx.config_path = config_path;
@@ -15792,7 +16018,6 @@ spec:
         build_pre_loop_setup(
             config_path,
             profile,
-            &NoopHooks,
             crate::Scope::User,
             &Printer::for_test().0,
             None,
@@ -15876,16 +16101,8 @@ spec: {}
         .unwrap();
 
         let (printer, buf) = Printer::for_test();
-        build_pre_loop_setup(
-            &config_path,
-            None,
-            &NoopHooks,
-            crate::Scope::User,
-            &printer,
-            None,
-            None,
-        )
-        .expect("setup with a deprecated theme key still succeeds");
+        build_pre_loop_setup(&config_path, None, crate::Scope::User, &printer, None, None)
+            .expect("setup with a deprecated theme key still succeeds");
 
         let captured = crate::test_helpers::captured_text(&buf);
         assert!(
@@ -15950,7 +16167,6 @@ spec: {}
         let setup = build_pre_loop_setup(
             &config_path,
             None,
-            &NoopHooks,
             crate::Scope::User,
             &Printer::for_test().0,
             None,
@@ -16837,6 +17053,7 @@ spec: {}
         let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
         let _home = EnvVarGuard::unset("HOME");
         let _userprofile = EnvVarGuard::unset("USERPROFILE");
+        let _xdg_state = EnvVarGuard::unset("XDG_STATE_HOME");
 
         // The fallback yields a state with no store_path (the /drift endpoint
         // then returns empty events).
@@ -16855,6 +17072,29 @@ spec: {}
 
     #[test]
     #[serial_test::serial]
+    fn a_tick_with_no_home_refuses_its_module_cache_and_falls_back_nowhere() {
+        use crate::test_helpers::EnvVarGuard;
+        let _cfgd = EnvVarGuard::unset(crate::CFGD_CACHE_DIR_ENV);
+        let _systemd = EnvVarGuard::unset("CACHE_DIRECTORY");
+        let _home = EnvVarGuard::unset("HOME");
+        let _userprofile = EnvVarGuard::unset("USERPROFILE");
+        let _xdg_cache = EnvVarGuard::unset("XDG_CACHE_HOME");
+
+        for over in [None, Some(std::path::Path::new("~/cache"))] {
+            let err = super::super::tick_module_cache(crate::Scope::User, over)
+                .expect_err("a tick with no home has no module cache to use");
+            assert!(
+                err.to_string().contains("no home directory found"),
+                "{over:?}: {err}"
+            );
+        }
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = super::super::tick_module_cache(crate::Scope::User, Some(tmp.path())).unwrap();
+        assert!(root.starts_with(tmp.path()), "{}", root.display());
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn init_daemon_state_with_warning_reports_message_on_resolve_failure() {
         // Resolution failing leaves the /drift endpoint disabled, and the
         // variant hands the sentence back so the caller states it once on the
@@ -16868,6 +17108,7 @@ spec: {}
         let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
         let _home = EnvVarGuard::unset("HOME");
         let _userprofile = EnvVarGuard::unset("USERPROFILE");
+        let _xdg_state = EnvVarGuard::unset("XDG_STATE_HOME");
 
         let (st, warning) = super::super::init_daemon_state_with_warning(None, crate::Scope::User);
         let msg = warning.expect("resolve failure must surface an operator-facing warning");
@@ -16952,6 +17193,7 @@ spec: {}
         let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
         let _home = EnvVarGuard::unset("HOME");
         let _userprofile = EnvVarGuard::unset("USERPROFILE");
+        let _xdg_state = EnvVarGuard::unset("XDG_STATE_HOME");
 
         let (st, _warning) =
             super::super::init_daemon_state_with_warning(None, crate::Scope::System);
@@ -17624,7 +17866,7 @@ spec: {}
         let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
         while !store.exists() && std::time::Instant::now() < deadline {
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // sleep-ok: bounded deadline poll on a filesystem side effect, not a fixed-duration guess
+            // sleep-ok: bounded deadline poll on a filesystem side effect; it ends the moment its condition holds
             tokio::time::sleep(StdDuration::from_millis(10)).await;
         }
         senders.shutdown_tx.send(()).unwrap();
@@ -17866,7 +18108,7 @@ spec: {}
         let deadline = std::time::Instant::now() + StdDuration::from_secs(5);
         while std::time::Instant::now() < deadline && !ipc_path.exists() {
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // sleep-ok: bounded deadline poll on a filesystem side effect, not a fixed-duration guess
+            // sleep-ok: bounded deadline poll on a filesystem side effect; it ends the moment its condition holds
             tokio::time::sleep(StdDuration::from_millis(10)).await;
         }
         assert!(
@@ -18158,7 +18400,7 @@ spec: {}
                 break;
             }
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // sleep-ok: bounded poll on the mock server's own matched() observable, not a fixed-duration guess
+            // sleep-ok: bounded poll on the mock server's own matched() observable; it ends the moment its condition holds
             tokio::time::sleep(StdDuration::from_millis(50)).await;
         }
         assert!(
@@ -18653,29 +18895,6 @@ fn withheld_decisions_returns_decision_resources_as_set() {
 //   * profile-resolve-Err arm: profile name resolves to a missing file
 // ---------------------------------------------------------------------------
 
-struct DiscoverTestHooks;
-impl DaemonHooks for DiscoverTestHooks {
-    fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
-        ProviderRegistry::new()
-    }
-    fn plan_files(&self, _: &Path, _: &ResolvedProfile) -> crate::errors::Result<Vec<FileAction>> {
-        Ok(vec![])
-    }
-    fn plan_packages(
-        &self,
-        _: &MergedProfile,
-        _: &[&dyn PackageManager],
-        _: &std::collections::HashSet<String>,
-        _: &PackageContext<'_>,
-    ) -> crate::errors::Result<Vec<PackageAction>> {
-        Ok(vec![])
-    }
-    fn extend_registry_custom_managers(&self, _: &mut ProviderRegistry, _: &config::PackagesSpec) {}
-    fn expand_tilde(&self, path: &Path) -> PathBuf {
-        path.to_path_buf()
-    }
-}
-
 #[test]
 fn discover_managed_paths_returns_empty_when_no_profile_configured_or_overridden() {
     // Config has NO spec.profile and the caller passes no override →
@@ -18689,7 +18908,7 @@ fn discover_managed_paths_returns_empty_when_no_profile_configured_or_overridden
     )
     .unwrap();
 
-    let paths = discover_managed_paths(&config_path, None, &DiscoverTestHooks);
+    let paths = discover_managed_paths(&config_path, None);
     assert!(
         paths.is_empty(),
         "no profile configured + no override → empty path list"
@@ -18710,7 +18929,7 @@ fn discover_managed_paths_returns_empty_when_named_profile_does_not_exist() {
     .unwrap();
     // Intentionally no profiles/ dir written — the named profile cannot resolve.
 
-    let paths = discover_managed_paths(&config_path, None, &DiscoverTestHooks);
+    let paths = discover_managed_paths(&config_path, None);
     assert!(
         paths.is_empty(),
         "profile name set but resolve_profile fails → empty path list, no panic"
@@ -18775,9 +18994,6 @@ impl DaemonHooks for EmptyPlanHooks {
         Ok(vec![])
     }
     fn extend_registry_custom_managers(&self, _: &mut ProviderRegistry, _: &config::PackagesSpec) {}
-    fn expand_tilde(&self, path: &Path) -> PathBuf {
-        crate::expand_tilde(path)
-    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -19098,9 +19314,6 @@ async fn handle_reconcile_constraint_violation_skips_tick_and_preserves_source_p
             _: &config::PackagesSpec,
         ) {
         }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
     }
 
     let hooks = PrunePkgHooks {
@@ -19323,9 +19536,6 @@ async fn handle_reconcile_required_uncached_source_skips_tick_and_preserves_pack
             _: &mut ProviderRegistry,
             _: &config::PackagesSpec,
         ) {
-        }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
         }
     }
 
@@ -19648,7 +19858,7 @@ mod ipc_socket_security {
                 break;
             }
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // sleep-ok: bounded poll on a filesystem side effect (the bound socket), not a fixed-duration guess
+            // sleep-ok: bounded poll on a filesystem side effect (the bound socket); it ends the moment its condition holds
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         assert!(
@@ -20858,38 +21068,6 @@ mod handle_reconcile_extra_branches {
 mod discover_managed_paths_extra {
     use super::*;
 
-    struct StubHooks;
-    impl DaemonHooks for StubHooks {
-        fn build_registry(&self, _: &CfgdConfig) -> ProviderRegistry {
-            ProviderRegistry::new()
-        }
-        fn plan_files(
-            &self,
-            _: &Path,
-            _: &ResolvedProfile,
-        ) -> crate::errors::Result<Vec<FileAction>> {
-            Ok(vec![])
-        }
-        fn plan_packages(
-            &self,
-            _: &MergedProfile,
-            _: &[&dyn PackageManager],
-            _: &std::collections::HashSet<String>,
-            _: &PackageContext<'_>,
-        ) -> crate::errors::Result<Vec<PackageAction>> {
-            Ok(vec![])
-        }
-        fn extend_registry_custom_managers(
-            &self,
-            _: &mut ProviderRegistry,
-            _: &config::PackagesSpec,
-        ) {
-        }
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
-    }
-
     #[test]
     fn discover_managed_paths_with_explicit_profile_override_picks_override_targets() {
         // Hits the `profile_override.or(cfg.spec.profile.as_deref())` arm
@@ -20911,7 +21089,7 @@ mod discover_managed_paths_extra {
         )
         .unwrap();
 
-        let paths = discover_managed_paths(&config_path, Some("override"), &StubHooks);
+        let paths = discover_managed_paths(&config_path, Some("override"));
         assert!(
             paths
                 .iter()
@@ -20934,7 +21112,7 @@ mod discover_managed_paths_extra {
         // profiles dir exists but the named profile does not
         std::fs::create_dir_all(tmp.path().join("profiles")).unwrap();
 
-        let paths = discover_managed_paths(&config_path, None, &StubHooks);
+        let paths = discover_managed_paths(&config_path, None);
         assert!(
             paths.is_empty(),
             "profile-resolution failure must yield empty paths, got: {paths:?}"
@@ -20975,9 +21153,6 @@ mod tests_run_daemon_wrapper {
             Ok(vec![])
         }
         fn extend_registry_custom_managers(&self, _: &mut ProviderRegistry, _: &PackagesSpec) {}
-        fn expand_tilde(&self, path: &Path) -> PathBuf {
-            crate::expand_tilde(path)
-        }
     }
 
     // Serial + explicitly unset: `resolve_default_ipc_path` consults
@@ -21998,10 +22173,6 @@ mod backup_timers {
             _: &config::PackagesSpec,
         ) {
         }
-
-        fn expand_tilde(&self, path: &Path) -> std::path::PathBuf {
-            crate::expand_tilde(path)
-        }
     }
 
     /// The daemon's periodic check-in withholds the whole version map when a
@@ -22480,7 +22651,7 @@ mod backup_timers {
                 "the loop's backup timer never fired"
             );
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // sleep-ok: bounded deadline poll on a state-store observable, not a fixed-duration guess
+            // sleep-ok: bounded deadline poll on a state-store observable; it ends the moment its condition holds
             tokio::time::sleep(StdDuration::from_millis(25)).await;
         }
 
@@ -23380,12 +23551,9 @@ mod backup_timers {
 
         // `cfgd backup run`
         let by_hand = render(tmp.path(), "cli", |state_dir, store, printer| {
-            let units = vec![crate::backup::BackupUnit::new(
-                &s,
-                &config_dir,
-                "workstation",
-                state_dir,
-            )];
+            let units = vec![
+                crate::backup::BackupUnit::new(&s, &config_dir, "workstation", state_dir).unwrap(),
+            ];
             crate::reconciler::ApplyRun::backups(
                 ctx_for(crate::reconciler::RunTitle::Backup),
                 &units,
@@ -23397,12 +23565,9 @@ mod backup_timers {
 
         // `cfgd apply`'s pending backups: the same units carried by a plan run.
         let during_apply = render(tmp.path(), "apply", |state_dir, store, printer| {
-            let units = vec![crate::backup::BackupUnit::new(
-                &s,
-                &config_dir,
-                "workstation",
-                state_dir,
-            )];
+            let units = vec![
+                crate::backup::BackupUnit::new(&s, &config_dir, "workstation", state_dir).unwrap(),
+            ];
             let plan = crate::reconciler::Plan {
                 phases: Vec::new(),
                 warnings: Vec::new(),
@@ -23609,6 +23774,10 @@ mod backup_timers {
     struct NoopExecutor;
 
     impl crate::reconciler::RunExecutor for NoopExecutor {
+        fn module_checkouts(&self) -> crate::reconciler::ModuleCheckouts<'_> {
+            crate::reconciler::ModuleCheckouts::NotOwned
+        }
+
         fn apply(
             &mut self,
             _plan: &crate::reconciler::Plan,
@@ -23723,9 +23892,6 @@ impl DaemonHooks for TickCountingHooks {
         Ok(vec![])
     }
     fn extend_registry_custom_managers(&self, _: &mut ProviderRegistry, _: &config::PackagesSpec) {}
-    fn expand_tilde(&self, path: &Path) -> PathBuf {
-        crate::expand_tilde(path)
-    }
 }
 
 /// Drive one reconcile tick against a shared tick cache, the way the daemon

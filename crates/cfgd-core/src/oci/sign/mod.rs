@@ -47,9 +47,13 @@ pub fn sign_artifact(artifact_ref: &str, key_path: Option<&str>) -> Result<(), O
     apply_registry_scheme(&mut cmd, artifact_ref);
     cmd.arg(artifact_ref);
 
-    let output = crate::command_output(&mut cmd).map_err(|e| OciError::SigningError {
-        message: format!("failed to run cosign: {e}"),
-    })?;
+    let output = if key_path.is_some() {
+        crate::cosign_output_with_timeout(&mut cmd, "sign")
+    } else {
+        // unbounded-cosign-ok: keyless signing waits on a person's OIDC login
+        crate::command_output(&mut cmd).map_err(|e| format!("failed to run cosign sign: {e}"))
+    }
+    .map_err(|message| OciError::SigningError { message })?;
 
     if !output.status.success() {
         return Err(OciError::SigningError {
@@ -78,12 +82,8 @@ pub fn public_key_of(key_ref: &str) -> Result<String, OciError> {
     // no-registry-ok: the key is read from a file, a KMS or a token, so this
     // subcommand names no artifact and reaches no registry.
     cmd.arg("public-key").arg("--key").arg(key_ref);
-    let output =
-        crate::command_output_with_timeout(&mut cmd, crate::COMMAND_TIMEOUT).map_err(|e| {
-            OciError::SigningError {
-                message: format!("failed to run cosign: {e}"),
-            }
-        })?;
+    let output = crate::cosign_output_with_timeout(&mut cmd, "public-key")
+        .map_err(|message| OciError::SigningError { message })?;
 
     if !output.status.success() {
         return Err(OciError::SigningError {
@@ -165,9 +165,13 @@ pub fn verify_signature(artifact_ref: &str, opts: &VerifyOptions<'_>) -> Result<
     apply_registry_scheme(&mut cmd, artifact_ref);
     cmd.arg(artifact_ref);
 
-    let output = crate::command_output(&mut cmd).map_err(|e| OciError::VerificationFailed {
-        reference: artifact_ref.to_string(),
-        message: format!("failed to run cosign: {e}"),
+    // A timeout's message names no COSIGN_REJECTIONS word, so `check_signature`
+    // reads it as undetermined.
+    let output = crate::cosign_output_with_timeout(&mut cmd, "verify").map_err(|message| {
+        OciError::VerificationFailed {
+            reference: artifact_ref.to_string(),
+            message,
+        }
     })?;
 
     if !output.status.success() {
@@ -222,7 +226,12 @@ const COSIGN_REJECTIONS: &[&str] = &[
 /// `verify_signature` itself stays the right call where any failure is fatal.
 #[must_use]
 pub fn check_signature(artifact_ref: &str, opts: &VerifyOptions<'_>) -> SignatureCheck {
-    match verify_signature(artifact_ref, opts) {
+    signature_check_of(verify_signature(artifact_ref, opts))
+}
+
+/// The [`SignatureCheck`] a [`verify_signature`] outcome stands for.
+fn signature_check_of(outcome: Result<(), OciError>) -> SignatureCheck {
+    match outcome {
         Ok(()) => SignatureCheck::Valid,
         Err(OciError::ToolNotFound { tool }) => {
             SignatureCheck::Undetermined(format!("{tool} is not installed"))
@@ -313,9 +322,13 @@ pub fn attach_attestation(
         .arg("slsaprovenance1")
         .arg(artifact_ref);
 
-    let output = crate::command_output(&mut cmd).map_err(|e| OciError::AttestationError {
-        message: format!("failed to run cosign attest: {e}"),
-    })?;
+    let output = if key_path.is_some() {
+        crate::cosign_output_with_timeout(&mut cmd, "attest")
+    } else {
+        // unbounded-cosign-ok: keyless attesting waits on a person's OIDC login
+        crate::command_output(&mut cmd).map_err(|e| format!("failed to run cosign attest: {e}"))
+    }
+    .map_err(|message| OciError::AttestationError { message })?;
 
     if !output.status.success() {
         return Err(OciError::AttestationError {
@@ -387,9 +400,8 @@ pub fn verify_attestation(
     apply_registry_scheme(&mut cmd, artifact_ref);
     cmd.arg("--type").arg(predicate_type).arg(artifact_ref);
 
-    let output = crate::command_output(&mut cmd).map_err(|e| OciError::AttestationError {
-        message: format!("failed to run cosign verify-attestation: {e}"),
-    })?;
+    let output = crate::cosign_output_with_timeout(&mut cmd, "verify-attestation")
+        .map_err(|message| OciError::AttestationError { message })?;
 
     if !output.status.success() {
         return Err(OciError::AttestationError {

@@ -30,7 +30,7 @@ pub fn cmd_source_replace(
     // Resolved here as well as in `cmd_source_add` (resolution is idempotent) so
     // the success line and its structured payload report the URL that was
     // actually subscribed to, not the shorthand.
-    let new_url = &*cfgd_core::resolve_repo_reference(new_url);
+    let new_url = &*cfgd_core::resolve_repo_reference(new_url)?;
     printer.heading_owner_prefixed("Replace", &OwnerLabel::new("source", old_name));
 
     // Capture old source's profile and priority before removing

@@ -119,7 +119,7 @@ fn check_provider_goldens(provider: &dyn SkillProvider) {
     for kind in ALL_KINDS {
         let model = skill_model_for(kind, env!("CARGO_PKG_VERSION"));
         for scope in [SkillScope::Project, SkillScope::User] {
-            if provider.target_path(kind, scope).is_none() {
+            if provider.target_path(kind, scope).unwrap().is_none() {
                 continue;
             }
             // Snapshot the bytes the provider actually writes to a fresh target. A

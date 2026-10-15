@@ -323,7 +323,7 @@ fn resolved_path_uses_provided_path() {
         permissions: "600".to_string(),
     };
     assert_eq!(
-        spec.resolved_path(),
+        spec.resolved_path().unwrap(),
         PathBuf::from("/custom/path/id_ed25519")
     );
 }
@@ -339,7 +339,7 @@ fn resolved_path_default_ed25519() {
         passphrase: None,
         permissions: "600".to_string(),
     };
-    let path = spec.resolved_path();
+    let path = spec.resolved_path().unwrap();
     assert!(
         path.to_str().unwrap().ends_with(".ssh/id_ed25519"),
         "expected path ending in .ssh/id_ed25519, got {}",
@@ -358,7 +358,7 @@ fn resolved_path_default_rsa() {
         passphrase: None,
         permissions: "600".to_string(),
     };
-    let path = spec.resolved_path();
+    let path = spec.resolved_path().unwrap();
     assert!(
         path.to_str().unwrap().ends_with(".ssh/id_rsa"),
         "expected path ending in .ssh/id_rsa, got {}",

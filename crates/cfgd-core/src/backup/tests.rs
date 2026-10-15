@@ -136,7 +136,7 @@ impl Harness {
         let config_dir = self.config_dir();
         let state_dir = self.state_dir();
         crate::with_test_home(&self.root, || {
-            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir);
+            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir).unwrap();
             let mut report = BackupRunReport::default();
             let record = run_backup(&unit, &self.store, &self.printer, &mut report)
                 .expect("run must be recorded");
@@ -149,7 +149,7 @@ impl Harness {
         let config_dir = self.config_dir();
         let state_dir = self.state_dir();
         crate::with_test_home(&self.root, || {
-            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir);
+            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir).unwrap();
             list_snapshots(&unit, &self.store).expect("snapshot list")
         })
     }
@@ -160,12 +160,7 @@ impl Harness {
         let config_dir = self.config_dir();
         let state_dir = self.state_dir();
         crate::with_test_home(&self.root, || {
-            let units = [BackupUnit::new(
-                spec,
-                &config_dir,
-                "workstation",
-                &state_dir,
-            )];
+            let units = [BackupUnit::new(spec, &config_dir, "workstation", &state_dir).unwrap()];
             let scan = orphaned_snapshots(&self.store, &units);
             scan.report_unreadable(&self.printer);
             collect_orphans(&self.store, scan, &self.printer)
@@ -182,7 +177,7 @@ impl Harness {
         let config_dir = self.config_dir();
         let state_dir = self.state_dir();
         crate::with_test_home(&self.root, || {
-            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir);
+            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir).unwrap();
             let snapshots = list_snapshots(&unit, &self.store)?;
             let selected = select_snapshot(&spec.name, &snapshots, at)?;
             restore_backup(&unit, &self.store, &self.printer, selected, to)
@@ -217,7 +212,7 @@ fn snapshots(dir: &Path) -> Vec<String> {
 #[test]
 fn destination_defaults_under_the_state_dir() {
     let s = spec("db", Path::new("/var/lib/app/data.db"));
-    let unit = BackupUnit::new(&s, Path::new("/cfg"), "workstation", Path::new("/state"));
+    let unit = BackupUnit::new(&s, Path::new("/cfg"), "workstation", Path::new("/state")).unwrap();
     assert_eq!(
         unit.destination_dir(),
         PathBuf::from("/state").join("backups").join("db")
@@ -230,7 +225,7 @@ fn destination_defaults_under_the_state_dir() {
 fn explicit_destination_wins_over_the_default() {
     let mut s = spec("db", Path::new("/var/lib/app/data.db"));
     s.destination = Some(PathBuf::from("/srv/backups/app"));
-    let unit = BackupUnit::new(&s, Path::new("/cfg"), "workstation", Path::new("/state"));
+    let unit = BackupUnit::new(&s, Path::new("/cfg"), "workstation", Path::new("/state")).unwrap();
     assert_eq!(unit.destination_dir(), PathBuf::from("/srv/backups/app"));
 }
 
@@ -240,7 +235,8 @@ fn tilde_in_source_and_destination_expands_to_the_home_dir() {
     let mut s = spec("db", Path::new("~/data.db"));
     s.destination = Some(PathBuf::from("~/snapshots"));
     crate::with_test_home(home.path(), || {
-        let unit = BackupUnit::new(&s, Path::new("/cfg"), "workstation", Path::new("/state"));
+        let unit =
+            BackupUnit::new(&s, Path::new("/cfg"), "workstation", Path::new("/state")).unwrap();
         assert_eq!(unit.source(), home.path().join("data.db"));
         assert_eq!(unit.destination_dir(), home.path().join("snapshots"));
     });
@@ -1076,7 +1072,7 @@ fn an_orphaned_row_takes_no_retention_slot() {
     let config_dir = h.config_dir();
     let state_dir = h.state_dir();
     let newly_orphaned = crate::with_test_home(&h.root, || {
-        let unit = BackupUnit::new(&s, &config_dir, "workstation", &state_dir);
+        let unit = BackupUnit::new(&s, &config_dir, "workstation", &state_dir).unwrap();
         prune_retention(&h.store, &unit, &h.printer)
     });
     assert_eq!(newly_orphaned, 1);
@@ -1713,7 +1709,7 @@ fn run_against_dir(
     crate::with_test_home(home, || {
         let store = StateStore::open_in_dir(state_dir).expect("file-backed store");
         let (printer, _) = Printer::for_test();
-        let unit = BackupUnit::new(spec, config_dir, "workstation", state_dir);
+        let unit = BackupUnit::new(spec, config_dir, "workstation", state_dir).unwrap();
         run_backup(&unit, &store, &printer, &mut BackupRunReport::default())
     })
 }
@@ -1736,7 +1732,7 @@ fn a_run_is_refused_while_the_unit_lock_is_held() {
     let config_dir = h.config_dir();
     let state_dir = h.state_dir();
     let err = crate::with_test_home(&h.root, || {
-        let unit = BackupUnit::new(&s, &config_dir, "workstation", &state_dir);
+        let unit = BackupUnit::new(&s, &config_dir, "workstation", &state_dir).unwrap();
         run_backup(&unit, &h.store, &h.printer, &mut BackupRunReport::default())
             .expect_err("a held unit lock must refuse the run")
     });
@@ -1814,7 +1810,7 @@ fn a_concurrent_run_of_one_unit_is_refused_and_the_in_flight_snapshot_stays_whol
             std::time::Instant::now() < deadline,
             "the first run's preBackup hook never started"
         );
-        // sleep-ok: bounded deadline poll on a filesystem side effect, not a fixed-duration guess
+        // sleep-ok: bounded deadline poll on a filesystem side effect; it ends once the file shows
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
 
@@ -2264,7 +2260,7 @@ fn restore_records_no_run_and_keeps_its_safety_copy_out_of_the_snapshots() {
     );
     assert_eq!(
         list_snapshots(
-            &BackupUnit::new(&s, &h.config_dir(), "workstation", &h.state_dir()),
+            &BackupUnit::new(&s, &h.config_dir(), "workstation", &h.state_dir()).unwrap(),
             &h.store
         )
         .expect("snapshots")
@@ -2808,9 +2804,9 @@ fn a_symlinked_source_round_trips_through_backup_and_restore() {
     let config_dir = h.config_dir();
     let state_dir = h.state_dir();
     crate::with_test_home(&h.root, || {
-        let unit = BackupUnit::new(&s, &config_dir, "workstation", &state_dir);
+        let unit = BackupUnit::new(&s, &config_dir, "workstation", &state_dir).unwrap();
         assert_eq!(
-            restore_target(&unit, None).resolved_display(),
+            restore_target(&unit, None).unwrap().resolved_display(),
             outcome.restored_to
         );
     });
@@ -2921,7 +2917,7 @@ fn restore_reports_a_snapshot_that_vanished_between_selection_and_the_lock() {
     let config_dir = h.config_dir();
     let state_dir = h.state_dir();
     let err = crate::with_test_home(&h.root, || {
-        let unit = BackupUnit::new(&s, &config_dir, "workstation", &state_dir);
+        let unit = BackupUnit::new(&s, &config_dir, "workstation", &state_dir).unwrap();
         let snapshots = list_snapshots(&unit, &h.store).expect("list");
         let selected = select_snapshot("db", &snapshots, None)
             .expect("select")
@@ -3019,16 +3015,16 @@ fn restore_target_reports_the_link_it_followed_alongside_what_was_asked_for() {
     let state_dir = h.state_dir();
     crate::with_test_home(&h.root, || {
         let plain = spec("db", &real);
-        let unit = BackupUnit::new(&plain, &config_dir, "workstation", &state_dir);
-        let target = restore_target(&unit, None);
+        let unit = BackupUnit::new(&plain, &config_dir, "workstation", &state_dir).unwrap();
+        let target = restore_target(&unit, None).unwrap();
         assert!(
             !target.was_redirected_by_a_link(),
             "an ordinary source resolves to itself: {target:?}"
         );
 
         let linked = spec("db", &link);
-        let unit = BackupUnit::new(&linked, &config_dir, "workstation", &state_dir);
-        let target = restore_target(&unit, None);
+        let unit = BackupUnit::new(&linked, &config_dir, "workstation", &state_dir).unwrap();
+        let target = restore_target(&unit, None).unwrap();
         assert!(target.was_redirected_by_a_link(), "{target:?}");
         assert_eq!(target.requested, link);
         assert_eq!(
@@ -3067,7 +3063,7 @@ fn render_backup_run(h: &Harness, specs: &[&BackupSpec]) -> (String, crate::stat
     let status = crate::with_test_home(&h.root, || {
         let units: Vec<BackupUnit<'_>> = specs
             .iter()
-            .map(|s| BackupUnit::new(s, &config_dir, "workstation", &state_dir))
+            .map(|s| BackupUnit::new(s, &config_dir, "workstation", &state_dir).unwrap())
             .collect();
         let ctx = crate::reconciler::RunContext {
             title: crate::reconciler::RunTitle::Backup,
@@ -3325,7 +3321,7 @@ fn a_uniquified_snapshot_overhangs_the_column_it_was_predicted_for() {
     let config_dir = h.config_dir();
     let state_dir = h.state_dir();
     let predicted = crate::with_test_home(&h.root, || {
-        let unit = BackupUnit::new(&s, &config_dir, "workstation", &state_dir);
+        let unit = BackupUnit::new(&s, &config_dir, "workstation", &state_dir).unwrap();
         predicted_snapshot_subject(&unit)
     });
     assert_eq!(predicted, "snapshot data.db");
@@ -3450,7 +3446,7 @@ impl Harness {
         let config_dir = self.config_dir();
         let state_dir = self.state_dir();
         crate::with_test_home(&self.root, || {
-            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir);
+            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir).unwrap();
             rollback::rollback_backup(&unit, &self.printer)
         })
     }
@@ -3460,7 +3456,7 @@ impl Harness {
         let config_dir = self.config_dir();
         let state_dir = self.state_dir();
         crate::with_test_home(&self.root, || {
-            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir);
+            let unit = BackupUnit::new(spec, &config_dir, "workstation", &state_dir).unwrap();
             rollback::rollback_copy(&unit)
         })
     }

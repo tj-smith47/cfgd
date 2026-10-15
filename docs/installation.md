@@ -16,7 +16,9 @@ brew install tj-smith47/tap/cfgd
 
 The cask installs the bash, zsh and fish completions and the man page from the
 release archive, so installing runs no `cfgd` command and a headless
-`brew install` on macOS completes without a Gatekeeper prompt.
+`brew install` on macOS completes without a Gatekeeper prompt. The macOS binary
+is not notarized, so the cask clears its `com.apple.quarantine` attribute after
+install; the first `cfgd` run, headless or not, then starts without a dialog.
 
 The operator and CSI driver are Linux container images installed through the
 Helm chart; see [Containers and Kubernetes](#containers-and-kubernetes).
@@ -256,7 +258,7 @@ Notes:
   `--certificate-identity-regexp` pins the signer to cfgd's three signing
   workflows, each on its legitimate ref: `publish-crate.yml` on `master` (the
   per-crate leg that signs stable assets), `release.yml` on a `v*` tag (the
-  orchestrator), and `nightly.yml` on `master` (the rolling prerelease). A
+  orchestrator), and `nightly.yml` on `master` (the nightly prereleases). A
   publisher-compromise attacker cannot mint a passing signature without
   running one of those exact workflows on its canonical ref in cfgd's own
   repository; replacing the binary and its `.sha256` on a mirror, or signing

@@ -200,6 +200,7 @@ pub(crate) fn collect_paths_output(cli: &Cli, sources: &DirSources) -> anyhow::R
         file: cli.config.posix().to_string(),
     };
 
+    // home-optional-ok: a display cell; `cfgd paths` reports a root with no location as absent
     let state_dir = cfgd_core::resolve_state_dir(cli.state_dir.as_deref(), scope).ok();
     let state = StatePaths {
         dir: state_dir.as_ref().map(|d| d.posix().to_string()),
@@ -312,10 +313,10 @@ pub fn build_paths_doc(output: &PathsOutput) -> Doc {
         s.kv_block([
             ("Directory", or_unavailable(&cache.dir)),
             ("Source", cache.source.label().to_string()),
-            // header-row-ok: the sources CACHE directory, not the sources a run composed
+            // header-row-ok: the sources CACHE directory, a place on disk
             ("Sources", or_unavailable(&cache.sources)),
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // modules-row-ok: the cache DIRECTORY modules are fetched into, not a resolved profile's module list
+            // modules-row-ok: the cache DIRECTORY modules are fetched into, a place on disk
             ("Modules", or_unavailable(&cache.modules)),
         ])
     });

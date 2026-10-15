@@ -7,9 +7,8 @@
 //! the process exits 130 (128 + SIGINT). A second apply must then succeed,
 //! proving the lock was freed.
 //!
-//! Runs the real binary as a child process so a real SIGINT can be delivered;
-//! `cmd_apply` ends in `std::process::exit`, so an in-process call can't be
-//! signalled without killing the harness.
+//! Runs the real binary as a child process so a real SIGINT can be delivered
+//! to a process of its own, and the exit code `main` sets can be read.
 
 use std::io::Read;
 use std::path::Path;

@@ -79,7 +79,7 @@ impl KernelModuleConfigurator {
             content.push('\n');
         }
 
-        // user-scope-ok: read by kmod as root at boot, never by a user session
+        // user-scope-ok: read by kmod as root at boot, outside any user session
         cfgd_core::atomic_write_str(&conf_path, &content)?;
         Ok(())
     }

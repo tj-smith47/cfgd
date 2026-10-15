@@ -7,17 +7,20 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
 
 [[ -z "$COMMAND" ]] && exit 0
 
-# Block destructive filesystem operations EXCEPT when targeted at this repo's
-# target/ build dir — cargo build artifacts are reproducible, so allowing
-# `rm -rf target/...` keeps cleanup ergonomic. The target-path check requires
-# `target/` (or its absolute form) as the argument's prefix, so `rm -rf ..`,
-# `rm -rf /`, `rm -rf $HOME` still fail.
+# Block destructive filesystem operations EXCEPT inside the three directories the
+# agent owns: this repo's target/ (cargo artifacts are reproducible), the
+# session scratch tree ~/.cache/cfgd-debug/ (seat logs, probe copy trees) and
+# the gitignored SDD plan workspaces under .superpowers/sdd/. Every argument
+# must sit at least one component below one of those roots, so `rm -rf ..`,
+# `rm -rf /`, `rm -rf $HOME`, `rm -rf ~/.cache` and `rm -rf .superpowers` fail.
 if echo "$COMMAND" | grep -qE '^rm -rf'; then
-    if echo "$COMMAND" | grep -qE '^rm -rf (target/|/opt/repos/cfgd/target/)[^[:space:]]+[[:space:]]*$'; then
+    # shellcheck disable=SC2016  # a regex; the $HOME spelling is matched literally
+    owned='(target/|/opt/repos/cfgd/target/|~/\.cache/cfgd-debug/|\$HOME/\.cache/cfgd-debug/|/root/\.cache/cfgd-debug/|\.superpowers/sdd/|/opt/repos/cfgd/\.superpowers/sdd/)[^[:space:]]+'
+    if echo "$COMMAND" | grep -qE "^rm -rf( ${owned})+[[:space:]]*\$"; then
         exit 0
     fi
     echo "Blocked: destructive operation. Use targeted deletes instead." >&2
-    echo "  (rm -rf is allowed when the path starts with target/ or /opt/repos/cfgd/target/)" >&2
+    echo "  (rm -rf is allowed below target/, ~/.cache/cfgd-debug/ or .superpowers/sdd/)" >&2
     exit 2
 fi
 

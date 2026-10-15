@@ -41,7 +41,7 @@ fi
 # =================================================================
 begin_test "GW-03: Enrollment with invalid token rejects"
 
-INVALID_DEVICE_ID="e2e-invalid-token-device-$$"
+gateway_device INVALID_DEVICE_ID "e2e-invalid-token-device-$$-${E2E_RUN_ID}"
 GW03_HTTP_CODE=$(curl -s -o "$GW_SCRATCH/gw03-body.txt" -w "%{http_code}" -X POST "$GW_URL/api/v1/enroll" \
     -H "Content-Type: application/json" \
     -d "{\"token\":\"cfgd_bs_totally_invalid_token_value\",\"deviceId\":\"${INVALID_DEVICE_ID}\",\"hostname\":\"e2e-invalid\",\"os\":\"linux\",\"arch\":\"x86_64\"}" 2>/dev/null || echo "000")
@@ -72,7 +72,7 @@ else
     GW04_TMPDIR=$(mktemp -d)
     GW04_KEY="$GW04_TMPDIR/e2e_ed25519"
     GW04_USERNAME="e2e-ssh-user-$$"
-    GW04_DEVICE_ID="e2e-ssh-device-$$"
+    gateway_device GW04_DEVICE_ID "e2e-ssh-device-$$-${E2E_RUN_ID}"
 
     # Step 1: Generate ephemeral ed25519 key
     ssh-keygen -t ed25519 -f "$GW04_KEY" -N "" -q 2>/dev/null
@@ -187,7 +187,7 @@ else
     mkdir -p "$GW05_GPGHOME"
     chmod 700 "$GW05_GPGHOME"
     GW05_USERNAME="e2e-gpg-user-$$"
-    GW05_DEVICE_ID="e2e-gpg-device-$$"
+    gateway_device GW05_DEVICE_ID "e2e-gpg-device-$$-${E2E_RUN_ID}"
 
     # Step 1: Generate ephemeral GPG key
     gpg --homedir "$GW05_GPGHOME" --batch --passphrase "" --quick-generate-key \

@@ -17,8 +17,8 @@
 //!   resolving only the leading token when the whole string isn't itself a
 //!   file.
 //!
-//! Every cell here spawns the real binary (never in-process — `cmd_apply`
-//! ends in `std::process::exit`) from a cwd distinct from both the config
+//! Every cell here spawns the real binary (never in-process: `cmd_apply`'s
+//! exit code is set in `main`) from a cwd distinct from both the config
 //! directory and `$HOME`, with `$HOME` also distinct from the config
 //! directory — the exact shape that reproduces exit 127 if either fix
 //! regresses.

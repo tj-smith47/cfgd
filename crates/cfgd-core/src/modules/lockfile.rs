@@ -2,14 +2,14 @@
 //! and module-spec diffing for sync output.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::PathDisplayExt;
 use crate::config::{ModuleLockEntry, ModuleLockfile};
 use crate::errors::{ConfigError, ModuleError, Result};
 use crate::output::Role;
 
-use super::git::{GitSource, fetch_git_source, git_cache_dir, parse_git_source, resolve_subdir};
+use super::git::{GitSource, fetch_git_source, git_checkout_dir, parse_git_source, resolve_subdir};
 use super::loader::{load_module, load_modules};
 use super::{LoadedModule, SourceModuleRoot};
 
@@ -110,13 +110,7 @@ pub(super) fn collect_files_for_hash(
 
 /// Verify the integrity of a locked remote module against its lockfile entry.
 pub fn verify_lockfile_integrity(lock_entry: &ModuleLockEntry, cache_base: &Path) -> Result<()> {
-    let git_src = parse_git_source(&lock_entry.url)?;
-    let local_path = resolve_subdir(
-        git_cache_dir(cache_base, &git_src.repo_url),
-        &lock_entry.subdir,
-        &lock_entry.name,
-        &lock_entry.url,
-    )?;
+    let local_path = locked_module_dir(lock_entry, cache_base)?;
 
     if !local_path.exists() {
         return Err(ModuleError::GitFetchFailed {
@@ -201,13 +195,24 @@ pub fn load_locked_modules(
     Ok(())
 }
 
+/// The directory [`load_locked_modules`] loads a locked entry from: the tree of
+/// its locked commit, then its subdir.
+pub fn locked_module_dir(entry: &ModuleLockEntry, cache_base: &Path) -> Result<PathBuf> {
+    let git_src = parse_git_source(&entry.url)?;
+    resolve_subdir(
+        git_checkout_dir(cache_base, &git_src.repo_url, Some(&locked_ref(entry)))?,
+        &entry.subdir,
+        &entry.name,
+        &entry.url,
+    )
+}
+
 /// The ref a locked entry is checked out at: its recorded commit when the lock
 /// carries a full object id, and otherwise the tag it was locked from.
 ///
-/// The fallback is not a legacy shim — `commit` has always been written by
-/// `get_head_commit_sha`, so every lockfile cfgd wrote carries a full id — it is
-/// for a lockfile a human edited or truncated, where a short or empty `commit`
-/// must degrade to the tag rather than fail the load with an unresolvable ref.
+/// Every lockfile cfgd writes carries a full id. The tag fallback is for one a
+/// human edited or truncated: a short or empty `commit` there degrades to the
+/// tag, so the load does not fail on an unresolvable ref.
 fn locked_ref(entry: &ModuleLockEntry) -> String {
     let commit = entry.commit.trim();
     if super::git::is_full_object_id(commit) {

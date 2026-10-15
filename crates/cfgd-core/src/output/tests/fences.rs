@@ -387,8 +387,8 @@ fn the_folding_writer_fence_recognizes_every_spelling() {
         // The hatch, on the construction line, on the writer's line, and on
         // the line above either.
         "    // unfolded-writer-ok: the JSON serializer is the sanitizer here\n    tracing_subscriber::fmt().json().init();",
-        "    fmt::layer()\n        .with_writer(Mutex::new(file)) // unfolded-writer-ok: a log file, not a terminal",
-        "    fmt::layer()\n        // unfolded-writer-ok: a log file, not a terminal\n        .with_writer(Mutex::new(file));",
+        "    fmt::layer()\n        .with_writer(Mutex::new(file)) // unfolded-writer-ok: a log file, which no terminal shows",
+        "    fmt::layer()\n        // unfolded-writer-ok: a log file, which no terminal shows\n        .with_writer(Mutex::new(file));",
         // The constructor named inside a string literal is a name, not a call.
         "    let s = \"tracing_subscriber::fmt()\";",
         // A `with_writer` this file never sees the construction of is still
@@ -2417,6 +2417,7 @@ const ENV_MUTATORS: &[&str] = &[
     "EnvVarGuard::set",
     "EnvVarGuard::unset",
     "clear_update_optouts",
+    "isolate_registry_host_env",
     "EditorGuard::set",
     "ProbePath::containing",
     "install_named_path_shim",
@@ -2578,15 +2579,18 @@ const SERIAL_FLOORS: &[(&str, usize)] = &[
     ("crates/cfgd-core/src/config/resolve.rs", 1),
     ("crates/cfgd-core/src/daemon/health_ipc.rs", 5),
     ("crates/cfgd-core/src/daemon/service/systemd.rs", 4),
-    ("crates/cfgd-core/src/daemon/tests.rs", 40),
+    ("crates/cfgd-core/src/daemon/tests.rs", 45),
+    ("crates/cfgd-core/src/http.rs", 2),
     ("crates/cfgd-core/src/modules/git.rs", 15),
-    ("crates/cfgd-core/src/modules/tests.rs", 1),
+    ("crates/cfgd-core/src/modules/tests.rs", 7),
     ("crates/cfgd-core/src/oci/auth/tests.rs", 12),
     ("crates/cfgd-core/src/oci/build.rs", 6),
-    ("crates/cfgd-core/src/oci/pull.rs", 2),
-    ("crates/cfgd-core/src/oci/sign/tests.rs", 25),
-    ("crates/cfgd-core/src/oci/tests.rs", 2),
-    ("crates/cfgd-core/src/output/printer.rs", 6),
+    ("crates/cfgd-core/src/oci/pack/tests.rs", 9),
+    ("crates/cfgd-core/src/oci/pull.rs", 34),
+    ("crates/cfgd-core/src/oci/push/tests.rs", 23),
+    ("crates/cfgd-core/src/oci/sign/tests.rs", 26),
+    ("crates/cfgd-core/src/oci/tests.rs", 4),
+    ("crates/cfgd-core/src/output/printer.rs", 7),
     ("crates/cfgd-core/src/output/render_doc.rs", 3),
     ("crates/cfgd-core/src/output/tests/color_gate.rs", 1),
     ("crates/cfgd-core/src/output/tests/hyperlinks.rs", 5),
@@ -2594,12 +2598,12 @@ const SERIAL_FLOORS: &[(&str, usize)] = &[
     ("crates/cfgd-core/src/output/theme.rs", 8),
     ("crates/cfgd-core/src/platform/session.rs", 8),
     ("crates/cfgd-core/src/providers/skill/gemini.rs", 1),
-    ("crates/cfgd-core/src/reconciler/managers.rs", 4),
+    ("crates/cfgd-core/src/reconciler/managers.rs", 5),
     ("crates/cfgd-core/src/reconciler/scripts/tests.rs", 7),
-    ("crates/cfgd-core/src/reconciler/tests.rs", 5),
+    ("crates/cfgd-core/src/reconciler/tests.rs", 8),
     ("crates/cfgd-core/src/server_client/tests.rs", 2),
     ("crates/cfgd-core/src/sources/tests.rs", 43),
-    ("crates/cfgd-core/src/test_helpers.rs", 17),
+    ("crates/cfgd-core/src/test_helpers.rs", 19),
     ("crates/cfgd-core/src/tests.rs", 3),
     ("crates/cfgd-core/src/upgrade/check.rs", 24),
     ("crates/cfgd-core/src/upgrade/dedup.rs", 3),
@@ -2607,66 +2611,67 @@ const SERIAL_FLOORS: &[(&str, usize)] = &[
     ("crates/cfgd-core/src/util/constants.rs", 3),
     ("crates/cfgd-core/src/util/env_session.rs", 4),
     ("crates/cfgd-core/src/util/git.rs", 2),
-    ("crates/cfgd-core/src/util/paths/tests.rs", 33),
-    ("crates/cfgd-core/src/util/process.rs", 16),
+    ("crates/cfgd-core/src/util/paths/tests.rs", 55),
+    ("crates/cfgd-core/src/util/process.rs", 17),
     ("crates/cfgd-core/tests/skill_provider_io.rs", 2),
     ("crates/cfgd-core/tests/update_dedup.rs", 13),
     ("crates/cfgd-csi/src/app.rs", 2),
+    ("crates/cfgd-csi/src/cache.rs", 2),
     ("crates/cfgd-csi/src/identity.rs", 2),
-    ("crates/cfgd-csi/src/node/tests.rs", 12),
+    ("crates/cfgd-csi/src/node/tests.rs", 13),
     ("crates/cfgd-csi/tests/grpc_integration.rs", 2),
-    ("crates/cfgd-operator/src/app.rs", 9),
+    ("crates/cfgd-operator/src/app.rs", 10),
     ("crates/cfgd-operator/src/controllers/tests.rs", 1),
     ("crates/cfgd-operator/src/env.rs", 14),
     ("crates/cfgd-operator/src/gateway/api/tests.rs", 3),
-    ("crates/cfgd-operator/src/gateway/api/tests_router.rs", 18),
+    ("crates/cfgd-operator/src/gateway/api/tests_router.rs", 37),
     ("crates/cfgd-operator/src/gateway/db/tests.rs", 4),
     ("crates/cfgd-operator/src/gateway/mod.rs", 11),
     ("crates/cfgd-operator/src/gateway/web/tests.rs", 11),
     ("crates/cfgd-operator/src/leader.rs", 12),
-    ("crates/cfgd-operator/src/runtime.rs", 14),
-    ("crates/cfgd-operator/src/test_helpers.rs", 3),
+    ("crates/cfgd-operator/src/runtime.rs", 17),
+    ("crates/cfgd-operator/src/test_helpers.rs", 4),
     ("crates/cfgd-operator/src/webhook/tests.rs", 2),
     ("crates/cfgd/src/ai/client.rs", 2),
-    ("crates/cfgd/src/cli/checkin.rs", 9),
+    ("crates/cfgd/src/cli/checkin.rs", 14),
     ("crates/cfgd/src/cli/config_migration.rs", 5),
-    ("crates/cfgd/src/cli/config_schema.rs", 1),
+    ("crates/cfgd/src/cli/config_schema.rs", 2),
     ("crates/cfgd/src/cli/daemon.rs", 1),
     ("crates/cfgd/src/cli/generate/tests.rs", 15),
-    ("crates/cfgd/src/cli/helpers/tests.rs", 11),
-    ("crates/cfgd/src/cli/image/pack.rs", 2),
-    ("crates/cfgd/src/cli/init/tests.rs", 34),
+    ("crates/cfgd/src/cli/helpers/tests.rs", 13),
+    ("crates/cfgd/src/cli/image/pack.rs", 11),
+    ("crates/cfgd/src/cli/init/tests.rs", 39),
     ("crates/cfgd/src/cli/kubectl.rs", 1),
-    ("crates/cfgd/src/cli/module/build.rs", 1),
+    ("crates/cfgd/src/cli/module/build.rs", 16),
     ("crates/cfgd/src/cli/module/keys.rs", 9),
-    ("crates/cfgd/src/cli/module/push_pull.rs", 5),
-    ("crates/cfgd/src/cli/module/tests.rs", 10),
+    ("crates/cfgd/src/cli/module/push_pull.rs", 27),
+    ("crates/cfgd/src/cli/module/tests.rs", 13),
     ("crates/cfgd/src/cli/paths.rs", 11),
-    ("crates/cfgd/src/cli/plan_ops/tests.rs", 3),
-    ("crates/cfgd/src/cli/plugin/tests.rs", 7),
+    ("crates/cfgd/src/cli/plan_ops/tests.rs", 4),
+    ("crates/cfgd/src/cli/plugin/tests.rs", 9),
     ("crates/cfgd/src/cli/profile/tests.rs", 4),
     ("crates/cfgd/src/cli/registry.rs", 1),
     ("crates/cfgd/src/cli/source/remove.rs", 1),
     ("crates/cfgd/src/cli/status.rs", 5),
-    ("crates/cfgd/src/cli/tests.rs", 113),
-    ("crates/cfgd/src/cli/upgrade.rs", 14),
+    ("crates/cfgd/src/cli/tests.rs", 119),
+    ("crates/cfgd/src/cli/upgrade.rs", 15),
     ("crates/cfgd/src/cli/verify.rs", 1),
     ("crates/cfgd/src/files/tests.rs", 1),
     ("crates/cfgd/src/main.rs", 7),
     ("crates/cfgd/src/mcp/server/tests.rs", 1),
-    ("crates/cfgd/src/packages/brew/tests.rs", 46),
-    ("crates/cfgd/src/packages/cargo.rs", 11),
+    ("crates/cfgd/src/packages/brew/tests.rs", 49),
+    ("crates/cfgd/src/packages/cargo.rs", 13),
     ("crates/cfgd/src/packages/choco.rs", 14),
     ("crates/cfgd/src/packages/flatpak.rs", 9),
     ("crates/cfgd/src/packages/go.rs", 17),
     ("crates/cfgd/src/packages/nix.rs", 14),
-    ("crates/cfgd/src/packages/npm.rs", 37),
-    ("crates/cfgd/src/packages/pipx.rs", 10),
+    ("crates/cfgd/src/packages/npm.rs", 38),
+    ("crates/cfgd/src/packages/pipx.rs", 20),
     ("crates/cfgd/src/packages/scoop.rs", 15),
-    ("crates/cfgd/src/packages/shared/tests.rs", 31),
-    ("crates/cfgd/src/packages/simple/tests.rs", 19),
+    ("crates/cfgd/src/packages/shared/tests.rs", 41),
+    ("crates/cfgd/src/packages/simple/tests.rs", 23),
     ("crates/cfgd/src/packages/snap.rs", 11),
-    ("crates/cfgd/src/packages/tests.rs", 5),
+    ("crates/cfgd/src/packages/tests.rs", 17),
     ("crates/cfgd/src/packages/versions/tests.rs", 32),
     ("crates/cfgd/src/packages/winget.rs", 8),
     ("crates/cfgd/src/secrets/age.rs", 8),
@@ -2681,20 +2686,23 @@ const SERIAL_FLOORS: &[(&str, usize)] = &[
     ("crates/cfgd/src/system/node/tests.rs", 9),
     ("crates/cfgd/src/system/shell.rs", 14),
     ("crates/cfgd/src/system/systemd_unit.rs", 7),
+    ("crates/cfgd/src/system/tests.rs", 1),
     ("crates/cfgd/src/system/windows_registry.rs", 3),
     ("crates/cfgd/src/system/xfconf.rs", 4),
-    ("crates/cfgd/tests/apply_snapshots.rs", 1),
+    ("crates/cfgd/tests/apply_snapshots.rs", 2),
     ("crates/cfgd/tests/backup_snapshots.rs", 2),
     ("crates/cfgd/tests/config_edit_snapshots.rs", 3),
-    ("crates/cfgd/tests/image_pack_snapshots.rs", 1),
+    ("crates/cfgd/tests/image_pack_snapshots.rs", 4),
     ("crates/cfgd/tests/init_snapshots.rs", 3),
+    ("crates/cfgd/tests/module_build_snapshots.rs", 1),
     ("crates/cfgd/tests/module_crud_snapshots.rs", 1),
     ("crates/cfgd/tests/module_keys_snapshots.rs", 7),
+    ("crates/cfgd/tests/module_push_pull_snapshots.rs", 2),
     ("crates/cfgd/tests/module_registry_snapshots.rs", 5),
     ("crates/cfgd/tests/module_search_snapshots.rs", 3),
     ("crates/cfgd/tests/module_upgrade_snapshots.rs", 4),
     ("crates/cfgd/tests/patch_strategy.rs", 4),
-    ("crates/cfgd/tests/plan_snapshots.rs", 1),
+    ("crates/cfgd/tests/plan_snapshots.rs", 2),
     ("crates/cfgd/tests/plugin_deploy_snapshots.rs", 2),
     ("crates/cfgd/tests/plugin_snapshots.rs", 1),
     ("crates/cfgd/tests/profile_edit_snapshots.rs", 4),
@@ -4706,6 +4714,21 @@ impl<'ast> syn::visit::Visit<'ast> for PatNames {
         self.0.push(pat.ident.to_string());
         syn::visit::visit_pat_ident(self, pat);
     }
+
+    fn visit_pat_guard(&mut self, pat: &'ast syn::PatGuard) {
+        // a guard's `if` expression binds nothing in the arm; only its pattern does
+        self.visit_pat(&pat.pat);
+    }
+}
+
+/// The `if` expressions of every guard a pattern carries, outermost first.
+struct PatGuards<'ast>(Vec<&'ast syn::Expr>);
+
+impl<'ast> syn::visit::Visit<'ast> for PatGuards<'ast> {
+    fn visit_pat_guard(&mut self, pat: &'ast syn::PatGuard) {
+        self.0.push(&pat.guard);
+        self.visit_pat(&pat.pat);
+    }
 }
 
 /// A function's parameter bindings in order, and whether it takes `self`.
@@ -5140,7 +5163,9 @@ impl<'ast> syn::visit::Visit<'ast> for Builder {
         for arm in &expr.arms {
             self.scoped(|builder| {
                 builder.declare(&arm.pat, vec![reads.clone()]);
-                if let Some((_, guard)) = &arm.guard {
+                let mut guards = PatGuards(Vec::new());
+                syn::visit::Visit::visit_pat(&mut guards, &arm.pat);
+                for guard in guards.0 {
                     builder.visit_expr(guard);
                 }
                 builder.visit_expr(&arm.body);
@@ -9445,10 +9470,9 @@ fn the_floor_sentence_matcher_reads_a_literal_and_not_a_comment() {
 fn every_raw_spawn_in_test_code_holds_the_path_gate() {
     const HATCH: &str = "raw-spawn-ok:";
     const HATCH_CEILING: usize = 2;
-    const FLOORS: [(&str, usize); 15] = [
+    const FLOORS: [(&str, usize); 14] = [
         ("crates/cfgd/src/cli/init/tests.rs", 3),
         ("crates/cfgd/src/cli/tests.rs", 3),
-        ("crates/cfgd/src/cli/upgrade.rs", 1),
         ("crates/cfgd/src/packages/shared/tests.rs", 30),
         ("crates/cfgd/src/system/gpg_keys/tests.rs", 2),
         ("crates/cfgd/src/system/tests.rs", 5),
@@ -10938,6 +10962,7 @@ impl<'f> DefaultingReads<'f> {
             }
             syn::Pat::Reference(r) => self.bind(&r.pat, ty),
             syn::Pat::Paren(p) => self.bind(&p.pat, ty),
+            syn::Pat::Guard(g) => self.bind(&g.pat, ty),
             syn::Pat::Or(or) => {
                 for case in &or.cases {
                     self.bind(case, ty.clone());

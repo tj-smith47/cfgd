@@ -1,7 +1,7 @@
 //! What a config document does not declare that the running binary's schema
 //! carries.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use cfgd_core::config::CfgdConfig;
 use cfgd_core::output::{Doc, Printer, Role};
@@ -119,9 +119,14 @@ pub struct GateInvocation<'a> {
     /// `--yes` / `CFGD_YES`.
     pub assume_yes: bool,
     pub is_daemon: bool,
-    /// A preview ([`is_preview`]), which writes nothing, so the gate answers
-    /// `Prompt` and `Update` as `Warn`, the way it does for the daemon.
+    /// A preview or a saved-plan replay ([`is_preview`]), which leaves the
+    /// config document unchanged, so the gate answers `Prompt` and `Update`
+    /// as `Warn`, the way it does for the daemon.
     pub preview: bool,
+    /// `cfgd doctor`, a diagnostic that writes nothing: the gate answers
+    /// `Prompt` and `Update` as `Warn` for it too, so a behind-schema config
+    /// is reported and neither the document nor the state store is touched.
+    pub diagnostic: bool,
     /// `--state-dir`, where a prompt's answer is held.
     pub state_dir: Option<&'a Path>,
     pub scope: cfgd_core::Scope,
@@ -135,25 +140,31 @@ impl<'a> GateInvocation<'a> {
             assume_yes: cli.yes,
             is_daemon,
             preview: is_preview(cli.command.as_ref()),
+            diagnostic: matches!(cli.command, Some(Command::Doctor { .. })),
             state_dir: cli.state_dir.as_deref(),
             scope: cli.scope(),
         }
     }
 }
 
-/// Whether `command` is a preview: a run that shows what it would do and
-/// changes nothing. `cfgd plan` always is; `apply`, `init` and `profile
-/// migrate` are under `--dry-run`. A preview that let the gate write would
-/// change the document it promised to leave alone, so the gate folds for it
-/// the way it folds for the daemon.
+/// Whether `command` leaves the config document as it found it: a preview,
+/// which shows what it would do and changes nothing, or a saved-plan replay.
+/// `cfgd plan` always is; `apply`, `init` and `profile migrate` are under
+/// `--dry-run`, and `apply` is under `--plan` too. A preview that let the gate
+/// write would change the document it promised to leave alone. A replay
+/// executes a plan a preview recorded (`cfgd plan` or `cfgd apply --dry-run`),
+/// and a preview never migrates, so an alignment written first would make the
+/// replay refuse its own plan as stale. The gate folds for both the way it
+/// folds for the daemon: the `Warn` report still prints, and the next plain
+/// `apply` migrates.
 ///
-/// Every verb carrying a `--dry-run` flag belongs here, which
-/// `every_dry_run_verb_runs_the_migration_gate_as_a_preview` holds against
+/// Every verb carrying a `--dry-run` or `--plan` flag belongs here, which
+/// `every_preview_or_replay_verb_runs_the_migration_gate_as_a_preview` holds against
 /// clap's own command tree.
 pub fn is_preview(command: Option<&Command>) -> bool {
     match command {
         Some(Command::Plan(_)) => true,
-        Some(Command::Apply(args)) => args.dry_run,
+        Some(Command::Apply(args)) => args.dry_run || args.plan.is_some(),
         Some(Command::Init { dry_run, .. }) => *dry_run,
         Some(Command::Profile {
             command: ProfileCommand::Migrate { dry_run, .. },
@@ -317,6 +328,101 @@ fn consult_recorded(
     Some((Some(store), answer))
 }
 
+/// The recorded answer, read with no home directory resolved: through a
+/// read-only open of a store that already exists, so a run that goes on to
+/// refuse for want of a home leaves the state root as it found it. A store
+/// behind the schema holds no answer yet. `None` is a state directory that
+/// could not be resolved or a store that could not be read, already reported.
+fn consult_recorded_read_only(
+    printer: &Printer,
+    invocation: &GateInvocation<'_>,
+    config_path: &Path,
+    api_version: &str,
+    keys: &[String],
+) -> Option<Option<bool>> {
+    let dir = match crate::cli::helpers::run_state_dir(invocation.state_dir, invocation.scope) {
+        Ok(dir) => dir,
+        Err(e) => {
+            printer.alert(format!("Could not resolve the state directory: {e}"));
+            return None;
+        }
+    };
+    let db = dir.join(cfgd_core::state::STATE_DB_FILENAME);
+    if !db.exists() {
+        return Some(None);
+    }
+    let store = match StateStore::open_read_only(&db) {
+        Ok(store) => store,
+        Err(e) => {
+            printer.alert(format!("Could not read the state store: {e}"));
+            return None;
+        }
+    };
+    match store.schema_is_current() {
+        Ok(true) => Some(recorded_answer(
+            printer,
+            &store,
+            config_path,
+            api_version,
+            keys,
+        )),
+        Ok(false) => Some(None),
+        Err(e) => {
+            printer.alert(format!("Could not read the recorded migration answer: {e}"));
+            None
+        }
+    }
+}
+
+/// A prompt answer given while no home directory resolved, kept until the
+/// command has run.
+///
+/// With no home, whether the run may write at all is decided after the gate,
+/// so the answer is held on the [`StartupDocument`] and recorded by
+/// [`record_held_answer_after_run`] once the command returns. A command
+/// refused for want of the home records nothing, and the reader is asked
+/// again next time.
+#[derive(Debug)]
+pub struct HeldMigrationAnswer {
+    config_path: PathBuf,
+    api_version: String,
+    accepted: bool,
+    keys: Vec<String>,
+}
+
+/// Record the answer [`gate_on_load`] held for want of a home directory,
+/// once [`crate::cli::execute`] has returned `result`.
+///
+/// A command that succeeded, or failed for any reason but the missing home,
+/// records it: the reader answered, and nothing about the answer depended on
+/// how the command went. A command refused for want of the home drops it, so
+/// a store the refusal would have left alone is not written to.
+pub fn record_held_answer_after_run(
+    printer: &Printer,
+    cli: &Cli,
+    startup: &StartupDocument,
+    result: &anyhow::Result<()>,
+) {
+    let Some(held) = startup.take_migration_answer() else {
+        return;
+    };
+    if let Err(e) = result
+        && crate::cli::run_context::is_unresolved_home(e)
+    {
+        return;
+    }
+    if let Some(store) = open_store(printer, &GateInvocation::of(cli, false)) {
+        record_answer(
+            printer,
+            &store,
+            &held.config_path,
+            &held.api_version,
+            held.accepted,
+            &held.keys,
+        );
+    }
+}
+
 /// The state store, opened to HOLD something. Every failure is reported: a
 /// reader who answered and got silence would believe the answer was kept.
 fn open_store(printer: &Printer, invocation: &GateInvocation<'_>) -> Option<StateStore> {
@@ -420,10 +526,12 @@ pub fn gate_on_load(printer: &Printer, invocation: &GateInvocation<'_>, startup:
         assume_yes,
         is_daemon,
         preview,
+        diagnostic,
         ..
     } = *invocation;
-    // A preview answers to the daemon's fold: neither may rewrite the file.
-    let writes_nothing = is_daemon || preview;
+    // A preview and a diagnostic answer to the daemon's fold: none of them
+    // may rewrite the file.
+    let writes_nothing = is_daemon || preview || diagnostic;
     let overridden = policy_override.map(|policy| daemon_folded_policy(writes_nothing, policy));
     if overridden == Some(MigrationPolicy::Ignore) {
         return;
@@ -451,6 +559,30 @@ pub fn gate_on_load(printer: &Printer, invocation: &GateInvocation<'_>, startup:
     match effective {
         MigrationPolicy::Update => align(printer, config_path, cfg, &pending),
         MigrationPolicy::Warn => printer.alert(warn_message(&pending)),
+        // home-optional-ok: with no home the answer waits for the run's own store
+        MigrationPolicy::Prompt if cfgd_core::home_dir().is_err() => {
+            let Some(None) = consult_recorded_read_only(
+                printer,
+                invocation,
+                config_path,
+                &cfg.api_version,
+                &pending.keys,
+            ) else {
+                return;
+            };
+            let accepted = printer
+                .prompt_confirm(&prompt_message(&pending))
+                .unwrap_or(false);
+            if accepted {
+                align(printer, config_path, cfg, &pending);
+            }
+            startup.hold_migration_answer(HeldMigrationAnswer {
+                config_path: config_path.to_path_buf(),
+                api_version: cfg.api_version.clone(),
+                accepted,
+                keys: pending.keys,
+            });
+        }
         MigrationPolicy::Prompt => {
             let Some((held, recorded)) = consult_recorded(
                 printer,
@@ -490,6 +622,23 @@ pub fn gate_on_load(printer: &Printer, invocation: &GateInvocation<'_>, startup:
             }
         }
         MigrationPolicy::Ignore => {}
+    }
+}
+
+/// Run [`gate_on_load`] over a config document the run did not start from
+/// (one `cfgd init` found or wrote after startup), and move any answer the
+/// gate held for want of a home onto `run`, the run's own startup document,
+/// which [`record_held_answer_after_run`] records from once the run returns.
+pub fn gate_document_for_run(
+    printer: &Printer,
+    invocation: &GateInvocation<'_>,
+    document: &Path,
+    run: &StartupDocument,
+) {
+    let gated = StartupDocument::load(document);
+    gate_on_load(printer, invocation, &gated);
+    if let Some(answer) = gated.take_migration_answer() {
+        run.hold_migration_answer(answer);
     }
 }
 
@@ -1082,6 +1231,8 @@ mod tests {
     /// ways round, and a remembered answer is never asked again: the second
     /// run returns before it reaches the queue holding the opposite answer.
     #[test]
+    // The prompt arm asks whether a home resolves, and a serial test unsets HOME.
+    #[serial_test::serial]
     fn the_prompt_arm_acts_on_the_answer_and_never_asks_a_second_time() {
         use cfgd_core::output::PromptAnswer;
         let keys = vec!["spec.migrationPolicy".to_string()];
@@ -1192,6 +1343,7 @@ mod tests {
         let _systemd = EnvVarGuard::unset("STATE_DIRECTORY");
         let _home = EnvVarGuard::unset("HOME");
         let _profile = EnvVarGuard::unset("USERPROFILE");
+        let _xdg_state = EnvVarGuard::unset("XDG_STATE_HOME");
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cfgd.yaml");
@@ -1228,12 +1380,136 @@ mod tests {
         );
     }
 
+    /// `cfgd doctor` writes nothing whatever policy the run carries: the
+    /// document keeps its bytes, no prompt is shown, and no state store is
+    /// created to hold an answer. It reports a config behind the schema under
+    /// `Prompt`, `Warn` and `Update`, and says nothing under `Ignore`.
+    #[test]
+    fn doctor_reports_a_behind_config_and_writes_nothing() {
+        use cfgd_core::output::PromptAnswer;
+        for (policy, assume_yes) in [
+            (MigrationPolicy::Prompt, false),
+            (MigrationPolicy::Prompt, true),
+            (MigrationPolicy::Update, false),
+            (MigrationPolicy::Warn, false),
+            (MigrationPolicy::Ignore, false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let state = tempfile::tempdir().unwrap();
+            let path = dir.path().join("cfgd.yaml");
+            std::fs::write(&path, BEHIND_DOC).unwrap();
+            let cli = cli_running(&path, Some(state.path()), &["doctor"]);
+
+            let (printer, buf) = prompting_printer(vec![PromptAnswer::Confirm(true)]);
+            gate(&printer, &cli, Some(policy), assume_yes);
+            printer.flush();
+
+            let case = format!("{policy:?}, yes {assume_yes}");
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                BEHIND_DOC,
+                "{case}"
+            );
+            assert!(
+                std::fs::read_dir(state.path()).unwrap().next().is_none(),
+                "{case}: the gate wrote under the state root"
+            );
+            let text = cfgd_core::test_helpers::captured_text(&buf);
+            assert_eq!(
+                text.contains("This config does not declare 2 fields this build reads"),
+                policy != MigrationPolicy::Ignore,
+                "{case}: {text}"
+            );
+            assert_eq!(
+                printer.prompt_confirm("still queued?").ok(),
+                Some(true),
+                "{case}: the prompt was shown"
+            );
+        }
+    }
+
+    /// With no home directory the prompt's answer is read through a
+    /// read-only open and held on the startup document, so the store keeps
+    /// its bytes while the command runs. Once it returns, the held answer is
+    /// recorded unless the command was refused for want of the home: a
+    /// success and a failure of any other kind both record it.
+    #[test]
+    #[serial_test::serial]
+    fn a_homeless_prompt_answer_is_recorded_after_any_run_the_home_did_not_refuse() {
+        use cfgd_core::errors::{CfgdError, ConfigError, StateError};
+        use cfgd_core::output::PromptAnswer;
+        use cfgd_core::test_helpers::EnvVarGuard;
+
+        let _home = EnvVarGuard::unset("HOME");
+        let _profile = EnvVarGuard::unset("USERPROFILE");
+        let refused_for_home = || -> anyhow::Result<()> {
+            Err(anyhow::Error::from(CfgdError::from(StateError::HomeUnset))
+                .context("resolving the desired state"))
+        };
+        let failed_otherwise = || -> anyhow::Result<()> {
+            Err(CfgdError::from(ConfigError::Invalid {
+                message: "profile missing".into(),
+            })
+            .into())
+        };
+        let cases: [(&str, anyhow::Result<()>, Option<bool>); 3] = [
+            ("succeeded", Ok(()), Some(false)),
+            ("failed otherwise", failed_otherwise(), Some(false)),
+            ("refused for the home", refused_for_home(), None),
+        ];
+        for (case, result, recorded) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let state = tempfile::tempdir().unwrap();
+            let path = dir.path().join("cfgd.yaml");
+            std::fs::write(&path, BEHIND_DOC).unwrap();
+            let cli = cli_running(&path, Some(state.path()), &["status"]);
+            let keys = vec!["spec.migrationPolicy".to_string()];
+            drop(StateStore::open_in_dir(state.path()).unwrap());
+            let db = state.path().join(cfgd_core::state::STATE_DB_FILENAME);
+            let before = std::fs::read(&db).unwrap();
+
+            let (printer, _buf) = prompting_printer(vec![PromptAnswer::Confirm(false)]);
+            let startup = StartupDocument::load(&cli.config);
+            let invocation = GateInvocation {
+                policy_override: Some(MigrationPolicy::Prompt),
+                ..GateInvocation::of(&cli, false)
+            };
+            gate_on_load(&printer, &invocation, &startup);
+            printer.flush();
+
+            assert!(
+                printer.prompt_confirm("still queued?").is_err(),
+                "{case}: the prompt was shown and took the queued answer"
+            );
+            assert_eq!(
+                std::fs::read(&db).unwrap(),
+                before,
+                "{case}: the gate wrote the store"
+            );
+            record_held_answer_after_run(&printer, &cli, &startup, &result);
+            let store = StateStore::open_in_dir(state.path()).unwrap();
+            assert_eq!(
+                store
+                    .migration_answer(&path, cfgd_core::API_VERSION, &keys)
+                    .unwrap(),
+                recorded,
+                "{case}"
+            );
+            assert!(
+                startup.take_migration_answer().is_none(),
+                "{case}: held once"
+            );
+        }
+    }
+
     /// A state store that cannot answer the migration question says so, on
     /// the path a reader actually reaches it by. The reader is asked either
     /// way: a silent read failure means being asked every run with nothing on
     /// screen to fix, and a silent write failure means the answer just given
     /// is thrown away.
     #[test]
+    // The prompt arm asks whether a home resolves, and a serial test unsets HOME.
+    #[serial_test::serial]
     fn a_store_that_cannot_hold_the_answer_reports_instead_of_swallowing() {
         use cfgd_core::output::PromptAnswer;
         let dir = tempfile::tempdir().unwrap();
@@ -1342,11 +1618,11 @@ mod tests {
 
     /// Every verb clap offers says whether it is a preview, against a
     /// hand-written expectation: a top-level verb added later fails this walk
-    /// until it is classified, and so does a `--dry-run` flag added at any
-    /// depth. A verb taking `--dry-run` is read twice, since the flag is what
-    /// decides it.
+    /// until it is classified, and so does a `--dry-run` or `--plan` flag added
+    /// at any depth. A verb taking one of those is read with and without it,
+    /// since the flag is what decides it.
     #[test]
-    fn every_dry_run_verb_runs_the_migration_gate_as_a_preview() {
+    fn every_preview_or_replay_verb_runs_the_migration_gate_as_a_preview() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cfgd.yaml");
         // (the clap path, the argv, whether the gate runs as a preview)
@@ -1355,6 +1631,7 @@ mod tests {
             ("init", &["init", "--dry-run"], true),
             ("apply", &["apply"], false),
             ("apply", &["apply", "--dry-run"], true),
+            ("apply", &["apply", "--plan", "plan.json"], true),
             ("plan", &["plan"], true),
             ("status", &["status"], false),
             ("diff", &["diff"], false),
@@ -1440,43 +1717,44 @@ mod tests {
             );
         }
 
-        // Every verb at any depth taking `--dry-run`, named by its clap path.
-        fn dry_run_verbs(cmd: &clap::Command, prefix: &str, out: &mut Vec<String>) {
+        // Every verb at any depth taking `--{long}`, named by its clap path.
+        fn verbs_taking(cmd: &clap::Command, long: &str, prefix: &str, out: &mut Vec<String>) {
             for sub in cmd.get_subcommands() {
                 let name = if prefix.is_empty() {
                     sub.get_name().to_string()
                 } else {
                     format!("{prefix} {}", sub.get_name())
                 };
-                if sub
-                    .get_arguments()
-                    .any(|arg| arg.get_long() == Some("dry-run"))
-                {
+                if sub.get_arguments().any(|arg| arg.get_long() == Some(long)) {
                     out.push(name.clone());
                 }
-                dry_run_verbs(sub, &name, out);
+                verbs_taking(sub, long, &name, out);
             }
         }
-        let mut dry_run = Vec::new();
-        dry_run_verbs(&command, "", &mut dry_run);
-        assert!(
-            dry_run.len() >= 3,
-            "the walk found only {} verbs taking --dry-run: {dry_run:?}",
-            dry_run.len()
-        );
-        for name in &dry_run {
-            let (with, without) = (
-                cases
-                    .iter()
-                    .any(|(case, argv, want)| case == name && argv.contains(&"--dry-run") && *want),
-                cases.iter().any(|(case, argv, want)| {
-                    case == name && !argv.contains(&"--dry-run") && !want
-                }),
-            );
+        // (the flag, the fewest verbs the walk must find)
+        for (long, at_least) in [("dry-run", 3), ("plan", 1)] {
+            let flag = format!("--{long}");
+            let mut verbs = Vec::new();
+            verbs_taking(&command, long, "", &mut verbs);
             assert!(
-                with && without,
-                "`cfgd {name}` takes --dry-run: classify it with and without the flag"
+                verbs.len() >= at_least,
+                "the walk found only {} verbs taking {flag}: {verbs:?}",
+                verbs.len()
             );
+            for name in &verbs {
+                let (with, without) = (
+                    cases.iter().any(|(case, argv, want)| {
+                        case == name && argv.contains(&flag.as_str()) && *want
+                    }),
+                    cases.iter().any(|(case, argv, want)| {
+                        case == name && !argv.contains(&flag.as_str()) && !want
+                    }),
+                );
+                assert!(
+                    with && without,
+                    "`cfgd {name}` takes {flag}: classify it with and without the flag"
+                );
+            }
         }
 
         for (name, argv, preview) in cases {

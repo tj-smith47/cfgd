@@ -21,6 +21,7 @@ paths: ["crates/**/*.rs", "**/*.sh"]
 - Every tracked `*.sh` passes `task shellcheck`, which `task lint`, `task ci` and the CI `audit` job run. The population is `git ls-files '*.sh'`, so a new script is checked the moment it is added.
 - The installer `task snapshot` renders from `scripts/install.sh.tpl` passes `task installer:shellcheck`, which lints `dist/install.sh` as POSIX sh. `task lint` runs it after `task snapshot`; CI runs it in the `snapshot` job.
 - The shellcheck version is pinned once, as the `version` default in `.github/actions/setup-shellcheck/action.yml`. Both tasks refuse a local shellcheck of any other version.
+- Every tracked `tests/e2e/*.sh` parses under the shfmt pinned in `.github/actions/setup-shfmt/action.yml` (`task e2e:tags:check` reads its syntax tree and fails on a script that does not parse); quote an associative-array key that holds a `.` (`["a.sh"]=1`), which shfmt otherwise reads as a floating-point index.
 - `.shellcheckrc` at the repo root sets `source-path=SCRIPTDIR` and `external-sources=true`, and disables no code. Each script's shebang picks its dialect, so a `#!/bin/sh` script is held to POSIX sh. SC2086 and SC2034 findings are fixed in the script; `.shellcheckrc` does not disable them.
 - A sourced file with no shebang starts with `# shellcheck shell=bash` (shellcheck reports SC2148 until it does).
 - An argument list meant to split into several words is an array, expanded as `"${args[@]}"`.

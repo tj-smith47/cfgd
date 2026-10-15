@@ -5,7 +5,7 @@ paths: ["crates/**/*.rs"]
 
 - `cargo test` must pass before any phase is considered complete.
 - Unit tests for pure logic (config parsing, diffing, template rendering). Co-located in `#[cfg(test)] mod tests {}` within each module.
-- Integration tests in `tests/`. Every one that runs the real binary spawns it through `cfgd_binary::cfgd_bin()` (`crates/cfgd/tests/cfgd_binary/mod.rs`), which opts out of the update check, removes every inherited `CFGD_*` and systemd `*_DIRECTORY` variable, and points every variable in `cfgd_binary/isolated_env.rs` and the working directory into the test's own temp dir. No test spells `cargo_bin(`, `cargo_bin!(`, `cargo_bin_cmd!(`, `Command::new("cfgd"` or `CARGO_BIN_EXE_cfgd` itself; `every_integration_test_spawns_the_binary_through_the_one_isolating_constructor` fails until it calls the constructor.
+- Integration tests in `tests/`. Every one that runs the real binary spawns it through `cfgd_binary::cfgd_bin()` (`crates/cfgd/tests/cfgd_binary/mod.rs`), which opts out of the update check, removes every inherited `CFGD_*` and systemd `*_DIRECTORY` variable and every variable a registry request reads (`cfgd_core::oci::registry_request_env()`: the client's credential and plain-HTTP variables and the agent's proxy variables), and points every variable in `cfgd_binary/isolated_env.rs` and the working directory into the test's own temp dir. No test spells `cargo_bin(`, `cargo_bin!(`, `cargo_bin_cmd!(`, `Command::new("cfgd"` or `CARGO_BIN_EXE_cfgd` itself; `every_integration_test_spawns_the_binary_through_the_one_isolating_constructor` fails until it calls the constructor.
 - Package manager tests use mock trait implementations and make no real system calls.
 - Use `tempfile` for any test that touches the filesystem.
 
@@ -29,7 +29,9 @@ A test that installs `with_test_home_guard` gets the home it asked for. A test
 that installs nothing gets a throwaway directory unique to its own thread,
 named `cfgd-unguarded-test-home-<pid>-<n>` under the system temp dir. That
 directory is only named and never created: anything appearing there is a test that writes
-env surfaces and should install a guard.
+env surfaces and should install a guard. A process with no home set at all (a
+real-binary test that removes `HOME` and `USERPROFILE`) gets no home from either
+arm, so the plan's no-home refusal is reachable under test as it is in production.
 
 That fallback is the RECONCILER's alone. The env CHECK
 (`env_verify_results`, and the `~/`-fold every report path passes through)
@@ -68,9 +70,10 @@ directory trips over the rule.
 The Rust integration tests under `crates/cfgd/tests/` have the same need and
 one constructor for it: `cfgd_binary::cfgd_bin()` removes every `CFGD_*` the
 test process inherited (matched case-insensitively, as Windows names them) and
-the four systemd `*_DIRECTORY` variables `REMOVED_ENV` lists, then builds every
+the four systemd `*_DIRECTORY` variables `REMOVED_ENV` lists, and every
+`cfgd_core::oci::registry_request_env()` variable a registry request reads, then builds every
 real-binary command with `HOME`, `USERPROFILE`, the four `XDG_*_HOME`
-directories, `XDG_RUNTIME_DIR`, `LOCALAPPDATA`, `CFGD_STATE_DIR`,
+directories, `XDG_RUNTIME_DIR`, `LOCALAPPDATA`, `DOCKER_CONFIG`, `CFGD_STATE_DIR`,
 `CFGD_CACHE_DIR` and `CFGD_RUNTIME_DIR` (the list in
 `cfgd_binary/isolated_env.rs`) pointed into a temp dir owned by the
 calling test's thread, and starts it in a working directory there too, so no
@@ -83,6 +86,12 @@ the default config directory on every OS. A test that needs its own home, `CFGD_
 directory sets it on the returned command, and its setting wins; one that sets
 `XDG_CACHE_HOME` to exercise cache resolution also removes `CFGD_CACHE_DIR`,
 which outranks it.
+
+An in-process test that reaches a registry read takes
+`cfgd_core::test_helpers::isolate_registry_host_env()` first, which unsets the
+same list and points `DOCKER_CONFIG` at an empty directory, so neither an
+exported credential nor a proxy reaches a mock registry's requests
+(`every_test_reaching_a_registry_read_isolates_the_registry_host_env`).
 
 An in-process test parses an argv through `cli::HermeticParse`
 (`try_parse_hermetic`, or `try_parse_reading_env` for a variable the test sets
@@ -169,6 +178,34 @@ the helpers against a stand-in kubectl, fails on any port-forward started
 outside them (a line continued from the one before and `"$KUBECTL"` included),
 and fails on a runner that sources such a setup before its trap.
 
+## The PR install's operator runs a standby, so no e2e read picks one pod by index
+
+The operator, full-stack and other jobs of one run share the PR install, and its
+webhook (`failurePolicy: Fail`) admits every job's writes. OP-LC-03 deletes the leader,
+so `tests/e2e/manifests/pr-install-values.yaml` sets `operator.replicaCount: 2`: the
+standby serves admission and stays an endpoint of `$E2E_WEBHOOK_SVC` while the leader
+is replaced. OP-LC-03 fails when any endpoint sample taken between the delete and the
+replacement's readiness has no ready address (`watch_endpoints_until` in
+`common/helpers.sh`, which FS-HELM-09 uses for its roll), when the deleted pod's UID is
+still listed, or when the lease never moves to another live pod.
+
+With two pods, `.items[0]` answers for whichever pod the API server lists first. A
+case about the operator's health reads every pod (`{.items[*]...}`, one line per pod,
+`kubectl logs -l "$E2E_OPERATOR_PODS"`, `wait_for_pod`, which waits for every pod it
+selects); a case about what the controllers did reads the leader (`operator_leader_pod`).
+An e2e script reads the operator pods in one command, `kubectl get pods -l
+"$E2E_OPERATOR_PODS" -o jsonpath='{...}'` or `kubectl get pods -l
+"$E2E_OPERATOR_PODS" -o json | jq '...'`, and that one-line read is the grammar the
+operator-pods scan checks.
+`tests/e2e/common/test-pr-install.sh` (`task e2e:tags:check`) fails on any tracked
+`tests/e2e/**/*.sh` command (`kubectl` or `$KUBECTL`) that gets pods by an operator
+selector and picks one of them: `.items[N]`, a slice `.items[A:B]`, or jq `first` of
+the list. Once a command keeps that list's `-o json` output in a variable
+(`NAME="$(...)"`) or a file (`> PATH`), every later command in the file that reads that
+variable or path is held to the same rule, so a second-step
+`jq '.items[0]' <<<"$json"` fails too. A slice passes only when the command, or the
+capture it reads, carries `--sort-by`.
+
 ## An e2e metrics check drives the event, then scrapes the pod that did it
 
 prometheus-client encodes no `# HELP`, `# TYPE` or sample line for a family
@@ -200,16 +237,20 @@ other than `e2e_image cfgd-operator`, the full-stack setup stops when
 `$E2E_CSI_DS` is not ready or `cosign` is missing so no full-stack case calls
 `skip_test` (the test fails on one), and
 `tests/e2e/common/test-pr-install.sh` fails on a tracked `*.sh` under
-`tests/e2e/operator/` or `tests/e2e/full-stack/` that spells by hand `cfgd-system`, `$CFGD_NAMESPACE`,
+`tests/e2e/operator/`, `full-stack/`, `gateway/` or `node/` that spells by hand
+`cfgd-system`, `$CFGD_NAMESPACE`,
 the `app=` or `app.kubernetes.io/name=` selector for `cfgd-operator`,
 `cfgd-operator` after any kubectl spelling of a Deployment, Endpoints or
 Service (`deploy`, `deployments.apps`, `ep`, `svc`, ...), either release
-webhook configuration, or `csi.cfgd.io`. A full-stack line that names the
-release gateway `cfgd-server`, or the fleet and drift objects that live beside
-it in `cfgd-system`, is listed by file and text in
+webhook configuration, `csi.cfgd.io`, or the release gateway `cfgd-server`. A
+line that names a release target on purpose is listed by file and text in
 `tests/e2e/common/release-targets-kept.tsv` with its reason, one row per line
 it clears; a further line with the same text fails, and so does a row no line
-uses. `tests/e2e/README.md` lists the spellings. A suite that applies
+uses. Those suites reach the PR install's own device gateway only through
+`$E2E_GATEWAY_URL`, `$E2E_GATEWAY_SVC`, `$E2E_GATEWAY_PORT`,
+`$E2E_GATEWAY_LEADER_PODS` and `$E2E_GATEWAY_API_KEY` from `helpers.sh`; the
+same check fails on a `svc.cluster.local` URL, a gateway Service built from
+`$E2E_INSTALL_RELEASE`, or the `cfgd.io/gateway-leader` label spelled by hand. `tests/e2e/README.md` lists the spellings. A suite that applies
 run-labelled objects calls `require_release_webhooks_scoped` in its setup, which
 stops the suite when the release's webhooks are not scoped away from them.
 Every `helm install` and `helm upgrade` in the full-stack suite passes
@@ -226,9 +267,21 @@ upgrade or array that does not.
 (the `e2e-teardown` job in e2e.yml, the `defer` in `task e2e`): the run-labelled
 cfgd.io objects first, while the run's operator can still clear their finalizers,
 then the Helm release, then `$E2E_INSTALL_NS`, with each step run after a failed
-one and the script exiting 1 at the end. Its delete lists name every plural
-`schemas/crds.yaml` declares; `test-pr-install.sh` drives it against stub kubectl
-and helm and fails when a CRD's plural is missing from them.
+one and the script exiting 1 at the end. It exits 1 naming what it looked for when
+no object it removes or reads back is left (a Terminating namespace counts as gone).
+CI's teardown job calls it with `bash` and installs no tool first, since a tool
+install that fails there leaks the install. A local run id is recorded by setup in
+`.cache/e2e/local-run-id` and read back by every later process. Setup removes another
+run's install through `reclaim_stale_install` once that run's heartbeat is
+`HEARTBEAT_STALE_SECONDS` old (one constant in `helpers.sh`, equal to the janitor's),
+and refuses while it is fresher; `task e2e:heartbeat:age` ages the current run's
+heartbeat to that value to exercise it on the cluster. The teardown spells what it
+owns once, as `delete_groups` (run-labelled kinds, each with its failure hint) and
+`named_objects` (cluster-scoped objects by name), and every lookup, delete, hint and
+read-back reads those arrays; `test-pr-install.sh` fails when a delete names a kind
+the first lookup lacks or a kind is spelled outside the declaration. Its delete lists
+name every plural `schemas/crds.yaml` declares; `test-pr-install.sh` drives it against
+stub kubectl and helm and fails when a CRD's plural is missing from them.
 The Crossplane suite writes nothing ArgoCD tracks in `crossplane-system`: it checks
 the XRD with `check_pr_xrd`, installs `$E2E_FUNCTION` from `e2e_image function-cfgd`
 and `$E2E_COMPOSITION` from `render_run_composition`, every TeamConfig carries
@@ -270,6 +323,37 @@ and fails where it cannot see what is applied: an expansion in a kind or
 apiVersion or standing for a whole document, a body line continued with `\`,
 a script that sets `E2E_RUN_LABEL_YAML` itself. `tests/e2e/README.md` lists
 every rule.
+
+## An e2e device id comes from `gateway_device`
+
+The PR install's device gateway, in `$E2E_INSTALL_NS`, labels each DriftAlert it
+creates `cfgd.io/device-id=<id>` and gives it no run label, so the run label cannot
+clean it up. `gateway_device <var> <id>` in `tests/e2e/common/helpers.sh` sets the
+variable and records the id, and
+`cleanup_e2e` deletes the alerts of every recorded id; a failed delete prints a
+`WARN:` line on stderr naming the ids and the teardown goes on. The helper refuses an
+id that is not already a label value of at most 63 characters (lowercase letters,
+digits and `-`, ending in a letter or digit, with at least one character after the
+prefix) or does not start with `e2e-` or `fullstack-device-`, the prefixes the
+cluster janitor reaps by. An id is `<stem>-${E2E_RUN_ID}`; a case that needs a fresh
+device per invocation adds `$(date +%s)` or `$$` before the run id.
+
+`tests/e2e/common/test-pr-install.sh` (`task e2e:tags:check`) reads every tracked
+`*.sh` under `tests/e2e/gateway/`, `node/` and `full-stack/` and fails on:
+
+- a `--device-id` argument, a `"deviceId"` JSON key, the `<id>` of a
+  `/api/v1/devices/<id>/drift` URL, or the id argument at a call of a relay its
+  list names (`gw_enroll_once`, `gw_enroll_post`), whose value is not exactly
+  `$VAR` or `${VAR}` with `VAR` set by `gateway_device` in the same directory and
+  by nothing else there (`NAME=`, `read`, `mapfile`, `readarray`, `printf -v`,
+  `for NAME in`, `local` and `declare` all count);
+- a `cfgd` `checkin` or `enroll` command line (both always reach a gateway, and
+  `CFGD_SERVER_URL` can name it with no flag), or a `cfgd` `daemon` command line
+  aimed at a gateway by `--server-url` or by a `--config` path a script writes
+  with a heredoc holding a `type: Server` origin, that passes no `--device-id`
+  and carries no `# device-id-ok: <why>` on the command line. A quoted string
+  holding whitespace (a test title, a header) is not read as a command word;
+- a relay its list names that no scanned script defines.
 
 ## A test never inherits its terminal shape from the ambient one
 

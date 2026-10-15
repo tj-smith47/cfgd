@@ -243,7 +243,7 @@ pub fn build_daemon_status_doc(
             // report's own depth below. The update notice stays beside the
             // running verdict — two verdicts about the daemon read as one
             // report when nothing sits between them.
-            // verdict-row-ok: reports the service's state, not something this run did
+            // verdict-row-ok: reports the state the service was already in
             doc = doc.status(Role::Ok, "Daemon running");
             if let Some(ref version) = s.update_available {
                 doc = doc.status(

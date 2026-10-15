@@ -6,9 +6,9 @@
 //!   `&Printer` and are exhaustively tested in `cfgd-core::upgrade::tests`
 //!   with the `CFGD_GITHUB_API_BASE` mockito seam.
 //!
-//!   The "update available" branch in `--check` mode calls
-//!   `ExitCode::UpdateAvailable.exit()` which terminates the process — it
-//!   cannot be driven from inside a test. The download path requires a
+//!   The "update available" branch in `--check` mode returns a
+//!   `ReportedExit` whose code only `main` turns into the process exit; the
+//!   unit test in `cli/upgrade.rs` holds that code. The download path requires a
 //!   tarball + cosign signature + checksums, an end-to-end-only surface
 //!   that is exercised by `crates/cfgd-core/src/upgrade/tests.rs`'s
 //!   `download_and_install_to_*` cases.

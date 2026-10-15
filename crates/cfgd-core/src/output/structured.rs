@@ -413,7 +413,16 @@ pub(crate) fn emit_structured(
             true
         }
         OutputFormat::TemplateFile(path) => {
-            let path = crate::expand_tilde(path);
+            // home-refusal-ok: the `-o` template, read when the result renders; the run's own work
+            // never reads it
+            let path = match crate::expand_tilde(path, "template file") {
+                Ok(path) => path,
+                Err(e) => {
+                    write_diagnostic(sink_stderr, &e.to_string());
+                    output_error.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return true;
+                }
+            };
             match std::fs::read_to_string(&path) {
                 Ok(tmpl) => render_template_to(sink_stdout, sink_stderr, output_error, doc, &tmpl),
                 Err(e) => {

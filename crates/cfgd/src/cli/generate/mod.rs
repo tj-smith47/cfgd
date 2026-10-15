@@ -42,7 +42,7 @@ pub struct GenerateArgs {
     #[arg(long)]
     pub shell: Option<String>,
 
-    /// Home directory to scan (default: $HOME)
+    /// Home directory to scan (default: the invoking user's home)
     #[arg(long, value_hint = clap::ValueHint::DirPath)]
     pub home: Option<String>,
 }
@@ -179,7 +179,7 @@ pub fn cmd_generate(run: &RunContext<'_>, args: &GenerateArgs) -> anyhow::Result
     // 8. Get package managers for tool dispatch
     let managers: Vec<Box<dyn cfgd_core::providers::PackageManager>> =
         packages::all_package_managers();
-    let home = dirs_from_env();
+    let home = scan_home(args)?;
     let pkg_cx = run.package_context()?;
 
     // 9. Conversation loop
@@ -413,11 +413,7 @@ fn handle_present_yaml(
 
 /// Legacy scan-only mode: scan dotfiles and shell config without AI.
 fn cmd_generate_scan_only(printer: &Printer, args: &GenerateArgs) -> anyhow::Result<()> {
-    let home_path = if let Some(h) = &args.home {
-        std::path::PathBuf::from(h)
-    } else {
-        dirs_from_env()
-    };
+    let home_path = scan_home(args)?;
 
     let detected_shell = args
         .shell
@@ -497,10 +493,30 @@ fn cmd_generate_scan_only(printer: &Printer, args: &GenerateArgs) -> anyhow::Res
     Ok(())
 }
 
-fn dirs_from_env() -> std::path::PathBuf {
-    std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+/// The home directory generation reads: `--home`, else the invoking user's.
+/// With neither, the run refuses, since a stand-in directory would scan
+/// somebody else's dotfiles or none at all.
+fn scan_home(args: &GenerateArgs) -> anyhow::Result<std::path::PathBuf> {
+    if let Some(home) = &args.home {
+        return Ok(std::path::PathBuf::from(home));
+    }
+    cfgd_core::home_dir().map_err(|e| {
+        let message = e.to_string();
+        crate::cli::cli_error_ctx_with_hints(
+            e.into(),
+            "--home",
+            "home_unresolved",
+            message,
+            serde_json::json!({}),
+            vec![
+                cfgd_core::output::HintCommands::new(
+                    "Name the home directory to scan:",
+                    ["cfgd generate --home <dir>"],
+                )
+                .ungated(),
+            ],
+        )
+    })
 }
 
 #[cfg(test)]

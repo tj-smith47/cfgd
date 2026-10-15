@@ -19,7 +19,7 @@ else
     # Push a test module to the registry (from host)
     TEST_MODULE_DIR=$(mktemp -d)
     create_test_module_dir "$TEST_MODULE_DIR" "csi-test-mod-${E2E_RUN_ID}" "1.0.0"
-    OCI_REF="${REGISTRY}/cfgd-e2e/csi-test:v1.0-${E2E_RUN_ID}"
+    OCI_REF="$(e2e_scratch_ref "csi-test:v1.0-${E2E_RUN_ID}")"
     PUSH_OK=true
     "$CFGD_BIN" module push "$TEST_MODULE_DIR" --artifact "$OCI_REF" --no-color 2>&1 || PUSH_OK=false
     rm -rf "$TEST_MODULE_DIR"
@@ -124,14 +124,14 @@ begin_test "FS-CSI-03: CSI driver: multi-module volume mount"
 # Push two distinct test modules
 MOD_A_DIR=$(mktemp -d)
 create_test_module_dir "$MOD_A_DIR" "csi-multi-a-${E2E_RUN_ID}" "1.0.0"
-OCI_REF_A="${REGISTRY}/cfgd-e2e/csi-multi-a:v1.0-${E2E_RUN_ID}"
+OCI_REF_A="$(e2e_scratch_ref "csi-multi-a:v1.0-${E2E_RUN_ID}")"
 PUSH_A_OK=true
 "$CFGD_BIN" module push "$MOD_A_DIR" --artifact "$OCI_REF_A" --no-color 2>&1 || PUSH_A_OK=false
 rm -rf "$MOD_A_DIR"
 
 MOD_B_DIR=$(mktemp -d)
 create_test_module_dir "$MOD_B_DIR" "csi-multi-b-${E2E_RUN_ID}" "1.0.0"
-OCI_REF_B="${REGISTRY}/cfgd-e2e/csi-multi-b:v1.0-${E2E_RUN_ID}"
+OCI_REF_B="$(e2e_scratch_ref "csi-multi-b:v1.0-${E2E_RUN_ID}")"
 PUSH_B_OK=true
 "$CFGD_BIN" module push "$MOD_B_DIR" --artifact "$OCI_REF_B" --no-color 2>&1 || PUSH_B_OK=false
 rm -rf "$MOD_B_DIR"
@@ -402,7 +402,7 @@ MOD_V2_DIR=$(mktemp -d)
 create_test_module_dir "$MOD_V2_DIR" "csi-update-mod-${E2E_RUN_ID}" "2.0.0"
 # Add a distinctive v2 marker file
 echo "version-2-content" > "$MOD_V2_DIR/v2-marker.txt"
-OCI_REF_V2="${REGISTRY}/cfgd-e2e/csi-update:v2.0-${E2E_RUN_ID}"
+OCI_REF_V2="$(e2e_scratch_ref "csi-update:v2.0-${E2E_RUN_ID}")"
 PUSH_V2_OK=true
 "$CFGD_BIN" module push "$MOD_V2_DIR" --artifact "$OCI_REF_V2" --no-color 2>&1 || PUSH_V2_OK=false
 rm -rf "$MOD_V2_DIR"

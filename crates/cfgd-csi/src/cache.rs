@@ -565,8 +565,10 @@ mod tests {
     /// publishes. `get_or_pull` is the link that owns the last two.
     #[cfg(unix)]
     #[test]
+    #[serial_test::serial]
     fn cache_get_or_pull_keeps_the_exec_bit_of_a_pulled_module() {
         use std::os::unix::fs::PermissionsExt;
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
 
         let src = tempfile::tempdir().unwrap();
         std::fs::write(src.path().join("module.yaml"), "name: exec-mod\n").unwrap();
@@ -633,7 +635,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn cache_get_or_pull_takes_the_index_entry_for_the_nodes_platform() {
+        let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
         let mut server = mockito::Server::new();
         let registry = server
             .url()
@@ -726,6 +730,7 @@ mod tests {
 
     #[test]
     fn cache_get_or_pull_returns_path_without_touching_oci_on_hit() {
+        // registry-env-held: a cache hit returns before any registry read.
         // get_or_pull cache-hit early-return (lines 42-47): pre-populate an
         // entry with the .cfgd-complete sentinel — get_or_pull must short-
         // circuit and return entry_path WITHOUT invoking oci::pull_module,

@@ -1,4 +1,7 @@
 {{- if .Values.operator.enabled }}
+{{- if and .Values.deviceGateway.enabled (not .Values.operator.leaderElection.enabled) (gt (int .Values.operator.replicaCount) 1) }}
+{{- fail "deviceGateway.enabled with operator.replicaCount above 1 needs operator.leaderElection.enabled: without a lease every replica serves the gateway from its own database and the gateway Service spreads devices across them" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -9,18 +12,18 @@ metadata:
     app.kubernetes.io/component: operator
 spec:
   replicas: {{ .Values.operator.replicaCount }}
-  {{- $gateway := .Values.deviceGateway.enabled }}
+  {{- $gatewayVolume := and .Values.deviceGateway.enabled .Values.deviceGateway.persistence.enabled }}
   {{- $leaderElection := .Values.operator.leaderElection.enabled }}
   strategy:
     {{- if .Values.operator.strategy }}
     {{- toYaml .Values.operator.strategy | nindent 4 }}
-    {{- else if and $gateway .Values.deviceGateway.persistence.enabled (not $leaderElection) }}
+    {{- else if and $gatewayVolume (not $leaderElection) }}
     type: Recreate
     {{- else }}
     type: RollingUpdate
     rollingUpdate:
       maxSurge: 1
-      maxUnavailable: {{ if and $gateway $leaderElection }}1{{ else }}0{{ end }}
+      maxUnavailable: {{ if $gatewayVolume }}1{{ else }}0{{ end }}
     {{- end }}
   selector:
     matchLabels:
@@ -154,7 +157,7 @@ spec:
               mountPath: /tmp/k8s-webhook-server/serving-certs
               readOnly: true
             {{- end }}
-            {{- if and .Values.deviceGateway.enabled .Values.deviceGateway.persistence.enabled }}
+            {{- if .Values.deviceGateway.enabled }}
             - name: gateway-data
               mountPath: /data
             {{- end }}
@@ -171,10 +174,16 @@ spec:
           secret:
             secretName: {{ include "cfgd.webhookCertSecret" . }}
         {{- end }}
-        {{- if and .Values.deviceGateway.enabled .Values.deviceGateway.persistence.enabled }}
+        {{- if .Values.deviceGateway.enabled }}
         - name: gateway-data
+          {{- if .Values.deviceGateway.persistence.enabled }}
           persistentVolumeClaim:
             claimName: {{ include "cfgd.fullname" . }}-gateway-data
+          {{- else }}
+          # The root filesystem is read-only; without persistence the database
+          # lives for the pod's lifetime.
+          emptyDir: {}
+          {{- end }}
         {{- end }}
         {{- with .Values.operator.extraVolumes }}
         {{- toYaml . | nindent 8 }}

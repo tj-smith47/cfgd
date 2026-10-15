@@ -117,7 +117,7 @@ impl<'a> super::Reconciler<'a> {
                 if !matches!(strategy, FileStrategy::Symlink | FileStrategy::Hardlink) {
                     continue;
                 }
-                let target = crate::expand_tilde(&file.target);
+                let target = file.target.clone();
                 // A Hardlink directory is deployed as a copy, and the
                 // convergence predicate already answers false for it.
                 if !super::modules::planned_file_converged(file, &target, strategy, None) {
@@ -303,4 +303,135 @@ pub fn link_deployed_digest(
         hash: super::apply::hash_sorted_parts(parts),
         file_hashes,
     })
+}
+
+/// The module cache a run reads, and what a sweep of it must keep: the
+/// config directory whose lockfile pins module sources, the registries that
+/// config declares, the modules the run resolved and the state store that
+/// recorded every applied module.
+pub struct ModuleCache<'a> {
+    pub state: &'a crate::state::StateStore,
+    pub config_dir: &'a std::path::Path,
+    /// The module cache root the run resolved its git sources under.
+    pub root: &'a std::path::Path,
+    pub modules: &'a [crate::modules::ResolvedModule],
+    /// `spec.modules.registries` of the config at `config_dir`.
+    pub registries: &'a [crate::config::ModuleRegistryEntry],
+}
+
+/// What [`super::ApplyRun::execute`] does with the module cache after a run in
+/// which no action failed. Every [`super::RunExecutor`] answers it.
+pub enum ModuleCheckouts<'a> {
+    /// Remove the checkouts and clones under the cache that nothing reads any
+    /// more (see `sweep_unread_module_checkouts`).
+    Sweep(ModuleCache<'a>),
+    /// Remove nothing. The run's config is not the one this machine's state
+    /// store belongs to, or it parsed no config at all, so its lockfile and
+    /// registries cannot say which checkouts the machine's own config still
+    /// reads.
+    NotOwned,
+}
+
+/// Remove the module checkouts and clones under `cache` that nothing on this
+/// machine reads any more. A read or removal the sweep could not make is
+/// logged as a warning naming its path and never fails the run.
+pub(super) fn sweep_module_checkouts(cache: &ModuleCache<'_>) {
+    match sweep_unread_module_checkouts(cache, crate::modules::IN_USE_WINDOW) {
+        Ok(failures) => {
+            for failure in failures {
+                // tracing-ok: sweep runs after the report; no printed line names a checkout
+                tracing::warn!("unused module checkout sweep: {failure}");
+            }
+        }
+        Err(e) => {
+            // tracing-ok: sweep runs after the report; no printed line names a checkout
+            tracing::warn!("cannot sweep unused module checkouts: {e}");
+        }
+    }
+}
+
+/// Remove the trees exported under the cache root, and the clones, that
+/// nothing on this machine reads any more, and return one message per entry
+/// that could not be read or removed.
+///
+/// A tree or clone is kept while any of these lies inside it: a lock entry of
+/// the config directory's lockfile, the clone of a configured registry, a file
+/// source of a resolved module, a git file source the state store recorded for
+/// any module, or the target of a symlink any module deployed. The last two
+/// keep a module this run did not resolve (an apply limited to other modules)
+/// reading the tree its links point into, and the
+/// links of a module that was removed with its files left in place keep their
+/// tree for as long as they point into it. The record of such a link is dropped
+/// once the link is gone or points elsewhere. Anything changed within
+/// `in_use_window` is kept too (see [`crate::modules::IN_USE_WINDOW`]). An error
+/// reading the lockfile or the state store removes nothing.
+pub(crate) fn sweep_unread_module_checkouts(
+    cache: &ModuleCache<'_>,
+    in_use_window: std::time::Duration,
+) -> Result<Vec<String>> {
+    let ModuleCache {
+        state,
+        config_dir,
+        root: cache_base,
+        modules: resolved,
+        registries,
+    } = *cache;
+    let mut keep = crate::modules::KeptCheckouts::new(cache_base);
+    for entry in &crate::modules::load_lockfile(config_dir)?.modules {
+        keep.keep(&crate::modules::locked_module_dir(entry, cache_base)?);
+    }
+    for registry in registries {
+        keep.keep(&crate::modules::git_cache_dir(cache_base, &registry.url));
+    }
+    for file in resolved.iter().flat_map(|module| &module.files) {
+        keep.keep(&file.source);
+    }
+    let records = state.module_states()?;
+    for record in &records {
+        if let Some(json) = &record.git_sources {
+            let sources: Vec<serde_json::Value> =
+                serde_json::from_str(json).map_err(|e| crate::errors::ConfigError::Invalid {
+                    message: format!(
+                        "module '{}' has an unreadable git source record: {e}",
+                        record.module_name
+                    ),
+                })?;
+            for source in sources.iter().filter_map(|s| s.get("source")?.as_str()) {
+                keep.keep(std::path::Path::new(source));
+            }
+        }
+    }
+
+    let applied: std::collections::HashSet<&str> =
+        records.iter().map(|r| r.module_name.as_str()).collect();
+    let manifest = state.module_file_manifest()?;
+    let mut failures = Vec::new();
+    let mut left_behind_gone = Vec::new();
+    for file in &manifest {
+        let link = std::path::Path::new(&file.file_path);
+        let points_into_cache = match std::fs::read_link(link) {
+            Ok(target) => keep.keep_link_target(link, &target),
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound) || is_not_a_link(link) => {
+                false
+            }
+            Err(e) => {
+                failures.push(format!("cannot read {}: {e}", crate::to_posix_string(link)));
+                continue;
+            }
+        };
+        if !points_into_cache && !applied.contains(file.module_name.as_str()) {
+            left_behind_gone.push((file.module_name.as_str(), file.file_path.as_str()));
+        }
+    }
+    state.delete_module_file_rows(&left_behind_gone)?;
+
+    failures.extend(crate::modules::sweep_pinned_checkouts(&keep, in_use_window));
+    Ok(failures)
+}
+
+/// Whether the entry at `path` exists and is not a symbolic link. `read_link`
+/// fails on such an entry with an error kind that differs between operating
+/// systems.
+fn is_not_a_link(path: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| !meta.file_type().is_symlink())
 }

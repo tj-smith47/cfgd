@@ -157,7 +157,7 @@ impl super::CfgdFileManager {
 
     /// Script-execution binding for a profile-declared `Patch` file: a relative
     /// `patch.script` resolves against the config directory.
-    fn patch_binding(&self, context: ReconcileContext) -> PatchBinding {
+    fn patch_binding(&self, context: ReconcileContext) -> Result<PatchBinding> {
         PatchBinding::profile(&self.config_dir, &self.profile_name, context)
     }
 
@@ -183,7 +183,7 @@ impl super::CfgdFileManager {
         target: &Path,
         context: ReconcileContext,
     ) -> Result<PatchOutcome> {
-        evaluate_patch(spec, target, &self.patch_binding(context).context())
+        evaluate_patch(spec, target, &self.patch_binding(context)?.context())
     }
 
     /// The `patch` block a `Patch` entry must carry (guaranteed by
@@ -204,7 +204,7 @@ impl super::CfgdFileManager {
         let mut actions = Vec::new();
 
         for managed in &profile.files.managed {
-            let target_path = expand_tilde(&managed.target);
+            let target_path = expand_tilde(&managed.target, cfgd_core::FILE_TARGET_ROLE)?;
 
             // Branch on the declared strategy before resolving `source` at all:
             // a `Patch` entry has no source (an empty one would resolve to the
@@ -468,7 +468,7 @@ impl super::CfgdFileManager {
             if !matches!(strategy, FileStrategy::Symlink | FileStrategy::Hardlink) {
                 continue;
             }
-            let target_path = expand_tilde(&managed.target);
+            let target_path = expand_tilde(&managed.target, cfgd_core::FILE_TARGET_ROLE)?;
             if !is_linked_to(&source_path, &target_path, strategy) {
                 continue;
             }
@@ -524,7 +524,7 @@ impl super::CfgdFileManager {
         printer: &Printer,
     ) -> Result<FileDriftResult> {
         if managed.strategy == Some(FileStrategy::Patch) {
-            let target_path = expand_tilde(&managed.target);
+            let target_path = expand_tilde(&managed.target, cfgd_core::FILE_TARGET_ROLE)?;
             let evaluated = self.evaluate(managed, &target_path, ReconcileContext::Reconcile);
             return Ok(render_patch_diff(&target_path, evaluated, printer));
         }
@@ -559,7 +559,7 @@ impl super::CfgdFileManager {
         per_file_strategy: Option<FileStrategy>,
         printer: &Printer,
     ) -> Result<FileDriftResult> {
-        let target_path = expand_tilde(target);
+        let target_path = expand_tilde(target, cfgd_core::FILE_TARGET_ROLE)?;
         // absolute-path-ok: the drift row id, matched against stored rows
         let target_id = target_path.display_posix();
 
@@ -706,7 +706,7 @@ impl super::CfgdFileManager {
 
         for managed in &profile.files.managed {
             if managed.strategy == Some(FileStrategy::Patch) {
-                let target_path = expand_tilde(&managed.target);
+                let target_path = expand_tilde(&managed.target, cfgd_core::FILE_TARGET_ROLE)?;
                 let evaluated = self.evaluate(managed, &target_path, ReconcileContext::Reconcile);
                 results.push(patch_drift_result(&target_path, evaluated));
                 continue;
@@ -744,7 +744,7 @@ impl super::CfgdFileManager {
         origin: Option<&str>,
         per_file_strategy: Option<FileStrategy>,
     ) -> Result<FileDriftResult> {
-        let target_path = expand_tilde(target);
+        let target_path = expand_tilde(target, cfgd_core::FILE_TARGET_ROLE)?;
         let target_id = target_path.display_posix();
 
         if !source_path.exists() {
@@ -1010,7 +1010,7 @@ pub(crate) fn module_patch_binding(
     config_dir: &Path,
     resolved: &cfgd_core::config::ResolvedProfile,
     module: &cfgd_core::modules::ResolvedModule,
-) -> PatchBinding {
+) -> Result<PatchBinding> {
     PatchBinding::module(
         config_dir,
         resolved.profile_name(),

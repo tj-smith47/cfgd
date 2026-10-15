@@ -122,7 +122,8 @@ fn collect_file_checks_existing_file() {
         &[],
         std::path::Path::new("."),
         &ProviderRegistry::new(),
-    );
+    )
+    .unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Compliant);
     assert_eq!(checks[0].detail.as_deref(), Some("present"));
@@ -153,7 +154,8 @@ fn collect_file_checks_missing_file() {
         &[],
         std::path::Path::new("."),
         &ProviderRegistry::new(),
-    );
+    )
+    .unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Violation);
     assert_eq!(checks[0].detail.as_deref(), Some("managed file missing"));
@@ -190,7 +192,8 @@ fn collect_file_checks_permissions_match() {
         &[],
         std::path::Path::new("."),
         &ProviderRegistry::new(),
-    );
+    )
+    .unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Compliant);
     assert!(checks[0].detail.as_deref().unwrap().contains("0o600"));
@@ -227,7 +230,8 @@ fn collect_file_checks_permissions_mismatch() {
         &[],
         std::path::Path::new("."),
         &ProviderRegistry::new(),
-    );
+    )
+    .unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Warning);
     assert!(checks[0].detail.as_deref().unwrap().contains("expected"));
@@ -333,7 +337,7 @@ fn collect_secret_checks_target_exists() {
         ..Default::default()
     };
 
-    let checks = collect_secret_checks(&profile);
+    let checks = collect_secret_checks(&profile).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Compliant);
 }
@@ -351,7 +355,7 @@ fn collect_secret_checks_target_missing() {
         ..Default::default()
     };
 
-    let checks = collect_secret_checks(&profile);
+    let checks = collect_secret_checks(&profile).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Violation);
 }
@@ -369,7 +373,7 @@ fn collect_secret_checks_env_only_skipped() {
         ..Default::default()
     };
 
-    let checks = collect_secret_checks(&profile);
+    let checks = collect_secret_checks(&profile).unwrap();
     assert!(checks.is_empty());
 }
 
@@ -379,7 +383,7 @@ fn watch_path_existing_file() {
     let file_path = dir.path().join("watched.conf");
     std::fs::write(&file_path, "data").unwrap();
 
-    let checks = collect_watch_path_checks(&file_path.to_string_lossy());
+    let checks = collect_watch_path_checks(&file_path.to_string_lossy()).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Compliant);
     assert!(checks[0].detail.as_deref().unwrap().contains("file"));
@@ -387,7 +391,7 @@ fn watch_path_existing_file() {
 
 #[test]
 fn watch_path_nonexistent() {
-    let checks = collect_watch_path_checks("/tmp/cfgd-nonexistent-watch-12345");
+    let checks = collect_watch_path_checks("/tmp/cfgd-nonexistent-watch-12345").unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Warning);
 }
@@ -1233,7 +1237,7 @@ fn collected_diffs_render_exactly_what_collecting_inside_the_snapshot_renders() 
 #[test]
 fn watch_path_directory() {
     let dir = tempfile::tempdir().unwrap();
-    let checks = collect_watch_path_checks(&dir.path().to_string_lossy());
+    let checks = collect_watch_path_checks(&dir.path().to_string_lossy()).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Compliant);
     assert!(checks[0].detail.as_deref().unwrap().contains("directory"));
@@ -1299,7 +1303,8 @@ fn collect_file_checks_invalid_permission_string_warns() {
         &[],
         std::path::Path::new("."),
         &ProviderRegistry::new(),
-    );
+    )
+    .unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Warning);
     let detail = checks[0].detail.as_deref().unwrap();
@@ -1345,7 +1350,8 @@ fn collect_file_checks_with_encryption_declared_adds_file_encryption_check() {
         &[],
         std::path::Path::new("."),
         &ProviderRegistry::new(),
-    );
+    )
+    .unwrap();
     // First check: file present (no permissions declared → Compliant "present").
     // Second check: encryption declaration → "file-encryption" category, Compliant.
     assert_eq!(checks.len(), 2, "expected file + encryption checks");
@@ -1454,7 +1460,8 @@ fn collect_file_checks_includes_module_file_and_attributes_origin() {
 
     // No file_manager + no declared perms → exactly ONE check: the "present"
     // existence signal, attributed to its module.
-    let checks = collect_file_checks("test", &profile, &[m], dir.path(), &ProviderRegistry::new());
+    let checks =
+        collect_file_checks("test", &profile, &[m], dir.path(), &ProviderRegistry::new()).unwrap();
     assert_eq!(
         checks.len(),
         1,
@@ -1475,7 +1482,8 @@ fn collect_file_checks_patch_reports_content_convergence() {
     std::fs::write(&target, "{\n  \"telemetry\": false\n}\n").unwrap();
 
     let profile = patch_profile(&target, "telemetry: false");
-    let checks = collect_file_checks("test", &profile, &[], dir.path(), &ProviderRegistry::new());
+    let checks =
+        collect_file_checks("test", &profile, &[], dir.path(), &ProviderRegistry::new()).unwrap();
 
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].category, "file-content");
@@ -1493,7 +1501,8 @@ fn collect_file_checks_patch_drift_is_violation() {
     std::fs::write(&target, "{\n  \"telemetry\": true\n}\n").unwrap();
 
     let profile = patch_profile(&target, "telemetry: false");
-    let checks = collect_file_checks("test", &profile, &[], dir.path(), &ProviderRegistry::new());
+    let checks =
+        collect_file_checks("test", &profile, &[], dir.path(), &ProviderRegistry::new()).unwrap();
 
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Violation);
@@ -1510,7 +1519,8 @@ fn collect_file_checks_patch_unparseable_target_warns() {
     std::fs::write(&target, "not json at all").unwrap();
 
     let profile = patch_profile(&target, "telemetry: false");
-    let checks = collect_file_checks("test", &profile, &[], dir.path(), &ProviderRegistry::new());
+    let checks =
+        collect_file_checks("test", &profile, &[], dir.path(), &ProviderRegistry::new()).unwrap();
 
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Warning);
@@ -1572,7 +1582,8 @@ fn collect_file_checks_module_patch_attributes_origin() {
         }),
     }];
 
-    let checks = collect_file_checks("test", &profile, &[m], dir.path(), &ProviderRegistry::new());
+    let checks =
+        collect_file_checks("test", &profile, &[m], dir.path(), &ProviderRegistry::new()).unwrap();
     assert_eq!(checks.len(), 1);
     assert_eq!(checks[0].status, ComplianceStatus::Violation);
     assert_eq!(
@@ -1610,7 +1621,7 @@ fn collect_file_checks_content_drift_is_violation() {
 
     // file_manager wired + no declared perms → exactly ONE check (file-content);
     // the legacy "present" check is suppressed so existence isn't double-counted.
-    let checks = collect_file_checks("test", &profile, &[], dir.path(), &registry);
+    let checks = collect_file_checks("test", &profile, &[], dir.path(), &registry).unwrap();
     assert_eq!(
         checks.len(),
         1,
@@ -1652,7 +1663,7 @@ fn collect_file_checks_content_match_is_compliant() {
 
     // file_manager wired + no declared perms → exactly ONE Compliant file-content
     // check; no duplicate "present" row.
-    let checks = collect_file_checks("test", &profile, &[], dir.path(), &registry);
+    let checks = collect_file_checks("test", &profile, &[], dir.path(), &registry).unwrap();
     assert_eq!(
         checks.len(),
         1,
@@ -1692,7 +1703,7 @@ fn collect_file_checks_content_plus_perms_is_two_checks() {
     let mut registry = ProviderRegistry::new();
     registry.file_manager = Some(Box::new(MockFileManager::new()));
 
-    let checks = collect_file_checks("test", &profile, &[], dir.path(), &registry);
+    let checks = collect_file_checks("test", &profile, &[], dir.path(), &registry).unwrap();
     assert_eq!(
         checks.len(),
         2,

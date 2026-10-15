@@ -53,6 +53,18 @@ const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 pub const WAL_LOCK_WAIT: &str =
     "another connection holds the write lock; waiting for it to switch the database to WAL";
 
+/// The SQLite URI opening `path` with the query `query`: absolute, folded to
+/// `/`, with the three characters a URI path cannot carry bare
+/// percent-encoded.
+fn sqlite_uri(path: &Path, query: &str) -> String {
+    let url = crate::to_file_url(crate::absolutize_path(path));
+    let encoded = url
+        .replace('%', "%25")
+        .replace('?', "%3f")
+        .replace('#', "%23");
+    format!("{encoded}?{query}")
+}
+
 /// Set `conn`'s busy timeout and switch its database to WAL journaling,
 /// waiting out another connection's write lock the way every other statement
 /// on `conn` does. A lock held past `busy_timeout` fails with `SQLITE_BUSY`,
@@ -939,6 +951,56 @@ impl StateStore {
         Self::open(&dir.join(STATE_DB_FILENAME))
     }
 
+    /// Open the existing store at `path` for reading, creating and migrating
+    /// nothing.
+    ///
+    /// For a caller that diagnoses the store without changing it (`cfgd
+    /// doctor`): a store that is not there stays absent, one behind the
+    /// current schema is read as it is, and no file appears beside it. Every
+    /// write through the returned handle fails.
+    ///
+    /// A WAL-mode store with no `-wal` file had no open writer when it was
+    /// looked at, so it is opened `immutable`, which reads the database file
+    /// alone and creates neither the `-shm` nor the `-wal` file SQLite's
+    /// locking would otherwise make.
+    /// A store with a `-wal` file is opened read-only through the ordinary
+    /// locking, because the log may hold committed rows the database file
+    /// does not. When its `-shm` file is missing, the open sets
+    /// `readonly_shm=1`, which keeps SQLite from creating that file: the open
+    /// then fails, and the store is left exactly as it was found.
+    ///
+    /// # Errors
+    ///
+    /// A database error when `path` names no file, a file that is not a
+    /// SQLite database, one this process cannot read, or a `-wal` store whose
+    /// `-shm` file is missing.
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        let flags =
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let sidecar = |suffix: &str| {
+            let mut name = path.as_os_str().to_owned();
+            name.push(suffix);
+            Path::new(&name).exists()
+        };
+        let uri_flags = flags | rusqlite::OpenFlags::SQLITE_OPEN_URI;
+        let conn = if !sidecar("-wal") {
+            Connection::open_with_flags(sqlite_uri(path, "immutable=1"), uri_flags)?
+        } else if sidecar("-shm") {
+            Connection::open_with_flags(path, flags)?
+        } else {
+            Connection::open_with_flags(sqlite_uri(path, "readonly_shm=1"), uri_flags)?
+        };
+        conn.busy_timeout(BUSY_TIMEOUT)?;
+        // A path naming a file that is not a database opens anyway; the first
+        // read is what refuses it.
+        conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))?;
+        register_sql_functions(&conn)?;
+        Ok(Self {
+            conn,
+            in_transaction: Cell::new(false),
+        })
+    }
+
     /// Open or create a state store at the given path.
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
@@ -1108,6 +1170,16 @@ impl StateStore {
             .ok_or_else(|| StateError::IdentityMissing.into())
     }
 
+    /// Whether every migration this build carries has run on this store.
+    ///
+    /// A store an older cfgd wrote and nothing has opened for writing since
+    /// is behind, and lacks the tables the later migrations create: a reader
+    /// holding it through [`Self::open_read_only`] asks here before it reads
+    /// one of them.
+    pub fn schema_is_current(&self) -> Result<bool> {
+        Ok(self.schema_version()? >= MIGRATIONS.len())
+    }
+
     /// The applied-migration count, or `0` for a database that has never run
     /// one. A read failure (locked, corrupt, mid-crash file) must propagate
     /// rather than fold to `0`: several migrations are `ALTER TABLE ... ADD
@@ -1154,8 +1226,11 @@ pub fn plan_hash(data: &str) -> String {
 ///      Windows `%LOCALAPPDATA%\cfgd\state`).
 ///
 /// Resolves home through the same policy config discovery uses (HOME on Unix,
-/// USERPROFILE/HOME on Windows) so an unset HOME fails uniformly instead of
-/// creating an orphan state.db beside a config error.
+/// USERPROFILE/HOME on Windows). With no home, an absolute `$XDG_STATE_HOME`
+/// places the directory at `$XDG_STATE_HOME/cfgd` on every platform, as an
+/// absolute `$XDG_CONFIG_HOME` places the config; with neither, resolution
+/// errors, so an unset HOME never creates an orphan state.db beside a config
+/// error.
 ///
 /// Honors the [`crate::TestHomeGuard`] thread-local override (test builds
 /// resolve a Linux-shaped `~/.local/state/cfgd` under the override home) so
@@ -1174,7 +1249,9 @@ pub fn default_state_dir() -> Result<PathBuf> {
 /// and consults no home directory, so it never errors. Pure path logic.
 pub fn default_state_dir_for(scope: Scope) -> Result<PathBuf> {
     if let Ok(dir) = std::env::var(crate::CFGD_STATE_DIR_ENV) {
-        return crate::expand_tilde_strict(Path::new(&dir), "state directory");
+        // home-refusal-ok: cfgd's own state directory, where a `~` with no home refuses the run
+        // before it opens a store or plans
+        return crate::expand_tilde(Path::new(&dir), "state directory");
     }
     if let Some(dir) = crate::systemd_dir("STATE_DIRECTORY") {
         return Ok(dir);
@@ -1185,14 +1262,10 @@ pub fn default_state_dir_for(scope: Scope) -> Result<PathBuf> {
     if let Some(home) = crate::test_home_override() {
         return Ok(home.join(".local").join("state").join("cfgd"));
     }
-    // `directories` would otherwise fall back to the passwd database when HOME
-    // is unset, resolving a home that config discovery cannot — the two
-    // subsystems must agree.
-    if crate::home_dir_var().is_none() {
-        return Err(StateError::HomeDirectoryUnresolved { role: "state" }.into());
-    }
-    let base = directories::BaseDirs::new()
-        .ok_or(StateError::HomeDirectoryUnresolved { role: "state" })?;
+    let Some(base) = crate::user_base_dirs() else {
+        return crate::xdg_home_cfgd("XDG_STATE_HOME")
+            .ok_or(StateError::HomeDirectoryUnresolved { role: "state" }.into());
+    };
     Ok(match base.state_dir() {
         Some(state) => state.join("cfgd"),
         None => base.data_local_dir().join("cfgd").join("state"),

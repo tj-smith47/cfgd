@@ -1468,14 +1468,17 @@ fn update_check_entries() -> Vec<(String, Option<String>)> {
 const OPTOUT_HATCH: &str = "optouts-held:";
 
 /// The function openers in `region` whose function reaches one of `entries` or
-/// sends [`LOOP_VERSION_TICK`] without also calling `clear_update_optouts` or
-/// carrying [`OPTOUT_HATCH`] in a comment, as 0-based line numbers, and how
-/// many functions reached the check at all. Calls are read off `region` with
-/// its comments and literals blanked, and a function runs from its opener to
-/// its own closing brace.
-fn update_check_callers_without_optout_clear(
+/// spells every member of one of `tells`' groups without also calling the free
+/// function `guard` or carrying `hatch` in a comment, as 0-based line numbers,
+/// and how many functions reached an entry at all. Calls are read off `region`
+/// with its comments and literals blanked, and a function runs from its opener
+/// to its own closing brace.
+fn entry_callers_without_guard(
     region: &str,
     entries: &[(String, Option<String>)],
+    tells: &[Vec<String>],
+    guard: &str,
+    hatch: &str,
 ) -> (usize, Vec<usize>) {
     let code = blank_non_code(region);
     let lines: Vec<&str> = code.lines().collect();
@@ -1493,17 +1496,16 @@ fn update_check_callers_without_optout_clear(
             Some(name) => segment.replacen(&format!("fn {name}"), "fn", 1),
             None => segment,
         };
-        let reaches = segment.contains(LOOP_VERSION_TICK)
+        let reaches = tells
+            .iter()
+            .any(|group| group.iter().all(|tell| segment.contains(tell.as_str())))
             || entries.iter().any(|(name, owner)| {
                 cfgd_core::test_helpers::reaches_fn(&segment, name, owner.as_deref())
             });
         if reaches {
             judged += 1;
-            let hatched = commented[from..=to]
-                .iter()
-                .any(|l| carries_hatch(l, OPTOUT_HATCH));
-            if !hatched && !cfgd_core::test_helpers::calls_free_fn(&segment, "clear_update_optouts")
-            {
+            let hatched = commented[from..=to].iter().any(|l| carries_hatch(l, hatch));
+            if !hatched && !cfgd_core::test_helpers::calls_free_fn(&segment, guard) {
                 offenders.push(from);
             }
         }
@@ -1528,7 +1530,13 @@ fn every_test_reaching_the_update_check_clears_the_opt_out_variables() {
     let mut offenders: Vec<String> = Vec::new();
     for path in cfgd_core::test_helpers::rust_sources_under(&crates_dir) {
         let region = cfgd_core::test_helpers::test_region_of(&path);
-        let (found, missing) = update_check_callers_without_optout_clear(&region, &entries);
+        let (found, missing) = entry_callers_without_guard(
+            &region,
+            &entries,
+            &[vec![LOOP_VERSION_TICK.to_string()]],
+            "clear_update_optouts",
+            OPTOUT_HATCH,
+        );
         judged += found;
         let label = cfgd_core::to_posix_string(path.strip_prefix(&crates_dir).unwrap_or(&path));
         for n in missing {
@@ -1572,8 +1580,13 @@ fn the_update_check_walk_reads_an_offence_it_plants_itself() {
                 // optouts-held: a comment below the function hatches nothing above it\n\
                 fn after() {}\n\
                 fn looped() {\n    senders.version_check_tx.send(());\n}\n";
-    let (judged, offenders) =
-        update_check_callers_without_optout_clear(code, &[("should_check".to_string(), None)]);
+    let (judged, offenders) = entry_callers_without_guard(
+        code,
+        &[("should_check".to_string(), None)],
+        &[vec![LOOP_VERSION_TICK.to_string()]],
+        "clear_update_optouts",
+        OPTOUT_HATCH,
+    );
     assert_eq!(
         judged, 6,
         "five functions call the gate and one sends the loop a version tick; \
@@ -1583,6 +1596,198 @@ fn the_update_check_walk_reads_an_offence_it_plants_itself() {
         offenders,
         vec![0, 14, 18, 23],
         "an offence is a function that neither clears nor says why in a comment of its own"
+    );
+}
+
+/// What a function reaching a registry read under isolation it does not take
+/// itself (a fixture whose constructor took it) says for itself.
+const REGISTRY_ENV_HATCH: &str = "registry-env-held:";
+
+/// Every production function through which a test reaches a registry read
+/// that resolves its credential off the host: each function of the registry
+/// client (`cfgd-core/src/oci/`) reaching `RegistryAuth::resolve`, folded until
+/// the set stops growing, and each function anywhere in the workspace that
+/// calls one of those directly (a verb, the CSI cache, the operator's reader).
+///
+/// The fold stays inside the client: carried on past its callers it follows
+/// every verb up to `cli::execute` and `main`, and every dispatch test of every
+/// verb would be judged by a read its verb never makes. A test reaching the
+/// client through a longer chain drives the real binary, which `cfgd_bin()`
+/// isolates through the same list.
+fn registry_read_entries() -> Vec<(String, Option<String>)> {
+    let declarations = workspace_seam_declarations(WORKSPACE_CRATES);
+    let seeds = [("resolve".to_string(), Some("RegistryAuth".to_string()))];
+    let client = cfgd_core::test_helpers::callers_reaching(
+        &declarations.rows_under("cfgd-core/src/oci", 9),
+        &seeds,
+    );
+    assert!(
+        client.len() > seeds.len(),
+        "nothing in the registry client reaches `RegistryAuth::resolve`; the seed names nothing"
+    );
+    let mut entries = client.clone();
+    for (name, owner, code) in &declarations.rows {
+        if client
+            .iter()
+            .any(|(n, o)| cfgd_core::test_helpers::reaches_fn(code, n, o.as_deref()))
+        {
+            entries.push((name.clone(), owner.clone()));
+        }
+    }
+    for name in REGISTRY_VERB_METHODS {
+        assert!(
+            declarations
+                .rows
+                .iter()
+                .any(|(declared, _, _)| declared == name),
+            "nothing in the workspace declares `{name}`; the registry walk's table names nothing"
+        );
+    }
+    entries.push((REGISTRY_VERB_FN.to_string(), None));
+    entries.sort();
+    entries.dedup();
+    entries
+}
+
+/// The methods through which a test reaches a registry read without spelling
+/// the type that owns them: the CSI cache's pull and the two CSI node calls
+/// that run it, and the CSI node's free function pulling through the cache. A
+/// method is matched on its name alone, so a test calling an unrelated method
+/// of the same name is judged too and says why it reads no registry with
+/// `// registry-env-held: <why>`.
+const REGISTRY_VERB_METHODS: [&str; 4] = [
+    "get_or_pull",
+    "node_stage_volume",
+    "node_publish_volume",
+    REGISTRY_VERB_FN,
+];
+
+/// The CSI node's free function pulling a module through the cache.
+const REGISTRY_VERB_FN: &str = "pull_through_cache";
+
+/// The CLI verbs whose dispatch reads a registry, as argv words.
+const REGISTRY_VERBS: [&[&str]; 4] = [
+    &["module", "pull"],
+    &["module", "push"],
+    &["module", "build"],
+    &["image", "pack"],
+];
+
+/// The spellings that reach a registry read through a verb, each group judged
+/// as all-of: a call to one of [`REGISTRY_VERB_METHODS`] on any receiver, and
+/// `execute(` in a function that builds one of [`REGISTRY_VERBS`]' `Command`
+/// variants. The fold in [`registry_read_entries`] stops at the client's
+/// direct callers, so a test driving a verb through its method or through the
+/// CLI dispatcher is found here instead.
+fn registry_read_tells() -> Vec<Vec<String>> {
+    let methods = REGISTRY_VERB_METHODS
+        .iter()
+        .filter(|name| **name != REGISTRY_VERB_FN)
+        .flat_map(|name| [vec![format!(".{name}(")], vec![format!("::{name}(")]]);
+    let verbs = REGISTRY_VERBS.iter().map(|argv| {
+        let variant = verb_variant_paths(argv)
+            .pop()
+            .unwrap_or_else(|| panic!("{argv:?} names no variant"));
+        vec!["execute(".to_string(), variant]
+    });
+    methods.chain(verbs).collect()
+}
+
+/// Every test function that reaches a registry read isolates the variables the
+/// registry client reads first, through
+/// `cfgd_core::test_helpers::isolate_registry_host_env`.
+///
+/// The client takes the credential each request carries from
+/// `REGISTRY_USERNAME`/`REGISTRY_PASSWORD` or the Docker config `DOCKER_CONFIG`
+/// names, so on a machine exporting either a mock registry receives a header
+/// the test never sent, and a pin matching the request's `authorization`
+/// fails for a reason that is no part of its claim. The judged unit is a
+/// function whose own body reaches one of [`registry_read_entries`], so a
+/// driver that isolates carries every test calling it. Judged over every
+/// crate's test regions, with a floor on the functions found.
+#[test]
+fn every_test_reaching_a_registry_read_isolates_the_registry_host_env() {
+    let entries = registry_read_entries();
+    let tells = registry_read_tells();
+    let crates_dir = cfgd_core::test_helpers::workspace_root().join("crates");
+    let mut judged = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    for path in cfgd_core::test_helpers::rust_sources_under(&crates_dir) {
+        let region = cfgd_core::test_helpers::test_region_of(&path);
+        let (found, missing) = entry_callers_without_guard(
+            &region,
+            &entries,
+            &tells,
+            "isolate_registry_host_env",
+            REGISTRY_ENV_HATCH,
+        );
+        judged += found;
+        let label = cfgd_core::to_posix_string(path.strip_prefix(&crates_dir).unwrap_or(&path));
+        for n in missing {
+            offenders.push(format!(
+                "{label}:{}: {}",
+                n + 1,
+                region.lines().nth(n).unwrap_or("").trim()
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "a test reaching a registry read takes \
+         `cfgd_core::test_helpers::isolate_registry_host_env()` first, or says which guard it \
+         runs under with `// {REGISTRY_ENV_HATCH} <why>`; otherwise an exported credential or \
+         Docker config reaches its requests ({} entries reach the read: {entries:?}):\n{}",
+        entries.len(),
+        offenders.join("\n")
+    );
+    assert!(
+        judged >= 148,
+        "the walk found {judged} test functions reaching a registry read, under the 148 the \
+         workspace holds; it has gone blind"
+    );
+}
+
+/// The registry walk's verb tells judge a function by its own body: a CSI
+/// method called on any receiver or through a path, and `execute(` beside a
+/// registry verb's variant, each reach a registry read; isolating first or
+/// saying why in a comment clears one, and a verb that reads no registry is
+/// none of the walk's business.
+#[test]
+fn the_registry_walk_reads_an_offence_it_plants_itself() {
+    let code = "fn bare_cache() {\n    cache.get_or_pull(&oci_ref, policy);\n}\n\
+                fn isolated_cache() {\n    let _r = isolate_registry_host_env();\n    \
+                cache.get_or_pull(&oci_ref, policy);\n}\n\
+                fn hatched_node() {\n    // registry-env-held: the rig isolated it\n    \
+                svc.node_stage_volume(request);\n}\n\
+                fn pathed_node() {\n    Node::node_publish_volume(&svc, request);\n}\n\
+                fn dispatched() {\n    let c = Command::Module { command: ModuleCommand::Pull { \
+                reference } };\n    super::execute(c);\n}\n\
+                fn packed() {\n    execute(Command::Image { command: ImageCommand::Pack { dir } });\n}\n\
+                fn listed() {\n    super::execute(Command::Module { command: ModuleCommand::List });\n}\n\
+                fn built_only() {\n    let c = ModuleCommand::Build { dir };\n}\n";
+    let (judged, offenders) = entry_callers_without_guard(
+        code,
+        &[],
+        &registry_read_tells(),
+        "isolate_registry_host_env",
+        REGISTRY_ENV_HATCH,
+    );
+    let lines: Vec<&str> = code.lines().collect();
+    let named: Vec<&str> = offenders.iter().map(|n| lines[*n]).collect();
+    assert_eq!(
+        judged, 6,
+        "four CSI calls and two registry dispatches are judged; `List` reads no registry and \
+         `Build` is never dispatched"
+    );
+    assert_eq!(
+        named,
+        [
+            "fn bare_cache() {",
+            "fn pathed_node() {",
+            "fn dispatched() {",
+            "fn packed() {"
+        ],
+        "an offence is a function that neither isolates nor says why in a comment of its own"
     );
 }
 
@@ -7598,6 +7803,7 @@ fn run_apply_home_unset_errors_and_creates_no_state() {
     let _home = EnvVarGuard::unset("HOME");
     let _xdg_cfg = EnvVarGuard::unset("XDG_CONFIG_HOME");
     let _xdg_data = EnvVarGuard::unset("XDG_DATA_HOME");
+    let _xdg_state = EnvVarGuard::unset("XDG_STATE_HOME");
     let _state_env = EnvVarGuard::unset(cfgd_core::CFGD_STATE_DIR_ENV);
 
     // The default config path keeps a literal `~` once home cannot be resolved.
@@ -23708,7 +23914,9 @@ fn cmd_module_search_no_registries_structured() {
 }
 
 #[test]
+#[serial_test::serial]
 fn cmd_module_build_no_module_yaml_fails() {
+    let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
     let dir = tempfile::tempdir().unwrap();
     let printer = test_printer();
 
@@ -25032,41 +25240,6 @@ fn workstation_daemon_hooks_build_registry_returns_populated_registry() {
     assert!(
         !registry.system_configurators().is_empty(),
         "build_registry should return a registry with at least one system configurator"
-    );
-}
-
-#[test]
-fn workstation_daemon_hooks_expand_tilde() {
-    use cfgd_core::daemon::DaemonHooks;
-    // Thread-local test home: the ambient HOME var is a race in the threaded
-    // suite (any test holding an EnvVarGuard over HOME can unset it mid-call).
-    let tmp_home = tempfile::tempdir().unwrap();
-    let _home = cfgd_core::with_test_home_guard(tmp_home.path());
-    let hooks = super::WorkstationDaemonHooks;
-    let expanded = hooks.expand_tilde(std::path::Path::new("~/test/file"));
-    // Should not start with ~ after expansion
-    assert!(
-        !expanded.to_string_lossy().starts_with('~'),
-        "expand_tilde should expand ~ to home directory, got: {}",
-        expanded.display()
-    );
-    // Should end with the path suffix
-    assert!(
-        expanded.to_string_lossy().ends_with("test/file"),
-        "expand_tilde should preserve path suffix, got: {}",
-        expanded.display()
-    );
-}
-
-#[test]
-fn workstation_daemon_hooks_expand_tilde_absolute_unchanged() {
-    use cfgd_core::daemon::DaemonHooks;
-    let hooks = super::WorkstationDaemonHooks;
-    let abs = std::path::Path::new("/absolute/path");
-    let expanded = hooks.expand_tilde(abs);
-    assert_eq!(
-        expanded, abs,
-        "expand_tilde should not modify absolute paths"
     );
 }
 
@@ -26847,6 +27020,16 @@ fn seam_value(
 /// so a subcommand whose variant stops matching its name fails here, and the
 /// walk never looks for a path no test can build.
 fn resolving_verb_variants() -> Vec<Vec<String>> {
+    PACKAGE_RESOLVING_VERBS
+        .iter()
+        .map(|verb| verb_variant_paths(verb.argv))
+        .collect()
+}
+
+/// The `Command` variant path each argv word selects, from the top
+/// (`Command::Module`) down (`ModuleCommand::Pull`), read off clap's tree and
+/// checked against the enums `cli/mod.rs` declares.
+fn verb_variant_paths(argv: &[&str]) -> Vec<String> {
     use clap::CommandFactory;
     let cli = Cli::command();
     let declared =
@@ -26862,38 +27045,32 @@ fn resolving_verb_variants() -> Vec<Vec<String>> {
             })
             .collect()
     };
-    PACKAGE_RESOLVING_VERBS
-        .iter()
-        .map(|verb| {
-            let mut command = &cli;
-            let mut parent = "Command".to_string();
-            let mut paths = Vec::new();
-            for word in verb.argv {
-                command = command
-                    .find_subcommand(word)
-                    .unwrap_or_else(|| panic!("{:?}: `{word}` is no subcommand", verb.argv));
-                let variant = pascal(command.get_name());
-                let enum_body = declared
-                    .split_once(&format!("pub enum {parent} {{"))
-                    .and_then(|(_, rest)| rest.split_once("\n}\n"))
-                    .map(|(body, _)| body)
-                    .unwrap_or_else(|| panic!("cli/mod.rs declares no `pub enum {parent}`"));
-                assert!(
-                    enum_body.lines().any(|l| {
-                        let l = l.trim_start();
-                        l.starts_with(&format!("{variant} {{"))
-                            || l.starts_with(&format!("{variant},"))
-                            || l.starts_with(&format!("{variant}("))
-                    }),
-                    "`{parent}` declares no `{variant}` for `{word}` in {:?}",
-                    verb.argv
-                );
-                paths.push(format!("{parent}::{variant}"));
-                parent = format!("{variant}Command");
-            }
-            paths
-        })
-        .collect()
+    let mut command = &cli;
+    let mut parent = "Command".to_string();
+    let mut paths = Vec::new();
+    for word in argv {
+        command = command
+            .find_subcommand(word)
+            .unwrap_or_else(|| panic!("{argv:?}: `{word}` is no subcommand"));
+        let variant = pascal(command.get_name());
+        let enum_body = declared
+            .split_once(&format!("pub enum {parent} {{"))
+            .and_then(|(_, rest)| rest.split_once("\n}\n"))
+            .map(|(body, _)| body)
+            .unwrap_or_else(|| panic!("cli/mod.rs declares no `pub enum {parent}`"));
+        assert!(
+            enum_body.lines().any(|l| {
+                let l = l.trim_start();
+                l.starts_with(&format!("{variant} {{"))
+                    || l.starts_with(&format!("{variant},"))
+                    || l.starts_with(&format!("{variant}("))
+            }),
+            "`{parent}` declares no `{variant}` for `{word}` in {argv:?}"
+        );
+        paths.push(format!("{parent}::{variant}"));
+        parent = format!("{variant}Command");
+    }
+    paths
 }
 
 /// The gate tag a fixture writes for an entry no host resolves.
@@ -29093,6 +29270,8 @@ fn base_doctor_output() -> super::output_types::DoctorOutput {
             sops_version: Some("3.8.0".into()),
             age_key_exists: true,
             age_key_path: Some("/home/user/.config/cfgd/keys/age.key".into()),
+            age_key_error: None,
+            age_key_blocks_run: false,
             sops_config_exists: true,
             sops_config_path: Some("/etc/.sops.yaml".into()),
             providers: vec![],
@@ -29101,6 +29280,20 @@ fn base_doctor_output() -> super::output_types::DoctorOutput {
         modules: vec![],
         system_configurators: vec![],
         profiles: vec![],
+        state_store: super::output_types::DoctorRootCheck {
+            accessible: true,
+            message: None,
+            created: None,
+        },
+        cache_dir: super::output_types::DoctorRootCheck {
+            accessible: true,
+            message: None,
+            created: None,
+        },
+        home: super::output_types::DoctorHomeCheck {
+            resolved: true,
+            refusal: None,
+        },
     }
 }
 
@@ -29165,6 +29358,88 @@ fn build_doctor_doc_git_missing_emits_fail_status() {
         text.contains("Some checks failed"),
         "all_passed should be false when git missing, got: {text}"
     );
+}
+
+/// `apply` opens the state store before it does anything, so a store that
+/// cannot open is a failed check and a failed verdict.
+#[test]
+fn build_doctor_doc_state_store_unavailable_emits_fail() {
+    let mut output = base_doctor_output();
+    output.state_store = super::output_types::DoctorRootCheck {
+        accessible: false,
+        message: Some("no home directory found".into()),
+        created: None,
+    };
+    let extras = super::doctor::DoctorExtras::default();
+    let text = emit_doc(&output, &extras);
+    assert!(
+        text.contains("✗ State store: unavailable — no home directory found"),
+        "the row must be a Fail naming the open error, got: {text}"
+    );
+    assert!(
+        text.contains("Some checks failed"),
+        "all_passed should be false when the state store cannot open, got: {text}"
+    );
+}
+
+/// A machine no `apply` has run on has no store yet. `apply` creates it, so the
+/// row passes and says so, and the verdict holds.
+#[test]
+fn build_doctor_doc_state_store_not_created_passes_and_says_apply_creates_it() {
+    let mut output = base_doctor_output();
+    output.state_store = super::output_types::DoctorRootCheck::not_created();
+    let text = emit_doc(&output, &super::doctor::DoctorExtras::default());
+    assert!(
+        text.contains("✓ State store: not created yet — `cfgd apply` creates it"),
+        "the row must pass and name what creates the store, got: {text}"
+    );
+    assert!(
+        !text.contains("Some checks failed"),
+        "a store not created yet must not fail the verdict, got: {text}"
+    );
+}
+
+/// `apply` resolves the cache before it opens the state store, so a cache with
+/// nowhere to go is a failed check and a failed verdict.
+#[test]
+fn build_doctor_doc_cache_unavailable_emits_fail() {
+    let mut output = base_doctor_output();
+    output.cache_dir = super::output_types::DoctorRootCheck {
+        accessible: false,
+        message: Some("no home directory found".into()),
+        created: None,
+    };
+    let text = emit_doc(&output, &super::doctor::DoctorExtras::default());
+    assert!(
+        text.contains("✗ Cache directory: unavailable — no home directory found"),
+        "the row must be a Fail naming why, got: {text}"
+    );
+    assert!(text.contains("Some checks failed"), "got: {text}");
+}
+
+/// With no home, the row fails the verdict exactly when the desired state
+/// writes under one, and is informational when nothing declared does.
+#[test]
+fn build_doctor_doc_home_row_fails_only_when_declared_work_needs_a_home() {
+    let mut output = base_doctor_output();
+    output.home = super::output_types::DoctorHomeCheck {
+        resolved: false,
+        refusal: Some("cannot write the managed env file ~/.cfgd.env".into()),
+    };
+    let text = emit_doc(&output, &super::doctor::DoctorExtras::default());
+    assert!(
+        text.contains("✗ Home directory: unset — cannot write the managed env file ~/.cfgd.env"),
+        "got: {text}"
+    );
+    assert!(text.contains("Some checks failed"), "got: {text}");
+
+    output.home.refusal = None;
+    let text = emit_doc(&output, &super::doctor::DoctorExtras::default());
+    assert!(
+        text.contains("◉ Home directory: unset — nothing declared writes under it"),
+        "got: {text}"
+    );
+    assert!(text.contains("Passed every check"), "got: {text}");
 }
 
 #[test]
@@ -29708,29 +29983,9 @@ fn build_doctor_doc_module_missing_a_manager_names_it_and_what_routes_to_it() {
 }
 
 #[test]
-fn build_doctor_doc_system_state_store_inaccessible_emits_warn() {
-    let output = base_doctor_output();
-    let extras = super::doctor::DoctorExtras {
-        state_store: Some(super::doctor::DoctorStateStore {
-            accessible: false,
-            message: Some("database locked".into()),
-        }),
-        profiles_dir: None,
-        config_sources: vec![],
-        update_optout: None,
-    };
-    let text = emit_doc(&output, &extras);
-    assert!(
-        text.contains("State store: unavailable") && text.contains("database locked"),
-        "should warn about inaccessible state store with message, got: {text}"
-    );
-}
-
-#[test]
 fn build_doctor_doc_system_profiles_dir_missing_emits_warn() {
     let output = base_doctor_output();
     let extras = super::doctor::DoctorExtras {
-        state_store: None,
         profiles_dir: Some(super::doctor::DoctorProfilesDir {
             path: "/etc/cfgd/profiles".into(),
             exists: false,
@@ -29751,7 +30006,6 @@ fn build_doctor_doc_system_profiles_dir_missing_emits_warn() {
 fn build_doctor_doc_update_optout_active_names_the_variable() {
     let output = base_doctor_output();
     let extras = super::doctor::DoctorExtras {
-        state_store: None,
         profiles_dir: None,
         config_sources: vec![],
         update_optout: Some("DO_NOT_TRACK"),
@@ -29767,7 +30021,6 @@ fn build_doctor_doc_update_optout_active_names_the_variable() {
 fn build_doctor_doc_no_update_optout_emits_nothing() {
     let output = base_doctor_output();
     let extras = super::doctor::DoctorExtras {
-        state_store: None,
         profiles_dir: None,
         config_sources: vec![],
         update_optout: None,
@@ -29783,7 +30036,6 @@ fn build_doctor_doc_no_update_optout_emits_nothing() {
 fn build_doctor_doc_source_cached_emits_ok() {
     let output = base_doctor_output();
     let extras = super::doctor::DoctorExtras {
-        state_store: None,
         profiles_dir: None,
         config_sources: vec![super::doctor::DoctorConfigSource {
             name: "team-config".into(),
@@ -33359,6 +33611,7 @@ fn execute_module_export_dispatch() {
 
 #[test]
 fn execute_module_push_dispatch() {
+    // registry-env-held: the missing module directory fails the push before any registry read.
     let h = CliTestHarness::builder().build();
     let cli = h.cli_with_command(Command::Module {
         command: ModuleCommand::Push {
@@ -33385,7 +33638,9 @@ fn execute_module_push_dispatch() {
 }
 
 #[test]
+#[serial_test::serial]
 fn execute_module_pull_dispatch() {
+    let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
     let h = CliTestHarness::builder().build();
     let out_dir = tempfile::tempdir().unwrap();
     let cli = h.cli_with_command(Command::Module {
@@ -33522,6 +33777,7 @@ fn every_platform_flag_refuses_a_value_without_an_arch_at_parse_time() {
 
 #[test]
 fn execute_module_build_dispatch() {
+    // registry-env-held: the missing module directory fails the build before any registry read.
     let h = CliTestHarness::builder().build();
     let cli = h.cli_with_command(Command::Module {
         command: ModuleCommand::Build {
@@ -34031,7 +34287,6 @@ fn build_doctor_doc_unscannable_profiles_dir_fails() {
         error: Some("failed to read /etc/cfgd/profiles: permission denied".into()),
     }];
     let extras = super::doctor::DoctorExtras {
-        state_store: None,
         profiles_dir: Some(super::doctor::DoctorProfilesDir {
             path: "/etc/cfgd/profiles".into(),
             exists: true,
@@ -35333,7 +35588,7 @@ fn an_apply_naming_the_default_config_still_sweeps_dead_decision_rows() {
     // spelling would turn the sweep off for every installed deployment.
     let staging = tempfile::tempdir().unwrap();
     let _home = cfgd_core::with_test_home_guard(staging.path());
-    let config_root = cfgd_core::default_config_dir();
+    let config_root = cfgd_core::default_config_dir().unwrap();
     std::fs::create_dir_all(config_root.join("profiles")).unwrap();
     std::fs::write(
         config_root.join("cfgd.yaml"),
@@ -40917,6 +41172,7 @@ const UNCONDITIONAL_HINT_CALL_SITES: &[(&str, &str)] = &[
         "stop_systemd_service",
     ),
     ("cfgd/src/cli/error.rs", "render_cli_error"),
+    ("cfgd/src/cli/generate/mod.rs", "scan_home"),
     ("cfgd/src/cli/init/cmd_init.rs", "check_prerequisites"),
     ("cfgd/src/cli/init/cmd_init.rs", "cmd_init"),
     ("cfgd/src/cli/profile/migrate.rs", "run_profile_migrate"),
@@ -43817,7 +44073,7 @@ fn every_run_under_a_resolved_profile_names_its_sources_and_modules() {
 /// it is not in a report addressed to whoever ran the command — the same
 /// reason `-o json` keeps the absolute path. So `fold_home_in_text` never
 /// reaches a `tracing::` argument, and a journal line naming a path under
-/// home carries `// native-ok: journal line, not a display slot` beside the
+/// home carries `// native-ok: a journal line, read by people` beside the
 /// folded rows it will be read next to. The daemon's startup banner spelled
 /// its socket absolutely eight lines above a folded `Config` row with no rule
 /// deciding which was right.
@@ -44099,7 +44355,8 @@ fn no_production_site_hand_rolls_the_same_path_comparison() {
 
 /// Two owners split the whole population of `"modules"` joins. A module
 /// CACHE root — materialized git sources — is `module_cache_root`
-/// (`util/paths.rs`) plus, for the daemon's fallback, `daemon::tick_module_cache`.
+/// (`util/paths.rs`), which the daemon's ticks reach through
+/// `daemon::tick_module_cache`.
 /// A DECLARED `modules/` directory under a config root — a config dir, a
 /// source checkout or a generated repo alike — is `declared_modules_dir`
 /// (`modules/loader.rs`), which owns the one literal join the walk exempts by
@@ -44123,7 +44380,6 @@ fn no_production_site_joins_the_module_cache_segment_by_hand() {
             if cfgd_core::test_helpers::is_test_source(&path)
                 || cfgd_core::test_helpers::is_test_only_file(&path)
                 || path.ends_with("util/paths.rs")
-                || path.ends_with("daemon/mod.rs")
                 || path.ends_with("modules/loader.rs")
             {
                 continue;
@@ -47937,9 +48193,11 @@ const PROVISIONING_VERB_CALLS: &[ProvisioningVerb] = &[
     ProvisioningVerb::always("cmd_module_keys_generate"),
     ProvisioningVerb::always("cmd_module_keys_rotate"),
     ProvisioningVerb::always("fix_missing_tools"),
-    // The binary's own entry point, which reaches the dispatcher below it. No
-    // test in this crate can call it, so it widens the population by nothing;
-    // it is here because the derivation names it and the roster is a superset.
+    // The binary's entry point and the gated run it hands to `finish_run`,
+    // both reaching the dispatcher below them. No test in this crate can call
+    // either, so they widen the population by nothing; they are here because
+    // the derivation names them and the roster is a superset.
+    ProvisioningVerb::always("gated_run"),
     ProvisioningVerb::always("main"),
     ProvisioningVerb::always("provision_cosign"),
     ProvisioningVerb::always("provision_tool"),
@@ -48400,7 +48658,7 @@ fn no_registered_manager_is_reachable_under_the_guard_on_a_host_holding_an_nvm_n
     cfgd_core::test_helpers::write_probe_tool(&nvm_bin, "npm");
     let _home = cfgd_core::with_test_home_guard(home.path());
     assert!(
-        cfgd_core::expand_tilde(std::path::Path::new("~")) == home.path(),
+        cfgd_core::expand_tilde(std::path::Path::new("~"), "test").unwrap() == home.path(),
         "the planted home is the one cfgd resolves"
     );
 
@@ -52444,7 +52702,12 @@ fn binary_spawn_tells(body: &str) -> Vec<&'static str> {
 /// are set by one loop over the constant this pin compiles in, so a variable
 /// added there is set by the constructor with no second list to keep in step.
 /// Every `CFGD_*` the test process inherited is removed before any of that,
-/// so a developer's exported `CFGD_CONFIG_DIR` or `CFGD_YES` reaches no spawn.
+/// so a developer's exported `CFGD_CONFIG_DIR` or `CFGD_YES` reaches no spawn,
+/// and so is every variable a registry request reads, by a loop over
+/// `cfgd_core::oci::registry_request_env()`, the list the client's own reads
+/// and the HTTP agent's proxy reads are held to; `DOCKER_CONFIG` is then
+/// pointed at an empty directory, so neither an exported credential, a proxy
+/// nor the developer's Docker config reaches a request.
 /// The files calling the constructor are floored, so the population cannot go
 /// dark while the constructor stays.
 #[test]
@@ -52460,13 +52723,19 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
     // taken out of both sides so a wrap does not read as a missing line.
     // `eq_ignore_ascii_case(` is required because Windows folds the case of
     // an environment name, so a case-sensitive match lets `cfgd_yes` through.
-    const SWEEP: [&str; 5] = [
+    const SWEEP: [&str; 7] = [
         "for (var, _) in std::env::vars_os() {",
         "eq_ignore_ascii_case(",
         "cmd.env_remove(var);",
         "for var in REMOVED_ENV {",
         "cmd.env_remove(var);",
+        REGISTRY_SWEEP,
+        "cmd.env_remove(var);",
     ];
+    // The registry request's own list, read by the constructor, so a variable
+    // the client or its HTTP agent starts reading is removed from every spawn
+    // with no second list to keep in step.
+    const REGISTRY_SWEEP: &str = "for var in cfgd_core::oci::registry_request_env() {";
     const INHERITED_PREFIX: &str = "CFGD_";
     const ISOLATING: [&str; 3] = [
         "for (var, path) in ISOLATED_ENV {",
@@ -52517,6 +52786,7 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
         cfgd_core::CFGD_STATE_DIR_ENV,
         cfgd_core::CFGD_CACHE_DIR_ENV,
         cfgd_core::CFGD_RUNTIME_DIR_ENV,
+        cfgd_core::oci::DOCKER_CONFIG_ENV,
     ] {
         assert!(
             ISOLATED_ENV.iter().any(|(var, _)| *var == required),
@@ -52658,6 +52928,16 @@ fn every_integration_test_spawns_the_binary_through_the_one_isolating_constructo
         {
             offenders.push(format!(
                 "{name} — `cfgd_bin` removes the inherited `{INHERITED_PREFIX}*` after setting variables"
+            ));
+        }
+        // Run after `ISOLATED_ENV`, the sweep would take back the empty
+        // `DOCKER_CONFIG` the list points every spawn at.
+        if squeezed
+            .find(&squeeze(REGISTRY_SWEEP))
+            .is_some_and(|at| at > first_env)
+        {
+            offenders.push(format!(
+                "{name} — `cfgd_bin` removes the registry client's variables after setting variables"
             ));
         }
         let spawns: usize = BINARY_SPAWN_TELLS
@@ -53349,13 +53629,14 @@ fn no_walk_bearing_source_scans_syntax_by_hand() {
 /// boundary added later joins it by being compiled.
 ///
 /// The gate runs once per process: in `main.rs`, above every boundary under
-/// `cli/`, for every verb but `cfgd init`, and inside `cmd_init` for init,
-/// which withholds it at load time because the document it answers about is
-/// the one init is about to write. The claim this test holds is that nothing
-/// else under `cli/` opens a path into it and that `main.rs` withholds init,
-/// which together make the two calls the whole population and never both in
-/// one run. The daemon is inside the `main.rs` call: `cfgd-core` cannot reach a
-/// function of this crate, so the policy it runs under is folded by
+/// `cli/`, for every verb but `cfgd init`, and for init inside `cmd_init`
+/// through `config_schema::gate_document_for_run`, which withholds it at load
+/// time because the document it answers about is the one init is about to
+/// write. The claim this test holds is that nothing else under `cli/` opens a
+/// path into it and that `main.rs` withholds init, which together make the
+/// two calls the whole population and never both in one run. The daemon is
+/// inside the `main.rs` call: `cfgd-core` cannot reach a function of this
+/// crate, so the policy it runs under is folded by
 /// `is_daemon` — once, inside `gate_on_load`, which is the only site holding
 /// both the override and the stored policy the fold applies to.
 #[test]
@@ -53376,8 +53657,9 @@ fn every_config_load_site_answers_the_migration_policy() {
         .collect();
     assert_eq!(
         direct,
-        ["cmd_init"],
-        "the gate runs above every command boundary, and init is the one verb that runs it itself"
+        ["gate_document_for_run"],
+        "the gate runs above every command boundary; a verb gating another document goes \
+         through `gate_document_for_run`, which hands its answer to the run"
     );
     let init = workspace_root().join("crates/cfgd/src/cli/init/cmd_init.rs");
     let (_, _, init_body) = file_declarations(&init)
@@ -53390,7 +53672,7 @@ fn every_config_load_site_answers_the_migration_policy() {
     // Two calls: the `Already initialized` return, and the one after the
     // clone or scaffold. Both have to come before the apply reads the file.
     let gates: Vec<usize> = init_body
-        .match_indices("gate_on_load(")
+        .match_indices("gate_document_for_run(")
         .map(|(at, _)| at)
         .collect();
     assert_eq!(
@@ -56657,9 +56939,14 @@ fn reads_a_config_document(line: &str, next: &str) -> bool {
 /// The reason a `// load-ok: <why>` hatch on `line` gives; `None` for a line
 /// with no hatch, or one whose hatch gives no reason.
 fn load_ok_reason(line: &str) -> Option<String> {
-    const HATCH: &str = "load-ok:";
-    let (_, why) = cfgd_core::test_helpers::carries_hatch(line, HATCH)
-        .then(|| line.split_once(HATCH))
+    hatch_reason(line, "load-ok:")
+}
+
+/// The reason a `// <marker> <why>` hatch on `line` gives, if the line carries
+/// that hatch with a reason.
+fn hatch_reason(line: &str, marker: &str) -> Option<String> {
+    let (_, why) = cfgd_core::test_helpers::carries_hatch(line, marker)
+        .then(|| line.split_once(marker))
         .flatten()?;
     Some(why.trim().to_string()).filter(|why| !why.is_empty())
 }
@@ -56702,7 +56989,7 @@ fn the_pre_dispatch_path_loads_the_document_once() {
     let expected: std::collections::BTreeMap<&str, usize> = [
         ("cli/mod.rs", 1),
         ("cli/plugin/mod.rs", 1),
-        ("cli/init/cmd_init.rs", 2),
+        ("cli/config_schema.rs", 1),
         ("cli/init/source.rs", 1),
         ("cli/startup.rs", 1),
     ]
@@ -56902,6 +57189,279 @@ fn every_cli_config_read_goes_through_the_run() {
          `// load-ok: <why>`:\n{}\n\nthe marked reads:\n{}",
         bare.join("\n"),
         hatches.join("\n")
+    );
+}
+
+/// A migration answer the load-time gate held for want of a home is taken off
+/// its document in two places only, both in `config_schema.rs`: the one
+/// recording `cli::finish_run` runs, which drops the answer when the home
+/// refused the run, and `gate_document_for_run`'s handoff of another
+/// document's answer to the run's own. The gate itself runs over the run's
+/// startup document in `main`, or over another document inside that handoff;
+/// a gate anywhere else would hold an answer nothing records.
+#[test]
+fn a_held_migration_answer_is_taken_only_by_the_one_recording_and_the_gate_handoff() {
+    use cfgd_core::test_helpers::{
+        calls_free_fn, code_line, file_declarations, rust_sources_under,
+    };
+    let root = cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src");
+    let mut takers = Vec::new();
+    let mut gates = Vec::new();
+    for path in rust_sources_under(&root) {
+        let rel = cfgd_core::to_posix_string(path.strip_prefix(&root).expect("under the root"));
+        for (name, _, body) in file_declarations(&path) {
+            let code: String = body.lines().map(|line| code_line(line) + "\n").collect();
+            if code.contains(".take_migration_answer(") {
+                takers.push(format!("{rel}::{name}"));
+            }
+            if name != "gate_on_load" && calls_free_fn(&code, "gate_on_load") {
+                gates.push(format!("{rel}::{name}"));
+            }
+        }
+    }
+    takers.sort();
+    gates.sort();
+    assert_eq!(
+        takers,
+        [
+            "cli/config_schema.rs::gate_document_for_run",
+            "cli/config_schema.rs::record_held_answer_after_run",
+        ],
+        "record a held migration answer through `config_schema::record_held_answer_after_run`, \
+         or hand it to the run through `config_schema::gate_document_for_run`"
+    );
+    assert_eq!(
+        gates,
+        [
+            "cli/config_schema.rs::gate_document_for_run",
+            "main.rs::gated_run"
+        ],
+        "gate a document other than the run's startup document through \
+         `config_schema::gate_document_for_run`, which hands its answer to the run"
+    );
+}
+
+/// One call that ends the process, found by [`process_exits_under`]: where it
+/// sits, the function it sits in, and the reason its `// exit-ok: <why>` hatch
+/// gives (`None` when unmarked).
+#[derive(Debug, PartialEq)]
+struct ProcessExit {
+    at: String,
+    function: Option<String>,
+    why: Option<String>,
+}
+
+/// The functions that end the process: `std::process::exit` and
+/// `ExitCode::exit`, `std::process::abort`, and `libc::_exit`.
+const PROCESS_ENDERS: [&str; 3] = ["exit", "abort", "_exit"];
+
+/// The marker in `main.rs` above which an exit runs before the migration gate.
+const GATE_BOUNDARY: &str = "// gate-boundary:";
+
+/// Whether a CODE line can end the process: a `.exit(` call (`ExitCode::exit`,
+/// the rendered error's `exit`); a path naming an ender, called or bound as a
+/// function pointer (`std::process::exit(`, `let f = process::abort;`); a bare
+/// call of one; or a `use` that imports one, which is how an alias
+/// (`use std::process::exit as quit;`) reaches a call no other shape names. A
+/// function named `exit` being declared is not a call.
+fn ends_the_process(code: &str) -> bool {
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    // `name` as a whole word that is the item itself, so the module in
+    // `cfgd_core::exit::ExitCode` is not the function `exit`.
+    let item_at = |at: usize, name: &str| {
+        let rest = &code[at + name.len()..];
+        !code[..at].ends_with(ident) && !rest.starts_with(ident) && !rest.starts_with("::")
+    };
+    let names_item = |name: &str, after_path: bool| {
+        code.match_indices(name)
+            .any(|(at, _)| item_at(at, name) && (!after_path || code[..at].ends_with("::")))
+    };
+    let imports_ender = code.trim_start().starts_with("use ")
+        && PROCESS_ENDERS.iter().any(|name| names_item(name, false));
+    code.contains(".exit(")
+        || imports_ender
+        || PROCESS_ENDERS.iter().any(|name| {
+            names_item(name, true)
+                || (cfgd_core::test_helpers::calls_free_fn(code, name)
+                    && !code.contains(&format!("fn {name}(")))
+        })
+}
+
+/// Every call that ends the process in the production code under `root`.
+fn process_exits_under(root: &Path) -> Vec<ProcessExit> {
+    use cfgd_core::test_helpers::{
+        code_line, declared_fn_name, floored_production_body, opens_function, rust_sources_under,
+        test_region_mask, walked_file_body,
+    };
+    let mut exits = Vec::new();
+    for file in rust_sources_under(root) {
+        let rel = cfgd_core::to_posix_string(file.strip_prefix(root).unwrap_or(&file));
+        if floored_production_body(&file).is_empty() {
+            continue;
+        }
+        // unfloored-slice-ok: the mask blanks test regions in place, so line numbers stay true.
+        let raw = walked_file_body(&file);
+        let lines: Vec<&str> = raw.lines().collect();
+        let mask = test_region_mask(&raw);
+        let mut function = None;
+        // `main.rs` runs the migration gate: what it runs above the boundary
+        // holds no answer to record.
+        let mut before_gate = rel == "main.rs";
+        for (i, (line, test)) in lines.iter().zip(mask.lines()).enumerate() {
+            let code = code_line(line);
+            if opens_function(&code) {
+                function = declared_fn_name(&code);
+            }
+            if before_gate && line.trim_start().starts_with(GATE_BOUNDARY) {
+                before_gate = false;
+            }
+            if before_gate || !test.is_empty() || !ends_the_process(&code) {
+                continue;
+            }
+            let why = hatch_reason(line, "exit-ok:").or_else(|| {
+                i.checked_sub(1)
+                    .and_then(|p| hatch_reason(lines[p], "exit-ok:"))
+            });
+            exits.push(ProcessExit {
+                at: format!("{rel}:{}", i + 1),
+                function: function.clone(),
+                why,
+            });
+        }
+    }
+    exits
+}
+
+/// A verb never ends the process itself: it returns `cli::reported_exit(code)`
+/// and `cli::finish_run` exits, after recording the migration answer the run
+/// holds. An exit anywhere else in `crates/cfgd/src` would skip that
+/// recording, so the only exits are `finish_run`'s, those in `main.rs` above
+/// its `// gate-boundary:` marker, and a site marked `// exit-ok: <why>`,
+/// which runs before the gate and holds no answer.
+#[test]
+fn every_process_exit_after_the_gate_passes_through_finish_run() {
+    let root = cfgd_core::test_helpers::workspace_root().join("crates/cfgd/src");
+    let main = cfgd_core::test_helpers::production_slice_of(&root.join("main.rs"));
+    let boundary = main
+        .lines()
+        .position(|line| line.trim_start().starts_with(GATE_BOUNDARY))
+        .expect("main.rs marks where its migration gate begins with `// gate-boundary:`");
+    let gate = main
+        .lines()
+        .position(|line| cfgd_core::test_helpers::calls_free_fn(line, "gate_on_load"))
+        .expect("main.rs runs the migration gate");
+    assert!(
+        boundary < gate,
+        "main.rs's `// gate-boundary:` (line {}) sits below its gate (line {}), so an exit \
+         after the gate is exempt",
+        boundary + 1,
+        gate + 1
+    );
+    let exits = process_exits_under(&root);
+    assert!(
+        exits
+            .iter()
+            .any(|e| e.at.starts_with("cli/mod.rs:") && e.function.as_deref() == Some("finish_run")),
+        "the walk found no exit in `finish_run`, so it proves nothing: {exits:?}"
+    );
+    assert!(
+        exits.iter().any(|e| e.why.is_some()),
+        "the walk found none of the marked exits, so it proves nothing: {exits:?}"
+    );
+    let bare: Vec<String> = exits
+        .iter()
+        .filter(|e| {
+            e.why.is_none()
+                && !(e.at.starts_with("cli/mod.rs:") && e.function.as_deref() == Some("finish_run"))
+        })
+        .map(|e| format!("{} (in {})", e.at, e.function.as_deref().unwrap_or("?")))
+        .collect();
+    let marked: Vec<String> = exits
+        .iter()
+        .filter_map(|e| Some(format!("{}: {}", e.at, e.why.as_deref()?)))
+        .collect();
+    assert!(
+        bare.is_empty(),
+        "return `cli::reported_exit(code)` so `finish_run` records the held answer \
+         before exiting, or mark a pre-gate site `// exit-ok: <why>`:\n{}\n\nthe marked exits:\n{}",
+        bare.join("\n"),
+        marked.join("\n")
+    );
+}
+
+/// The walk behind the pin above, one fixture per outcome: each call shape is
+/// found with its function, a hatch above or on the line gives its reason, a
+/// declaration, a method merely named like an ender and a call in a test module
+/// are skipped, and `main.rs` is judged only below its `// gate-boundary:`.
+#[test]
+fn the_process_exit_walk_judges_each_outcome() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join("a.rs"),
+        "fn method() {\n    ExitCode::Error.exit();\n}\n\
+         fn path() {\n    // exit-ok: before the gate\n    std::process::exit(1);\n}\n\
+         fn bare() {\n    exit(2); // exit-ok: no answer held\n}\n\
+         fn exit(code: i32) {}\n\
+         fn quiet() {\n    let code = render.exit_code();\n    handle.abort();\n}\n\
+         #[cfg(test)]\nmod tests {\n    fn t() {\n        std::process::exit(0);\n    }\n}\n",
+    )
+    .expect("write fixture");
+    std::fs::write(
+        dir.path().join("b.rs"),
+        "use std::process::exit as quit;\n\
+         use std::process::{self, exit as leave};\n\
+         fn pointer() {\n    let end: fn(i32) -> ! = std::process::exit;\n}\n\
+         fn aborts() {\n    std::process::abort();\n}\n\
+         fn raw() {\n    unsafe { libc::_exit(3) };\n}\n\
+         use std::process::ExitStatus;\n\
+         use cfgd_core::exit::ExitCode;\n",
+    )
+    .expect("write fixture");
+    std::fs::write(
+        dir.path().join("main.rs"),
+        "fn main() {\n    e.exit();\n    // gate-boundary: below runs after the gate\n    gate_on_load();\n    ExitCode::Error.exit();\n}\n",
+    )
+    .expect("write fixture");
+    let at = |at: &str, function: Option<&str>| ProcessExit {
+        at: at.to_string(),
+        function: function.map(str::to_string),
+        why: None,
+    };
+    let mut found = process_exits_under(dir.path());
+    found.retain(|e| !e.at.starts_with("a.rs:"));
+    assert_eq!(
+        found,
+        vec![
+            at("b.rs:1", None),
+            at("b.rs:2", None),
+            at("b.rs:4", Some("pointer")),
+            at("b.rs:7", Some("aborts")),
+            at("b.rs:10", Some("raw")),
+            at("main.rs:5", Some("main")),
+        ]
+    );
+    assert_eq!(
+        process_exits_under(dir.path())
+            .into_iter()
+            .filter(|e| e.at.starts_with("a.rs:"))
+            .collect::<Vec<_>>(),
+        vec![
+            ProcessExit {
+                at: "a.rs:2".to_string(),
+                function: Some("method".to_string()),
+                why: None,
+            },
+            ProcessExit {
+                at: "a.rs:6".to_string(),
+                function: Some("path".to_string()),
+                why: Some("before the gate".to_string()),
+            },
+            ProcessExit {
+                at: "a.rs:9".to_string(),
+                function: Some("bare".to_string()),
+                why: Some("no answer held".to_string()),
+            },
+        ]
     );
 }
 
@@ -57486,7 +58046,7 @@ fn the_env_read_needles_follow_a_read_behind_a_derived_helper() {
 /// that must expand it and the call that does; a directory flag's row names
 /// `Cli::expand_path_flags`, which `main` must call. The variables are every
 /// `pub const` in `cfgd-core/src/util/env_names.rs`, each classified: read
-/// and expanded by a named function (whose body must call `expand_tilde_strict(`
+/// and expanded by a named function (whose body must call `expand_tilde(`
 /// and name the const), read by clap as a flag the flag rows cover (and bound to
 /// that flag) plus the functions outside clap that read it, each settling it
 /// through `settle_config_path`, or not a path, with why. Every production
@@ -57513,15 +58073,18 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
     // A site is (file, function, the text its body must contain).
     type Site = (&'static str, &'static str, &'static str);
     const FLAGS: &[(&str, &[Site])] = &[
-        ("config", &[(SETTLE.0, SETTLE.1, "expand_tilde(&config)")]),
+        (
+            "config",
+            &[(SETTLE.0, SETTLE.1, "keep_tilde_without_home(&config)")],
+        ),
         (
             "config_dir",
             &[
-                (PATHS, "resolve_config_dir", "expand_tilde_strict(p"),
+                (PATHS, "resolve_config_dir", "expand_tilde(p"),
                 (
                     SETTLE.0,
                     SETTLE.1,
-                    "config_dir.map(cfgd_core::expand_tilde)",
+                    "config_dir.map(keep_tilde_without_home)",
                 ),
                 (METHOD.0, METHOD.1, "&mut self.config_dir"),
             ],
@@ -57529,21 +58092,21 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
         (
             "state_dir",
             &[
-                (PATHS, "resolve_state_dir", "expand_tilde_strict(p"),
+                (PATHS, "resolve_state_dir", "expand_tilde(p"),
                 (METHOD.0, METHOD.1, "&mut self.state_dir"),
             ],
         ),
         (
             "cache_dir",
             &[
-                (PATHS, "resolve_cache_dir", "expand_tilde_strict(p"),
+                (PATHS, "resolve_cache_dir", "expand_tilde(p"),
                 (METHOD.0, METHOD.1, "&mut self.cache_dir"),
             ],
         ),
         (
             "runtime_dir",
             &[
-                (PATHS, "resolve_runtime_dir", "expand_tilde_strict(p"),
+                (PATHS, "resolve_runtime_dir", "expand_tilde(p"),
                 (METHOD.0, METHOD.1, "&mut self.runtime_dir"),
             ],
         ),
@@ -57641,6 +58204,17 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
     };
     let mut offenders = Vec::new();
 
+    // A config path keeps its `~` with no home so config discovery refuses it
+    // under its own error; the keeper still has to try the expansion first.
+    const KEEP_TILDE: &str = "keep_tilde_without_home(";
+    match body_of(SETTLE.0, "keep_tilde_without_home") {
+        Ok(body) if body.contains("expand_tilde(") => {}
+        Ok(_) => offenders.push(format!(
+            "{} `fn keep_tilde_without_home` never expands",
+            SETTLE.0
+        )),
+        Err(e) => offenders.push(e),
+    }
     let main = body_of("crates/cfgd/src/main.rs", "main").expect("main.rs declares `fn main`");
     if !main.contains("cli.expand_path_flags()") {
         offenders.push("`main` never calls `cli.expand_path_flags()`".to_string());
@@ -57662,7 +58236,9 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
         };
         for (rel, name, needle) in *sites {
             match body_of(rel, name) {
-                Ok(body) if body.contains(needle) && body.contains("expand_tilde") => {}
+                Ok(body)
+                    if body.contains(needle)
+                        && (body.contains("expand_tilde") || body.contains(KEEP_TILDE)) => {}
                 Ok(_) => offenders.push(format!("{flag}: {rel} `fn {name}` lacks `{needle}`")),
                 Err(e) => offenders.push(format!("{flag}: {e}")),
             }
@@ -57691,9 +58267,9 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
                  reads it as, or why it is not a path"
             )),
             Some((_, Expands(rel, name))) => match body_of(rel, name) {
-                Ok(body) if body.contains("expand_tilde_strict(") && body.contains(constant) => {}
+                Ok(body) if body.contains("expand_tilde(") && body.contains(constant) => {}
                 Ok(_) => offenders.push(format!(
-                    "{constant}: {rel} `fn {name}` does not read it through `expand_tilde_strict(`"
+                    "{constant}: {rel} `fn {name}` does not read it through `expand_tilde(`"
                 )),
                 Err(e) => offenders.push(format!("{constant}: {e}")),
             },
@@ -57908,7 +58484,511 @@ fn every_path_flag_and_path_env_expands_a_leading_tilde() {
     assert!(
         offenders.is_empty(),
         "a path from a flag or a CFGD_* variable must expand a leading `~` through \
-         `cfgd_core::expand_tilde_strict`, which refuses it with no home:\n{}",
+         `cfgd_core::expand_tilde`, which refuses it with no home:\n{}",
+        offenders.join("\n")
+    );
+}
+
+/// The functions whose only way to fail is a missing home directory, read off
+/// the workspace's syntax trees: a function returning `Result` that builds one
+/// of the home refusals itself, and, to a fixpoint, one whose every `?` and
+/// every returned value either hands on such a function's result or builds
+/// the refusal. A function with any other way to fail is not one of them, so
+/// dropping its error drops more than a missing home.
+fn home_refusal_population(sources: &[&std::path::Path]) -> std::collections::BTreeSet<String> {
+    use syn::visit::Visit;
+    const REFUSALS: &[&str] = &[
+        "HomeUnresolved",
+        "HomeUnset",
+        "HomeDirectoryUnresolved",
+        "EnvHomeUnresolved",
+    ];
+
+    // An item compiled only for tests ships nowhere, so it is no member.
+    fn test_gated(attrs: &[syn::Attribute]) -> bool {
+        attrs.iter().any(|a| {
+            a.path().is_ident("cfg")
+                && a.meta.require_list().is_ok_and(|l| {
+                    l.tokens
+                        .clone()
+                        .into_iter()
+                        .any(|t| matches!(t, proc_macro2::TokenTree::Ident(i) if i == "test"))
+                })
+        })
+    }
+    struct Functions(Vec<(String, syn::ReturnType, syn::Block)>);
+    impl<'ast> Visit<'ast> for Functions {
+        fn visit_item_mod(&mut self, m: &'ast syn::ItemMod) {
+            if !test_gated(&m.attrs) {
+                syn::visit::visit_item_mod(self, m);
+            }
+        }
+        fn visit_item_impl(&mut self, i: &'ast syn::ItemImpl) {
+            if !test_gated(&i.attrs) {
+                syn::visit::visit_item_impl(self, i);
+            }
+        }
+        fn visit_item_fn(&mut self, f: &'ast syn::ItemFn) {
+            if test_gated(&f.attrs) {
+                return;
+            }
+            self.0.push((
+                f.sig.ident.to_string(),
+                f.sig.output.clone(),
+                (*f.block).clone(),
+            ));
+            syn::visit::visit_item_fn(self, f);
+        }
+        fn visit_impl_item_fn(&mut self, f: &'ast syn::ImplItemFn) {
+            if test_gated(&f.attrs) {
+                return;
+            }
+            self.0.push((
+                format!("::{}", f.sig.ident),
+                f.sig.output.clone(),
+                f.block.clone(),
+            ));
+            syn::visit::visit_impl_item_fn(self, f);
+        }
+    }
+
+    struct NamesRefusal(bool);
+    impl<'ast> Visit<'ast> for NamesRefusal {
+        fn visit_path(&mut self, p: &'ast syn::Path) {
+            self.0 |= p
+                .segments
+                .iter()
+                .any(|s| REFUSALS.iter().any(|r| s.ident == r));
+            syn::visit::visit_path(self, p);
+        }
+    }
+    let builds_refusal = |args: &mut dyn Iterator<Item = &syn::Expr>| {
+        let mut found = NamesRefusal(false);
+        args.for_each(|a| found.visit_expr(a));
+        found.0
+    };
+
+    #[derive(PartialEq)]
+    enum Failure {
+        None,
+        Home,
+        Other,
+    }
+    fn tail(block: &syn::Block) -> Option<&syn::Expr> {
+        match block.stmts.last() {
+            Some(syn::Stmt::Expr(e, None)) => Some(e),
+            _ => None,
+        }
+    }
+    fn returned(
+        e: &syn::Expr,
+        members: &std::collections::BTreeSet<String>,
+        builds: &dyn Fn(&mut dyn Iterator<Item = &syn::Expr>) -> bool,
+        out: &mut Vec<Failure>,
+    ) {
+        let home_or_other = |yes: bool| if yes { Failure::Home } else { Failure::Other };
+        match e {
+            syn::Expr::Call(c) => {
+                let syn::Expr::Path(p) = &*c.func else {
+                    return out.push(Failure::Other);
+                };
+                let segments: Vec<String> = p
+                    .path
+                    .segments
+                    .iter()
+                    .map(|s| s.ident.to_string())
+                    .collect();
+                let Some(last) = segments.last() else {
+                    return out.push(Failure::Other);
+                };
+                // `Type::f` and `Self::f` name an associated function, which
+                // the population keys apart from a free function `f`.
+                let associated = segments.len() > 1
+                    && segments[segments.len() - 2].starts_with(|c: char| c.is_ascii_uppercase());
+                let key = if associated {
+                    format!("::{last}")
+                } else {
+                    last.clone()
+                };
+                out.push(match last.as_str() {
+                    "Ok" => Failure::None,
+                    "Err" => home_or_other(builds(&mut c.args.iter())),
+                    _ if members.contains(&key) => Failure::Home,
+                    _ => Failure::Other,
+                });
+            }
+            syn::Expr::MethodCall(m) => match m.method.to_string().as_str() {
+                "map" | "into" => returned(&m.receiver, members, builds, out),
+                "ok_or" | "ok_or_else" | "map_err" => {
+                    out.push(home_or_other(builds(&mut m.args.iter())))
+                }
+                name if members.contains(&format!("::{name}")) => out.push(Failure::Home),
+                _ => out.push(Failure::Other),
+            },
+            syn::Expr::If(i) => {
+                if let Some(t) = tail(&i.then_branch) {
+                    returned(t, members, builds, out);
+                }
+                if let Some((_, other)) = &i.else_branch {
+                    returned(other, members, builds, out);
+                }
+            }
+            syn::Expr::Match(m) => m
+                .arms
+                .iter()
+                .for_each(|arm| returned(&arm.body, members, builds, out)),
+            syn::Expr::Block(b) => {
+                if let Some(t) = tail(&b.block) {
+                    returned(t, members, builds, out);
+                }
+            }
+            syn::Expr::Paren(p) => returned(&p.expr, members, builds, out),
+            // Both are judged where they occur: the visitor reads every `?`
+            // and every `return` in the body.
+            syn::Expr::Return(_) | syn::Expr::Try(_) => {}
+            _ => out.push(Failure::Other),
+        }
+    }
+
+    struct Exits<'m> {
+        members: &'m std::collections::BTreeSet<String>,
+        builds: &'m dyn Fn(&mut dyn Iterator<Item = &syn::Expr>) -> bool,
+        out: Vec<Failure>,
+    }
+    impl<'ast> Visit<'ast> for Exits<'_> {
+        fn visit_expr_closure(&mut self, _: &'ast syn::ExprClosure) {}
+        fn visit_item(&mut self, _: &'ast syn::Item) {}
+        fn visit_expr_try(&mut self, t: &'ast syn::ExprTry) {
+            returned(&t.expr, self.members, self.builds, &mut self.out);
+            syn::visit::visit_expr_try(self, t);
+        }
+        fn visit_expr_return(&mut self, r: &'ast syn::ExprReturn) {
+            if let Some(e) = &r.expr {
+                returned(e, self.members, self.builds, &mut self.out);
+            }
+            syn::visit::visit_expr_return(self, r);
+        }
+    }
+
+    let mut functions = Functions(Vec::new());
+    for path in sources {
+        // unfloored-slice-ok: syn parses whole items; test-gated ones are skipped by attribute.
+        let body = cfgd_core::test_helpers::walked_file_body(path);
+        let file = syn::parse_file(&body)
+            .unwrap_or_else(|e| panic!("{}: no longer parses: {e}", path.display()));
+        functions.visit_file(&file);
+    }
+    let returns_result = |output: &syn::ReturnType| match output {
+        syn::ReturnType::Type(_, ty) => match &**ty {
+            syn::Type::Path(p) => p.path.segments.last().is_some_and(|s| s.ident == "Result"),
+            _ => false,
+        },
+        syn::ReturnType::Default => false,
+    };
+    // A call is bound by its name and whether it names an associated function,
+    // so a name joins only when every function of that kind spelling it
+    // qualifies: `new` or `resolve` names many functions that fail for other
+    // reasons.
+    let mut members = std::collections::BTreeSet::new();
+    loop {
+        let mut disqualified = std::collections::BTreeSet::new();
+        let mut qualified = std::collections::BTreeSet::new();
+        for (name, output, block) in &functions.0 {
+            let mut exits = Exits {
+                members: &members,
+                builds: &builds_refusal,
+                out: Vec::new(),
+            };
+            exits.visit_block(block);
+            if let Some(t) = tail(block) {
+                returned(t, &members, &builds_refusal, &mut exits.out);
+            }
+            if returns_result(output)
+                && exits.out.contains(&Failure::Home)
+                && !exits.out.contains(&Failure::Other)
+            {
+                qualified.insert(name.clone());
+            } else {
+                disqualified.insert(name.clone());
+            }
+        }
+        let grown: std::collections::BTreeSet<String> =
+            qualified.difference(&disqualified).cloned().collect();
+        if grown == members {
+            return members
+                .into_iter()
+                .map(|key| key.trim_start_matches("::").to_string())
+                .collect();
+        }
+        members = grown;
+    }
+}
+
+/// The role an `expand_tilde(path, role)` call passes, read off the text
+/// between its parentheses (`raw`, and `code`, its [`blank_non_code`] twin):
+/// the value of a string literal, or of the `const` it names.
+///
+/// [`blank_non_code`]: cfgd_core::test_helpers::blank_non_code
+fn expansion_role(
+    raw: &str,
+    code: &str,
+    consts: &std::collections::BTreeMap<String, String>,
+) -> Option<String> {
+    let mut depth = 0i32;
+    let (comma, _) = code.char_indices().find(|&(_, c)| {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => return true,
+            _ => {}
+        }
+        false
+    })?;
+    let (raw, code) = (&raw[comma + 1..], &code[comma + 1..]);
+    if let [value] = string_literal_values(raw, code).as_slice() {
+        return Some(value.clone());
+    }
+    let name = code
+        .trim()
+        .trim_end_matches(',')
+        .trim()
+        .rsplit("::")
+        .next()?;
+    consts.get(name).cloned()
+}
+
+/// With no home directory, no path cfgd uses spells a literal `~`, and no
+/// root cfgd writes under falls back to a second location.
+///
+/// Every function whose only failure is a missing home
+/// ([`home_refusal_population`]: `expand_tilde`, `home_dir`, the
+/// `default_*_dir` and `resolve_*_dir` resolvers, `module_cache_root`, the
+/// daemon's `tick_module_cache` and every wrapper of theirs) hands that
+/// refusal on at each production call: a `~/` file target read as a relative
+/// path would be written under the working directory, and a cache root
+/// swapped for a directory beside the config is a second cache nobody else
+/// reads. A call whose result is dropped for a fallback (`.ok()`,
+/// `.unwrap_or*`, `.is_ok()`, `.is_err()`, `.unwrap()`, `.expect(`,
+/// `if let Ok(`) is a second, lossy answer, and so is a hand-rolled
+/// `replacen('~', ...)` outside `util/paths.rs`. A caller for which a missing
+/// home genuinely means "no such location" (a probe, a display cell, a config
+/// path left for discovery to refuse) carries `// home-optional-ok: <why>` on
+/// the call's line or in the comment run above its statement.
+///
+/// The same calls derive the home-refusal slots: every `expand_tilde(path,
+/// role)` passes its role as a literal or a `const`, and each role either
+/// names a question through
+/// [`HOME_REFUSAL_SLOTS`](cfgd_core::reconciler::HOME_REFUSAL_SLOTS), whose
+/// slots the store population pin runs one by one, or carries
+/// `// home-refusal-ok: <why>` saying why no question asks it before the run
+/// writes. A table row no call passes is stale.
+#[test]
+fn no_production_caller_drops_a_home_refusal_for_a_fallback() {
+    const HATCH: &str = "home-optional-ok:";
+    const ROLE_HATCH: &str = "home-refusal-ok:";
+    const DROPPED: &[&str] = &[
+        ".ok()",
+        ".unwrap_or",
+        ".is_ok()",
+        ".is_err()",
+        ".unwrap()",
+        ".expect(",
+    ];
+    const BOUND_ON_OK: &[&str] = &["if let Ok(", "let Ok(", "while let Ok("];
+    const HAND_ROLLED: &[&str] = &["replacen('~'", "replacen(\"~\""];
+    const PATHS: &str = "util/paths.rs";
+    // The wrappers the population must keep finding, so a derivation that
+    // stops following one cannot pass on a shrunken set.
+    const KNOWN_MEMBERS: &[&str] = &[
+        "expand_tilde",
+        "home_dir",
+        "default_config_dir",
+        "default_cache_dir",
+        "module_cache_root",
+        "tick_module_cache",
+    ];
+    // The calls each root holds today, floored so a walk reading the wrong
+    // tree cannot pass on an empty population.
+    const WALK_ROOTS: &[(&str, usize)] = &[
+        ("cfgd", 152),
+        ("cfgd-core", 109),
+        ("cfgd-crd", 0),
+        ("cfgd-csi", 0),
+        ("cfgd-operator", 4),
+        ("cfgd-schema", 0),
+        ("cfgd-test-fixtures", 0),
+    ];
+    let root_names: Vec<&str> = WALK_ROOTS.iter().map(|(k, _)| *k).collect();
+    let per_root = production_sources_per_root(&root_names);
+    let population = home_refusal_population(
+        &per_root
+            .iter()
+            .flat_map(|(_, files)| files.iter())
+            .filter(|(_, production)| !production.trim().is_empty())
+            .map(|(path, _)| path.as_path())
+            .collect::<Vec<_>>(),
+    );
+    let lost: Vec<&&str> = KNOWN_MEMBERS
+        .iter()
+        .filter(|m| !population.contains(**m))
+        .collect();
+    assert!(
+        lost.is_empty(),
+        "the home-refusal population {population:?} lost {lost:?}, so the derivation no \
+         longer follows a wrapper it must find"
+    );
+    let calls_of: Vec<String> = population.iter().map(|name| format!("{name}(")).collect();
+    let consts = str_consts(per_root.iter().flat_map(|(_, files)| files.iter()));
+    let slot_roles: std::collections::BTreeSet<&str> = cfgd_core::reconciler::HOME_REFUSAL_SLOTS
+        .iter()
+        .map(|(role, _, _)| *role)
+        .collect();
+    let mut roles_seen = std::collections::BTreeSet::new();
+    let mut unmapped = Vec::new();
+    let mut offenders = Vec::new();
+    let mut short = Vec::new();
+    let mut hatched = 0usize;
+    for ((root, files), (_, floor)) in per_root.into_iter().zip(WALK_ROOTS) {
+        let mut calls = 0usize;
+        for (path, production) in files {
+            let rel = path.to_string_lossy().replace('\\', "/");
+            let code = cfgd_core::test_helpers::blank_non_code(production);
+            let raw: Vec<&str> = production.lines().collect();
+            let hatch_covers = |line: usize, hatch: &str| -> bool {
+                if cfgd_core::test_helpers::carries_hatch(raw[line], hatch) {
+                    return true;
+                }
+                for above in raw[..line].iter().rev() {
+                    let trimmed = above.trim();
+                    if trimmed.starts_with("//") {
+                        if cfgd_core::test_helpers::carries_hatch(above, hatch) {
+                            return true;
+                        }
+                        continue;
+                    }
+                    if trimmed.is_empty() || trimmed.ends_with([';', '{', '}', ',']) {
+                        return false;
+                    }
+                    if cfgd_core::test_helpers::carries_hatch(above, hatch) {
+                        return true;
+                    }
+                }
+                false
+            };
+            for (at, call) in calls_of
+                .iter()
+                .flat_map(|call| code.match_indices(call.as_str()))
+            {
+                let head = &code[..at];
+                if head.trim_end().ends_with("fn")
+                    || head.ends_with(|c: char| c.is_alphanumeric() || c == '_')
+                {
+                    continue;
+                }
+                calls += 1;
+                let open = at + call.len();
+                let mut depth = 1usize;
+                let mut close = None;
+                for (i, c) in code[open..].char_indices() {
+                    match c {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                close = Some(open + i);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let Some(close) = close else {
+                    continue;
+                };
+                if call == "expand_tilde(" {
+                    let line = head.matches('\n').count();
+                    match expansion_role(&production[open..close], &code[open..close], &consts) {
+                        Some(role) => {
+                            if !slot_roles.contains(role.as_str())
+                                && !hatch_covers(line, ROLE_HATCH)
+                            {
+                                unmapped.push(format!("{rel}:{}: `{role}`", line + 1));
+                            }
+                            roles_seen.insert(role);
+                        }
+                        None => unmapped.push(format!(
+                            "{rel}:{}: a role spelled neither as a literal nor as a `const`: {}",
+                            line + 1,
+                            raw[line].trim()
+                        )),
+                    }
+                }
+                let tail: String = code[close + 1..]
+                    .chars()
+                    .filter(|c| !c.is_whitespace())
+                    .take(16)
+                    .collect();
+                let line_start = head.rfind('\n').map_or(0, |n| n + 1);
+                let statement_head = &code[line_start..at];
+                let dropped = DROPPED.iter().any(|d| tail.starts_with(d))
+                    || BOUND_ON_OK.iter().any(|b| statement_head.contains(b));
+                if !dropped {
+                    continue;
+                }
+                let line = head.matches('\n').count();
+                if hatch_covers(line, HATCH) {
+                    hatched += 1;
+                    continue;
+                }
+                offenders.push(format!("{rel}:{}: {}", line + 1, raw[line].trim()));
+            }
+            if !rel.ends_with(PATHS) {
+                for (n, line) in raw.iter().enumerate() {
+                    if line.trim_start().starts_with("//") {
+                        continue;
+                    }
+                    if HAND_ROLLED.iter().any(|h| line.contains(h)) {
+                        offenders.push(format!(
+                            "{rel}:{}: a hand-rolled `~` expansion: {}",
+                            n + 1,
+                            line.trim()
+                        ));
+                    }
+                }
+            }
+        }
+        if calls < *floor {
+            short.push(format!("{root}: {calls} under a floor of {floor}"));
+        }
+    }
+    assert!(
+        short.is_empty(),
+        "the walk no longer reaches every tree's calls into the population: {short:?}"
+    );
+    assert!(
+        hatched >= 1,
+        "no hatched call was found, so the walk no longer reads the comments it judges"
+    );
+    let stale: Vec<&&str> = slot_roles
+        .iter()
+        .filter(|role| !roles_seen.contains(**role))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "HOME_REFUSAL_SLOTS names roles no production `expand_tilde` call passes: {stale:?}"
+    );
+    assert!(
+        unmapped.is_empty(),
+        "an `expand_tilde` role neither names a home-refusal slot in HOME_REFUSAL_SLOTS (with \
+         its fixture in the store population pin's LONE_SLOTS) nor carries \
+         `// {ROLE_HATCH} <why no question asks it before the run writes>`:\n{}",
+        unmapped.join("\n")
+    );
+    assert!(
+        offenders.is_empty(),
+        "a call to a function whose only failure is a missing home hands its refusal on with \
+         `?` (or carries `// {HATCH} <why>` where a missing home means no such location); \
+         the population is {population:?}:\n{}",
         offenders.join("\n")
     );
 }

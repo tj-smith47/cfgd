@@ -167,12 +167,12 @@ fn oci_manifest_serialization() {
 #[serial]
 fn insecure_registry_env_var() {
     // Save and restore env var to avoid affecting other tests
-    let prev = std::env::var("OCI_INSECURE_REGISTRIES").ok();
+    let prev = std::env::var(crate::oci::OCI_INSECURE_REGISTRIES_ENV).ok();
 
     // SAFETY: test is single-threaded for this env var; save/restore brackets usage
     unsafe {
         std::env::set_var(
-            "OCI_INSECURE_REGISTRIES",
+            crate::oci::OCI_INSECURE_REGISTRIES_ENV,
             "myregistry:5000,other.local:8080",
         );
     }
@@ -191,8 +191,8 @@ fn insecure_registry_env_var() {
     // Restore
     unsafe {
         match prev {
-            Some(v) => std::env::set_var("OCI_INSECURE_REGISTRIES", v),
-            None => std::env::remove_var("OCI_INSECURE_REGISTRIES"),
+            Some(v) => std::env::set_var(crate::oci::OCI_INSECURE_REGISTRIES_ENV, v),
+            None => std::env::remove_var(crate::oci::OCI_INSECURE_REGISTRIES_ENV),
         }
     }
 }
@@ -588,9 +588,9 @@ fn reference_str_returns_tag_or_digest() {
 #[serial]
 fn is_insecure_registry_without_env_var() {
     // When OCI_INSECURE_REGISTRIES is not set (or empty), nothing is insecure
-    let prev = std::env::var("OCI_INSECURE_REGISTRIES").ok();
+    let prev = std::env::var(crate::oci::OCI_INSECURE_REGISTRIES_ENV).ok();
     unsafe {
-        std::env::remove_var("OCI_INSECURE_REGISTRIES");
+        std::env::remove_var(crate::oci::OCI_INSECURE_REGISTRIES_ENV);
     }
     assert!(!is_insecure_registry("localhost:5000"));
     assert!(!is_insecure_registry("ghcr.io"));
@@ -598,7 +598,7 @@ fn is_insecure_registry_without_env_var() {
     // Restore
     unsafe {
         if let Some(v) = prev {
-            std::env::set_var("OCI_INSECURE_REGISTRIES", v);
+            std::env::set_var(crate::oci::OCI_INSECURE_REGISTRIES_ENV, v);
         }
     }
 }
@@ -640,7 +640,9 @@ mod bridge {
     }
 
     #[test]
+    #[serial_test::serial]
     fn snapshot_oci_pull_clean() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let mut server = mockito::Server::new();
         let server_url = server.url();
         let registry = registry_from_url(&server_url);
@@ -727,7 +729,9 @@ mod bridge {
     }
 
     #[test]
+    #[serial_test::serial]
     fn snapshot_oci_push_clean() {
+        let _registry_env = crate::test_helpers::isolate_registry_host_env();
         let mut server = mockito::Server::new();
         let server_url = server.url();
         let registry = registry_from_url(&server_url);
@@ -878,4 +882,365 @@ fn image_config_serializes_with_correct_oci_keys() {
     assert_eq!(rt_config.env.unwrap(), vec!["PATH=/app/bin"]);
     assert!(rt_config.cmd.is_none());
     assert!(rt_config.user.is_none());
+}
+
+/// An item compiled only into test builds, which ships nothing.
+fn test_gated(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("cfg")
+            && attr
+                .meta
+                .require_list()
+                .is_ok_and(|list| crate::test_helpers::cfg_requires_test(&list.tokens.to_string()))
+    })
+}
+
+/// Only a registry's own `404` is "not found": `transport::get_present` is the
+/// one function in the workspace's production code that builds
+/// `ManifestNotFound` or `BlobNotFound`, in any spelling (`OciError::`,
+/// `Self::`, a glob import, inside a macro); importing either under another
+/// name counts as a construction. A construction anywhere else could
+/// answer "missing" for an unreachable registry, a `500` or a refused
+/// credential. Each production file is parsed whole with its test-gated items
+/// skipped, so a file that does not parse fails the walk, and the expected map
+/// names the file and function holding the constructions, so a renamed or
+/// unread file fails by name.
+#[test]
+fn only_get_present_builds_a_not_found_error() {
+    use std::collections::BTreeMap;
+    use syn::visit::Visit;
+
+    const VARIANTS: [&str; 2] = ["ManifestNotFound", "BlobNotFound"];
+
+    struct Builds {
+        file: String,
+        function: Vec<String>,
+        found: BTreeMap<String, usize>,
+    }
+    impl Builds {
+        fn record(&mut self) {
+            let function = self.function.last().map_or("<no fn>", String::as_str);
+            *self
+                .found
+                .entry(format!("{} in fn {function}", self.file))
+                .or_default() += 1;
+        }
+        fn scan_tokens(&mut self, tokens: proc_macro2::TokenStream) {
+            let mut previous_named_a_variant = false;
+            for tree in tokens {
+                if let proc_macro2::TokenTree::Group(group) = &tree {
+                    if previous_named_a_variant
+                        && group.delimiter() == proc_macro2::Delimiter::Brace
+                    {
+                        self.record();
+                    }
+                    self.scan_tokens(group.stream());
+                }
+                previous_named_a_variant = matches!(
+                    &tree,
+                    proc_macro2::TokenTree::Ident(ident) if VARIANTS.iter().any(|v| ident == v)
+                );
+            }
+        }
+    }
+    impl<'ast> Visit<'ast> for Builds {
+        fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+            if !test_gated(&item.attrs) {
+                syn::visit::visit_item_mod(self, item);
+            }
+        }
+        fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+            if !test_gated(&item.attrs) {
+                syn::visit::visit_item_impl(self, item);
+            }
+        }
+        fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+            if test_gated(&item.attrs) {
+                return;
+            }
+            self.function.push(item.sig.ident.to_string());
+            syn::visit::visit_item_fn(self, item);
+            self.function.pop();
+        }
+        fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+            if test_gated(&item.attrs) {
+                return;
+            }
+            self.function.push(item.sig.ident.to_string());
+            syn::visit::visit_impl_item_fn(self, item);
+            self.function.pop();
+        }
+        fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
+            self.function.push(item.sig.ident.to_string());
+            syn::visit::visit_trait_item_fn(self, item);
+            self.function.pop();
+        }
+        fn visit_expr_struct(&mut self, expr: &'ast syn::ExprStruct) {
+            if expr
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| VARIANTS.iter().any(|v| segment.ident == v))
+            {
+                self.record();
+            }
+            syn::visit::visit_expr_struct(self, expr);
+        }
+        fn visit_use_rename(&mut self, rename: &'ast syn::UseRename) {
+            // A variant imported under another name is constructed under that
+            // name, where neither check above can see it.
+            if VARIANTS.iter().any(|v| rename.ident == v) {
+                self.record();
+            }
+        }
+        fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+            self.scan_tokens(mac.tokens.clone());
+        }
+    }
+
+    let root = crate::test_helpers::workspace_root();
+    let mut builds = Builds {
+        file: String::new(),
+        function: Vec::new(),
+        found: BTreeMap::new(),
+    };
+    for (_, files) in
+        crate::test_helpers::production_sources_per_root(crate::test_helpers::WORKSPACE_CRATES)
+    {
+        // A file holding tests alone has an empty production view.
+        for (path, _) in files
+            .iter()
+            .filter(|(_, production)| !production.is_empty())
+        {
+            let rel = path.strip_prefix(&root).unwrap_or(path);
+            builds.file = rel.to_string_lossy().replace('\\', "/");
+            let body = crate::test_helpers::walked_file_body(path);
+            let file = syn::parse_file(&body)
+                .unwrap_or_else(|e| panic!("{}: does not parse: {e}", builds.file));
+            builds.visit_file(&file);
+        }
+    }
+    proc_macro2::extra::invalidate_current_thread_spans();
+
+    let expected = BTreeMap::from([(
+        "crates/cfgd-core/src/oci/transport.rs in fn get_present".to_string(),
+        2,
+    )]);
+    let stray: Vec<_> = builds
+        .found
+        .iter()
+        .filter(|(at, _)| !expected.contains_key(*at))
+        .collect();
+    assert!(stray.is_empty(), "built outside get_present: {stray:?}");
+    assert_eq!(
+        builds.found, expected,
+        "get_present no longer builds each variant once"
+    );
+}
+
+/// Every environment variable a registry request reads is named on
+/// [`registry_request_env`], and every name there is read.
+///
+/// The list is what `cfgd_bin()` removes from every spawn and what
+/// `test_helpers::isolate_registry_host_env` unsets for an in-process test, so
+/// a read the list does not name is a host input that reaches a test's
+/// requests, and a name the list holds but nothing reads is a scrub that
+/// guards nothing. Each production file under `oci/`, and `http.rs`, which
+/// builds the agent every request goes through, is parsed whole with its
+/// test-gated items skipped, so a file that does not parse fails the walk. A
+/// read is a call to `var`, `var_os`, `vars`, `vars_os` or `env_or`; its
+/// argument must be a path to a `const` declared in a walked file, whose value
+/// is read off the same parse, and `vars`/`vars_os` take no name to check.
+/// ureq reads the proxy variables itself, so the one call to
+/// `Proxy::try_from_env` counts as reading every name on
+/// [`crate::http::PROXY_ENV`]; `proxy_from_env_reads_every_variable_proxy_env_lists`
+/// holds that list to what ureq reads. The container-runtime seams `build.rs`
+/// reads through `tool_cmd` are `CFGD_*` names, which `cfgd_bin()` already
+/// removes as a class.
+#[test]
+fn every_variable_the_registry_client_reads_is_a_registry_host_variable() {
+    use std::collections::{BTreeMap, BTreeSet};
+    use syn::visit::Visit;
+
+    const READERS: [&str; 5] = ["var", "var_os", "vars", "vars_os", "env_or"];
+    const PROXY_READER: [&str; 2] = ["Proxy", "try_from_env"];
+
+    #[derive(Default)]
+    struct Reads {
+        file: String,
+        consts: BTreeMap<String, String>,
+        named: Vec<(String, String)>,
+        unnamed: Vec<String>,
+        proxy_reads: Vec<String>,
+    }
+    impl<'ast> Visit<'ast> for Reads {
+        fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+            if !test_gated(&item.attrs) {
+                syn::visit::visit_item_mod(self, item);
+            }
+        }
+        fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+            if !test_gated(&item.attrs) {
+                syn::visit::visit_item_impl(self, item);
+            }
+        }
+        fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+            if !test_gated(&item.attrs) {
+                syn::visit::visit_item_fn(self, item);
+            }
+        }
+        fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
+            if let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(value),
+                ..
+            }) = &*item.expr
+            {
+                self.consts.insert(item.ident.to_string(), value.value());
+            }
+            syn::visit::visit_item_const(self, item);
+        }
+        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+            if let syn::Expr::Path(func) = &*call.func {
+                let segments: Vec<String> = func
+                    .path
+                    .segments
+                    .iter()
+                    .map(|s| s.ident.to_string())
+                    .collect();
+                if segments.ends_with(&PROXY_READER.map(String::from)) {
+                    self.proxy_reads.push(self.file.clone());
+                }
+            }
+            if let syn::Expr::Path(func) = &*call.func
+                && let Some(reader) = func.path.segments.last()
+                && READERS.iter().any(|r| reader.ident == r)
+            {
+                match call.args.first() {
+                    Some(syn::Expr::Path(arg)) if arg.path.segments.last().is_some() => {
+                        let name = arg.path.segments.last().map(|s| s.ident.to_string());
+                        self.named
+                            .push((self.file.clone(), name.unwrap_or_default()));
+                    }
+                    other => self.unnamed.push(format!(
+                        "{}: {}({})",
+                        self.file,
+                        reader.ident,
+                        match other {
+                            Some(syn::Expr::Lit(syn::ExprLit {
+                                lit: syn::Lit::Str(literal),
+                                ..
+                            })) => format!("{:?}", literal.value()),
+                            Some(_) => "<expression>".to_string(),
+                            None => String::new(),
+                        }
+                    )),
+                }
+            }
+            syn::visit::visit_expr_call(self, call);
+        }
+    }
+
+    let root = crate::test_helpers::workspace_root();
+    let oci_dir = root.join("crates/cfgd-core/src/oci");
+    let http_file = root.join("crates/cfgd-core/src/http.rs");
+    let mut reads = Reads::default();
+    let mut files = 0usize;
+    for (_, sources) in
+        crate::test_helpers::production_sources_per_root(crate::test_helpers::WORKSPACE_CRATES)
+    {
+        for (path, _) in sources.iter().filter(|(path, production)| {
+            (path.starts_with(&oci_dir) || *path == http_file) && !production.is_empty()
+        }) {
+            files += 1;
+            let rel = path.strip_prefix(&root).unwrap_or(path);
+            reads.file = rel.to_string_lossy().replace('\\', "/");
+            let body = crate::test_helpers::walked_file_body(path);
+            let file = syn::parse_file(&body)
+                .unwrap_or_else(|e| panic!("{}: does not parse: {e}", reads.file));
+            reads.visit_file(&file);
+        }
+    }
+    proc_macro2::extra::invalidate_current_thread_spans();
+    // 10 = archive, auth, build, mod, pack, pull, push, sign and transport,
+    // and http.rs.
+    assert!(
+        files >= 10,
+        "the walk read {files} production files under {} and {}; it has gone blind",
+        oci_dir.display(),
+        http_file.display()
+    );
+    assert_eq!(
+        reads.proxy_reads,
+        ["crates/cfgd-core/src/http.rs"],
+        "the agent's proxy is read through the one `Proxy::try_from_env` call in http.rs"
+    );
+
+    assert!(
+        reads.unnamed.is_empty(),
+        "a registry request's read names its variable through a const on registry_request_env: {:?}",
+        reads.unnamed
+    );
+    let listed: BTreeSet<&str> = registry_request_env().collect();
+    let mut read: BTreeSet<&str> = reads
+        .proxy_reads
+        .iter()
+        .flat_map(|_| crate::http::PROXY_ENV)
+        .collect();
+    for name in &read {
+        assert!(
+            listed.contains(name),
+            "http.rs: the agent reads {name}, which registry_request_env does not list"
+        );
+    }
+    for (file, ident) in &reads.named {
+        let value = reads.consts.get(ident).unwrap_or_else(|| {
+            panic!("{file}: reads `{ident}`, which names no string const in a walked file")
+        });
+        assert!(
+            listed.contains(value.as_str()),
+            "{file}: reads {value}, which registry_request_env does not list"
+        );
+        read.insert(value.as_str());
+    }
+    assert_eq!(
+        read, listed,
+        "registry_request_env lists a variable no registry request reads"
+    );
+}
+
+/// Every registry host variable is spelled once, by its `*_ENV` const in
+/// `oci/mod.rs`; a test setting, unsetting or reading one names the const, so
+/// a renamed variable leaves no test guarding the old name.
+#[test]
+fn every_registry_host_variable_is_spelled_by_its_const_alone() {
+    let root = crate::test_helpers::workspace_root();
+    let home = root.join("crates/cfgd-core/src/oci/mod.rs");
+    let mut files = 0usize;
+    let mut offenders = Vec::new();
+    for path in crate::test_helpers::rust_sources_under(&root.join("crates")) {
+        files += 1;
+        if path == home {
+            continue;
+        }
+        // unfloored-slice-ok: a spelling anywhere, tests included, is the subject.
+        let body = crate::test_helpers::walked_file_body(&path);
+        let code = crate::test_helpers::blank_comments(&body);
+        for name in REGISTRY_HOST_ENV {
+            let literal = format!("\"{name}\"");
+            for (i, line) in code.lines().enumerate() {
+                if line.contains(&literal) {
+                    offenders.push(format!("{}:{}: {literal}", path.display(), i + 1));
+                }
+            }
+        }
+    }
+    assert!(
+        files >= 500,
+        "the walk read {files} files; it has gone blind"
+    );
+    assert!(
+        offenders.is_empty(),
+        "a registry host variable is spelled as a literal; name its `*_ENV` const:\n{}",
+        offenders.join("\n")
+    );
 }

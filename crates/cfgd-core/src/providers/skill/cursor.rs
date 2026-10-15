@@ -24,7 +24,7 @@ impl SkillProvider for CursorProvider {
         "cursor"
     }
 
-    fn detect(&self, scope: SkillScope) -> Detection {
+    fn detect(&self, scope: SkillScope) -> Result<Detection> {
         let found = match scope {
             // `.cursor/` is the project-local marker; pure fs check, no shell-out.
             SkillScope::Project => std::env::current_dir()
@@ -34,23 +34,21 @@ impl SkillProvider for CursorProvider {
             // no user-global location, so `-g` should skip with a reported warning
             // rather than fabricate a target.
             SkillScope::User => {
-                return Detection::Unsupported(
+                return Ok(Detection::Unsupported(
                     "cursor rules are project-only (.cursor/rules); no user-scope primitive"
                         .to_string(),
-                );
+                ));
             }
         };
-        Detection::present(found)
+        Ok(Detection::present(found))
     }
 
-    fn target_path(&self, kind: SkillKind, scope: SkillScope) -> Option<PathBuf> {
+    fn target_path(&self, kind: SkillKind, scope: SkillScope) -> Result<Option<PathBuf>> {
         match scope {
-            SkillScope::Project => Some(
-                std::env::current_dir()
-                    .ok()?
-                    .join(relative_rule_path(kind.command_token())),
-            ),
-            SkillScope::User => None,
+            SkillScope::Project => Ok(std::env::current_dir()
+                .ok()
+                .map(|d| d.join(relative_rule_path(kind.command_token())))),
+            SkillScope::User => Ok(None),
         }
     }
 
@@ -95,12 +93,13 @@ mod tests {
     #[test]
     fn cursor_user_scope_is_unsupported() {
         assert!(matches!(
-            CursorProvider.detect(SkillScope::User),
+            CursorProvider.detect(SkillScope::User).unwrap(),
             Detection::Unsupported(_)
         ));
         assert!(
             CursorProvider
                 .target_path(SkillKind::Module, SkillScope::User)
+                .unwrap()
                 .is_none()
         );
     }

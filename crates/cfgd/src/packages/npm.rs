@@ -214,7 +214,7 @@ fn persisted_npm_prefix_decision_with(
     let prefix = PathBuf::from(prefix);
     if !is_writable(&prefix) {
         tracing::debug!(
-            prefix = %prefix.display(), // native-ok: log line, not a persisted key
+            prefix = %prefix.display(), // native-ok: a log line, read by people
             "persisted npm prefix is no longer writable; discarding cached decision"
         );
         return None;
@@ -225,7 +225,7 @@ fn persisted_npm_prefix_decision_with(
         && is_writable(&configured)
     {
         tracing::debug!(
-            prefix = %configured.display(), // native-ok: log line, not a persisted key
+            prefix = %configured.display(), // native-ok: a log line, read by people
             "npm's configured prefix is writable again; discarding fallback decision"
         );
         return None;
@@ -373,7 +373,7 @@ pub(super) fn resolve_npm_prefix_with(
             is_fallback: false,
         }),
         _ => Ok(NpmPrefixDecision {
-            prefix: Some(npm_fallback_prefix()),
+            prefix: Some(npm_fallback_prefix()?),
             is_fallback: true,
         }),
     }
@@ -492,8 +492,10 @@ pub(super) fn npm_prefix_holds_packages(prefix: &Path) -> bool {
 /// directory, so a read path (`installed_packages`, `path_dirs`) can name
 /// this location without conjuring it into existence; see
 /// [`ensure_npm_fallback_prefix`] for the install-only creation step.
-pub(super) fn npm_fallback_prefix() -> PathBuf {
-    cfgd_core::expand_tilde(Path::new("~/.npm-global"))
+pub(super) fn npm_fallback_prefix() -> Result<PathBuf> {
+    // home-refusal-ok: npm answers this path at run time (its own prefix is not writable);
+    // a failure is reported on its install action
+    cfgd_core::expand_tilde(Path::new("~/.npm-global"), "npm fallback prefix")
 }
 
 /// Create the fallback prefix directory. Called only from
@@ -530,14 +532,12 @@ pub(super) fn find_npm() -> Option<PathBuf> {
     if let Some(path) = cfgd_core::command_path("npm") {
         return Some(path);
     }
-    // `expand_tilde`, not a raw `HOME` read: it is the workspace's one home
-    // resolution and the only one a test home reaches, so a pin planting an
-    // nvm tree under its own home is answered by the same scan production
-    // runs. An unresolvable home leaves the `~` in place.
-    let home = cfgd_core::expand_tilde(Path::new("~"));
-    if home == Path::new("~") {
-        return None;
-    }
+    // `home_dir` is the workspace's one home resolution and the only one a
+    // test home reaches, so a pin planting an nvm tree under its own home is
+    // answered by the same scan production runs. With no home there is no nvm
+    // tree to scan.
+    // home-optional-ok: a probe; with no home there is no nvm tree to scan
+    let home = cfgd_core::home_dir().ok()?;
     find_npm_in_nvm(&home)
 }
 
@@ -2190,7 +2190,8 @@ mod tests {
             installed_result
                 .expect("installed_packages() must resolve through the real fallback composition");
 
-            let expected_fallback = cfgd_core::with_test_home(home.path(), npm_fallback_prefix);
+            let expected_fallback =
+                cfgd_core::with_test_home(home.path(), npm_fallback_prefix).unwrap();
 
             let log = shim.argv_log();
             let prefix_values: Vec<String> = log
@@ -2327,7 +2328,7 @@ mod tests {
                 NpmManager.install(&["yarn".to_string()], &cx)
             })
             .expect("install must resolve through the fallback composition");
-            let fallback = cfgd_core::with_test_home(home.path(), npm_fallback_prefix);
+            let fallback = cfgd_core::with_test_home(home.path(), npm_fallback_prefix).unwrap();
             assert!(
                 first_shim
                     .argv_log()
@@ -2519,7 +2520,7 @@ mod tests {
             // invoking the write-probe — root-independent by construction.
             let _shim = NpmShim::install(Path::new(""), 0, "", "");
             let (dirs, fallback) = cfgd_core::with_test_home(home.path(), || {
-                (npm_path_dirs_for(false), npm_fallback_prefix())
+                (npm_path_dirs_for(false), npm_fallback_prefix().unwrap())
             });
             assert_eq!(
                 dirs,
@@ -2550,7 +2551,7 @@ mod tests {
             let (created, fallback) = cfgd_core::with_test_home(home.path(), || {
                 (
                     NpmManager.created_path_dirs(&fallback_cx),
-                    npm_fallback_prefix(),
+                    npm_fallback_prefix().unwrap(),
                 )
             });
             assert_eq!(

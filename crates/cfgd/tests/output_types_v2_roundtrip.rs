@@ -11,9 +11,9 @@
 //! payload).
 
 use cfgd::cli::output_types::{
-    DoctorConfigCheck, DoctorConfigState, DoctorConfiguratorCheck, DoctorManagerCheck,
-    DoctorModuleCheck, DoctorOutput, DoctorProviderCheck, DoctorSecretsCheck, LogOutput,
-    PlanActionOutput, PlanGroupOutput, PlanOutput, PlanPhaseOutput,
+    DoctorConfigCheck, DoctorConfigState, DoctorConfiguratorCheck, DoctorHomeCheck,
+    DoctorManagerCheck, DoctorModuleCheck, DoctorOutput, DoctorProviderCheck, DoctorRootCheck,
+    DoctorSecretsCheck, LogOutput, PlanActionOutput, PlanGroupOutput, PlanOutput, PlanPhaseOutput,
 };
 use cfgd_core::output::{Doc, OutputFormat, Printer};
 use cfgd_core::reconciler::Owner;
@@ -50,6 +50,8 @@ fn doctor_output_roundtrips_through_emit() {
             sops_version: Some("3.8.1".into()),
             age_key_exists: true,
             age_key_path: Some("~/.config/sops/age/keys.txt".into()),
+            age_key_error: None,
+            age_key_blocks_run: false,
             sops_config_exists: false,
             sops_config_path: None,
             providers: vec![DoctorProviderCheck {
@@ -78,6 +80,20 @@ fn doctor_output_roundtrips_through_emit() {
             available: true,
         }],
         profiles: Vec::new(),
+        state_store: DoctorRootCheck {
+            accessible: true,
+            message: None,
+            created: None,
+        },
+        cache_dir: DoctorRootCheck {
+            accessible: true,
+            message: None,
+            created: None,
+        },
+        home: DoctorHomeCheck {
+            resolved: true,
+            refusal: None,
+        },
     };
 
     let actual = emit_and_parse(&payload);

@@ -657,14 +657,22 @@ pub(super) fn run_scheduled_backups(
         }
     };
 
-    let units: Vec<BackupUnit<'_>> = due
+    let units = due
         .iter()
         .map(|(profile_name, spec)| {
-            BackupUnit::new(spec, config_dir, profile_name, state_dir)
-                .with_context(ReconcileContext::Reconcile)
-                .with_abort(abort)
+            BackupUnit::new(spec, config_dir, profile_name, state_dir).map(|unit| {
+                unit.with_context(ReconcileContext::Reconcile)
+                    .with_abort(abort)
+            })
         })
-        .collect();
+        .collect::<crate::errors::Result<Vec<BackupUnit<'_>>>>();
+    let units = match units {
+        Ok(units) => units,
+        Err(e) => {
+            tracing::error!(error = %e, "daemon: scheduled backups cannot bind their paths — runs skipped");
+            return;
+        }
+    };
 
     // A due set can span profiles — one timer set covers the whole config — and
     // the header has one profile row, so naming the first unit's profile would

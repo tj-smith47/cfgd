@@ -866,7 +866,7 @@ fn write_etc_environment_escapes_double_quotes_in_value() {
 fn macos_env_sh_path_is_under_default_config_dir() {
     let dir = tempfile::tempdir().unwrap();
     let _g = cfgd_core::with_test_home_guard(dir.path());
-    let p = EnvironmentConfigurator::macos_env_sh_path();
+    let p = EnvironmentConfigurator::macos_env_sh_path().unwrap();
     assert_eq!(p, dir.path().join(".config").join("cfgd").join("env.sh"));
 }
 
@@ -951,7 +951,7 @@ fn macos_current_vars_roundtrips_through_env_sh() {
     managed.insert("LANG".to_string(), "C".to_string());
     EnvironmentConfigurator::macos_write_env_sh(&managed).unwrap();
 
-    let read_back = EnvironmentConfigurator::macos_current_vars();
+    let read_back = EnvironmentConfigurator::macos_current_vars().unwrap();
     assert_eq!(read_back.get("FOO").map(String::as_str), Some("bar"));
     assert_eq!(read_back.get("LANG").map(String::as_str), Some("C"));
 }
@@ -960,7 +960,7 @@ fn macos_current_vars_roundtrips_through_env_sh() {
 fn macos_current_vars_empty_when_file_missing() {
     let dir = tempfile::tempdir().unwrap();
     let _g = cfgd_core::with_test_home_guard(dir.path());
-    let vars = EnvironmentConfigurator::macos_current_vars();
+    let vars = EnvironmentConfigurator::macos_current_vars().unwrap();
     assert!(vars.is_empty());
 }
 
@@ -1761,21 +1761,21 @@ fn a_converged_macos_env_surface_carries_the_loader_line_and_stands_on_no_env_rc
         &[],
         &[],
     );
-    let merged = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]);
+    let merged = cfgd_core::reconciler::MergedEnvItems::new(&layered, &[]).unwrap();
     let scope = cfgd_core::config::EnvScope::default();
     let write = |path: &std::path::Path, body: String| {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, body).unwrap();
     };
     cfgd_core::test_helpers::plant_managed_env_files(&merged, home.path(), scope);
-    for (rc_path, line) in merged.managed_env_source_lines(home.path(), scope) {
+    for (rc_path, line) in merged.managed_env_source_lines(home.path(), scope).unwrap() {
         write(&rc_path, format!("{line}\n"));
     }
 
     let printer = cfgd_core::test_helpers::test_printer();
     let cx = cfgd_core::providers::SystemContext::new(&printer);
-    EnvironmentConfigurator::macos_inject_rc_source_line(&cx);
-    EnvironmentConfigurator::macos_inject_rc_source_line(&cx);
+    EnvironmentConfigurator::macos_inject_rc_source_line(&cx).unwrap();
+    EnvironmentConfigurator::macos_inject_rc_source_line(&cx).unwrap();
 
     let rc = cfgd_core::reconciler::interactive_rc_path(home.path());
     let body = std::fs::read_to_string(&rc).unwrap();
@@ -1795,7 +1795,8 @@ fn a_converged_macos_env_surface_carries_the_loader_line_and_stands_on_no_env_rc
         ),
         scope,
         &[],
-    );
+    )
+    .unwrap();
     let rc_rows: Vec<&cfgd_core::reconciler::VerifyResult> = results
         .iter()
         .filter(|r| r.resource_type == cfgd_core::reconciler::ENV_RC_RESOURCE_TYPE)

@@ -24,3 +24,5 @@ kubectl get svc 'cfgd-operator'
 kubectl get pods -l app.kubernetes.io/name=cfgd-operator
 kubectl get pods -l "app=cfgd-operator"
 echo "the release namespace is cfgd-system."
+kubectl logs -n "$E2E_INSTALL_NS" deploy/cfgd-server
+SERVER_URL="http://cfgd-server.$NS.svc.cluster.local:8080"

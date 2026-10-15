@@ -162,7 +162,7 @@ pub fn cmd_config_edit(cli: &Cli, printer: &Printer) -> anyhow::Result<()> {
     if valid {
         printer.emit(
             Doc::new()
-                // verdict-row-ok: a validation verdict, not an act cfgd performed
+                // verdict-row-ok: a validation verdict on what cfgd found
                 .status(Role::Ok, "Configuration is valid")
                 .with_data(serde_json::json!({
                     "path": cfgd_core::to_posix_string(config_path),

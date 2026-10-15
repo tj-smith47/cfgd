@@ -83,14 +83,15 @@ fn base64_empty() {
 #[test]
 #[serial]
 fn registry_auth_from_env() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     // Save and restore env
-    let old_user = std::env::var("REGISTRY_USERNAME").ok();
-    let old_pass = std::env::var("REGISTRY_PASSWORD").ok();
+    let old_user = std::env::var(crate::oci::REGISTRY_USERNAME_ENV).ok();
+    let old_pass = std::env::var(crate::oci::REGISTRY_PASSWORD_ENV).ok();
 
     // SAFETY: test runs single-threaded; no other thread reads these vars.
     unsafe {
-        std::env::set_var("REGISTRY_USERNAME", "testuser");
-        std::env::set_var("REGISTRY_PASSWORD", "testpass");
+        std::env::set_var(crate::oci::REGISTRY_USERNAME_ENV, "testuser");
+        std::env::set_var(crate::oci::REGISTRY_PASSWORD_ENV, "testpass");
     }
 
     let auth = RegistryAuth::resolve("any-registry.io").unwrap();
@@ -100,12 +101,12 @@ fn registry_auth_from_env() {
     // Restore
     unsafe {
         match old_user {
-            Some(v) => std::env::set_var("REGISTRY_USERNAME", v),
-            None => std::env::remove_var("REGISTRY_USERNAME"),
+            Some(v) => std::env::set_var(crate::oci::REGISTRY_USERNAME_ENV, v),
+            None => std::env::remove_var(crate::oci::REGISTRY_USERNAME_ENV),
         }
         match old_pass {
-            Some(v) => std::env::set_var("REGISTRY_PASSWORD", v),
-            None => std::env::remove_var("REGISTRY_PASSWORD"),
+            Some(v) => std::env::set_var(crate::oci::REGISTRY_PASSWORD_ENV, v),
+            None => std::env::remove_var(crate::oci::REGISTRY_PASSWORD_ENV),
         }
     }
 }
@@ -365,12 +366,9 @@ fn get_bearer_token_parses_www_authenticate() {
         .with_body(r#"{"token":"tok-abc-123"}"#)
         .create();
 
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(10)))
-        .build()
-        .new_agent();
+    let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
-    let result = get_bearer_token(&agent, &www_auth, None);
+    let result = get_bearer_token(&agent, &www_auth, None, "reg.example");
     assert!(
         result.is_ok(),
         "get_bearer_token failed: {:?}",
@@ -394,24 +392,20 @@ fn get_bearer_token_uses_access_token_field() {
         .with_body(r#"{"access_token":"alt-token-456"}"#)
         .create();
 
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(10)))
-        .build()
-        .new_agent();
+    let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
-    let result = get_bearer_token(&agent, &www_auth, None);
+    let result = get_bearer_token(&agent, &www_auth, None, "reg.example");
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "alt-token-456");
 }
 
 #[test]
 fn get_bearer_token_fails_without_realm() {
-    let agent = ureq::Agent::config_builder().build().new_agent();
-    let result = get_bearer_token(&agent, "Bearer service=\"svc\"", None);
-    assert!(result.is_err());
+    let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
+    let result = get_bearer_token(&agent, "Bearer service=\"svc\"", None, "reg.example");
     assert!(
-        matches!(result, Err(OciError::AuthFailed { .. })),
-        "expected AuthFailed variant"
+        matches!(&result, Err(OciError::AuthFailed { registry, .. }) if registry == "reg.example"),
+        "{result:?}"
     );
 }
 
@@ -431,12 +425,9 @@ fn get_bearer_token_fails_on_non_json_token_response() {
         .with_body("not json at all")
         .create();
 
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(10)))
-        .build()
-        .new_agent();
+    let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
-    let result = get_bearer_token(&agent, &www_auth, None);
+    let result = get_bearer_token(&agent, &www_auth, None, "reg.example");
     assert!(matches!(result, Err(OciError::AuthFailed { .. })));
 }
 
@@ -464,12 +455,9 @@ fn get_bearer_token_sends_basic_auth_when_provided() {
         .with_body(r#"{"token":"authed-token"}"#)
         .create();
 
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(10)))
-        .build()
-        .new_agent();
+    let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
 
-    let result = get_bearer_token(&agent, &www_auth, Some(&auth));
+    let result = get_bearer_token(&agent, &www_auth, Some(&auth), "reg.example");
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "authed-token");
 }
@@ -479,20 +467,20 @@ fn get_bearer_token_sends_basic_auth_when_provided() {
 #[test]
 #[serial]
 fn docker_config_path_uses_env() {
-    let prev = std::env::var("DOCKER_CONFIG").ok();
+    let prev = std::env::var(crate::oci::DOCKER_CONFIG_ENV).ok();
 
     let tmp = tempfile::tempdir().unwrap();
     unsafe {
-        std::env::set_var("DOCKER_CONFIG", tmp.path().to_str().unwrap());
+        std::env::set_var(crate::oci::DOCKER_CONFIG_ENV, tmp.path().to_str().unwrap());
     }
 
-    let path = docker_config_path();
+    let path = docker_config_path().unwrap();
     assert_eq!(path, tmp.path().join("config.json"));
 
     unsafe {
         match prev {
-            Some(v) => std::env::set_var("DOCKER_CONFIG", v),
-            None => std::env::remove_var("DOCKER_CONFIG"),
+            Some(v) => std::env::set_var(crate::oci::DOCKER_CONFIG_ENV, v),
+            None => std::env::remove_var(crate::oci::DOCKER_CONFIG_ENV),
         }
     }
 }
@@ -773,10 +761,11 @@ fn decode_docker_auth_with_token_password() {
 #[test]
 #[serial]
 fn registry_auth_resolve_reads_docker_config_file() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     use crate::test_helpers::EnvVarGuard;
     // Unset env vars so the file-based path is the only one that can match.
-    let _user = EnvVarGuard::unset("REGISTRY_USERNAME");
-    let _pass = EnvVarGuard::unset("REGISTRY_PASSWORD");
+    let _user = EnvVarGuard::unset(crate::oci::REGISTRY_USERNAME_ENV);
+    let _pass = EnvVarGuard::unset(crate::oci::REGISTRY_PASSWORD_ENV);
     // Point DOCKER_CONFIG at a fresh temp dir with a config.json.
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -784,7 +773,7 @@ fn registry_auth_resolve_reads_docker_config_file() {
         r#"{"auths":{"my.reg.example":{"auth":"dXNlcjpwYXNz"}}}"#,
     )
     .unwrap();
-    let _dc = EnvVarGuard::set("DOCKER_CONFIG", tmp.path().to_str().unwrap());
+    let _dc = EnvVarGuard::set(crate::oci::DOCKER_CONFIG_ENV, tmp.path().to_str().unwrap());
 
     let auth = RegistryAuth::resolve("my.reg.example").expect("file-based resolve must succeed");
     assert_eq!(auth.username, "user");
@@ -794,16 +783,17 @@ fn registry_auth_resolve_reads_docker_config_file() {
 #[test]
 #[serial]
 fn registry_auth_resolve_returns_none_when_no_match_in_config() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     use crate::test_helpers::EnvVarGuard;
-    let _user = EnvVarGuard::unset("REGISTRY_USERNAME");
-    let _pass = EnvVarGuard::unset("REGISTRY_PASSWORD");
+    let _user = EnvVarGuard::unset(crate::oci::REGISTRY_USERNAME_ENV);
+    let _pass = EnvVarGuard::unset(crate::oci::REGISTRY_PASSWORD_ENV);
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(
         tmp.path().join("config.json"),
         r#"{"auths":{"other.example":{"auth":"dXNlcjpwYXNz"}}}"#,
     )
     .unwrap();
-    let _dc = EnvVarGuard::set("DOCKER_CONFIG", tmp.path().to_str().unwrap());
+    let _dc = EnvVarGuard::set(crate::oci::DOCKER_CONFIG_ENV, tmp.path().to_str().unwrap());
 
     let result = RegistryAuth::resolve("missing.example");
     assert!(
@@ -816,13 +806,14 @@ fn registry_auth_resolve_returns_none_when_no_match_in_config() {
 #[test]
 #[serial]
 fn registry_auth_resolve_returns_none_when_env_vars_empty() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     use crate::test_helpers::EnvVarGuard;
     // Both vars present but empty must not satisfy the resolution.
-    let _user = EnvVarGuard::set("REGISTRY_USERNAME", "");
-    let _pass = EnvVarGuard::set("REGISTRY_PASSWORD", "");
+    let _user = EnvVarGuard::set(crate::oci::REGISTRY_USERNAME_ENV, "");
+    let _pass = EnvVarGuard::set(crate::oci::REGISTRY_PASSWORD_ENV, "");
     // Also point DOCKER_CONFIG at an empty dir so the file path doesn't fire.
     let tmp = tempfile::tempdir().unwrap();
-    let _dc = EnvVarGuard::set("DOCKER_CONFIG", tmp.path().to_str().unwrap());
+    let _dc = EnvVarGuard::set(crate::oci::DOCKER_CONFIG_ENV, tmp.path().to_str().unwrap());
 
     let result = RegistryAuth::resolve("any.example");
     assert!(
@@ -834,9 +825,10 @@ fn registry_auth_resolve_returns_none_when_env_vars_empty() {
 #[test]
 #[serial]
 fn registry_auth_resolve_credential_helper_branch_invokes_helper() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     use crate::test_helpers::EnvVarGuard;
-    let _user = EnvVarGuard::unset("REGISTRY_USERNAME");
-    let _pass = EnvVarGuard::unset("REGISTRY_PASSWORD");
+    let _user = EnvVarGuard::unset(crate::oci::REGISTRY_USERNAME_ENV);
+    let _pass = EnvVarGuard::unset(crate::oci::REGISTRY_PASSWORD_ENV);
     // Set up DOCKER_CONFIG with a credHelpers entry that points to a non-existent
     // binary. The helper-spawn fails, .ok() returns None inside the closure, and
     // the resolve falls through to None.
@@ -846,7 +838,7 @@ fn registry_auth_resolve_credential_helper_branch_invokes_helper() {
         r#"{"auths":{},"credHelpers":{"helper.example":"cfgd-test-no-such-helper-binary"}}"#,
     )
     .unwrap();
-    let _dc = EnvVarGuard::set("DOCKER_CONFIG", tmp.path().to_str().unwrap());
+    let _dc = EnvVarGuard::set(crate::oci::DOCKER_CONFIG_ENV, tmp.path().to_str().unwrap());
 
     let result = RegistryAuth::resolve("helper.example");
     // Helper binary doesn't exist → spawn fails → None.
@@ -868,11 +860,8 @@ fn get_bearer_token_response_with_no_token_returns_auth_failed() {
         .with_body(r#"{"other":"field"}"#)
         .create();
 
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(10)))
-        .build()
-        .new_agent();
-    let result = get_bearer_token(&agent, &www_auth, None);
+    let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
+    let result = get_bearer_token(&agent, &www_auth, None, "reg.example");
     assert!(matches!(result, Err(OciError::AuthFailed { .. })));
     let msg = format!("{:?}", result.err().unwrap());
     assert!(msg.contains("no token"), "must mention no token: {msg}");
@@ -882,12 +871,33 @@ fn get_bearer_token_response_with_no_token_returns_auth_failed() {
 fn get_bearer_token_handles_failed_http_call() {
     // The realm URL points to a non-listening port so the call fails outright.
     let www_auth = r#"Bearer realm="http://127.0.0.1:1/token",service="svc""#;
-    let agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_millis(500)))
-        .build()
-        .new_agent();
-    let result = get_bearer_token(&agent, www_auth, None);
-    assert!(matches!(result, Err(OciError::AuthFailed { .. })));
+    let agent = crate::http::http_agent(std::time::Duration::from_millis(500));
+    let result = get_bearer_token(&agent, www_auth, None, "reg.example");
+    assert!(
+        matches!(&result, Err(OciError::RequestFailed { message }) if message.contains("reg.example")),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn get_bearer_token_names_the_registry_when_the_token_endpoint_refuses() {
+    let mut server = mockito::Server::new();
+    let www_auth = format!(r#"Bearer realm="{}/token",service="svc""#, server.url());
+    let token = server
+        .mock(
+            "GET",
+            mockito::Matcher::Regex(r"/token\?service=.*".to_string()),
+        )
+        .with_status(403)
+        .expect(1)
+        .create();
+    let agent = crate::http::http_agent(std::time::Duration::from_secs(10));
+    let result = get_bearer_token(&agent, &www_auth, None, "reg.example");
+    token.assert();
+    assert!(
+        matches!(&result, Err(OciError::AuthFailed { registry, .. }) if registry == "reg.example"),
+        "{result:?}"
+    );
 }
 
 // --- resolve_from_credential_helper (docker-credential-<helper> shim) ---
@@ -985,13 +995,14 @@ fn credential_helper_invalid_json_returns_none() {
 #[test]
 #[serial]
 fn resolve_uses_cred_helper_when_config_names_it() {
+    let _registry_env = crate::test_helpers::isolate_registry_host_env();
     use crate::test_helpers::{EnvVarGuard, install_named_path_shim};
     // End-to-end: env empty, docker config.json has no direct auth but names a
     // credHelper for the registry; resolution must spawn the helper and return
     // its credentials. This exercises the success arm of `resolve`'s cred-helper
     // branch (the path that is otherwise only hit on a real machine).
-    let _user = EnvVarGuard::unset("REGISTRY_USERNAME");
-    let _pass = EnvVarGuard::unset("REGISTRY_PASSWORD");
+    let _user = EnvVarGuard::unset(crate::oci::REGISTRY_USERNAME_ENV);
+    let _pass = EnvVarGuard::unset(crate::oci::REGISTRY_PASSWORD_ENV);
 
     let (_dir, _path) = install_named_path_shim(
         "docker-credential-cfgdtesthelper",
@@ -1006,7 +1017,7 @@ fn resolve_uses_cred_helper_when_config_names_it() {
         r#"{"auths":{},"credHelpers":{"helper.registry.example":"cfgdtesthelper"}}"#,
     )
     .unwrap();
-    let _dc = EnvVarGuard::set("DOCKER_CONFIG", tmp.path().to_str().unwrap());
+    let _dc = EnvVarGuard::set(crate::oci::DOCKER_CONFIG_ENV, tmp.path().to_str().unwrap());
 
     let auth = RegistryAuth::resolve("helper.registry.example")
         .expect("resolve must use the named credential helper");

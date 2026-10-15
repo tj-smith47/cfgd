@@ -30,7 +30,7 @@ helm install cfgd oci://ghcr.io/tj-smith47/charts/cfgd -n cfgd-system --create-n
 | `operator.enabled` | `true` | CRD controllers + admission webhooks |
 | `agent.enabled` | `false` | Node agent DaemonSet (`cfgd daemon` on every node) |
 | `csiDriver.enabled` | `false` | CSI driver for pod module injection |
-| `deviceGateway.enabled` | `false` | Device enrollment + fleet management |
+| `deviceGateway.enabled` | `false` | Device enrollment + fleet management. The gateway runs on the leader lease holder: a pod that loses the lease stops accepting gateway connections once `operator.leaderElection.renewDeadline` has passed since its last successful renewal, and its `cfgd.io/gateway-leader` label is cleared by the first attempt the API server accepts, retried 500ms after each failed attempt until then or until the process exits, and again when the container starts |
 | `webhook.enabled` | `true` | Validating admission webhooks |
 | `mutatingWebhook.enabled` | `true` | Pod module injection webhook |
 
@@ -39,7 +39,7 @@ helm install cfgd oci://ghcr.io/tj-smith47/charts/cfgd -n cfgd-system --create-n
 | Value | Default | Description |
 |---|---|---|
 | `installCRDs` | `true` | Install the cfgd.io CRDs with the chart |
-| `operator.replicaCount` | `1` | Operator replicas; `operator.leaderElection.enabled` (`true`) makes >1 safe |
+| `operator.replicaCount` | `1` | Operator replicas; `operator.leaderElection.enabled` (`true`) makes >1 safe, and the chart refuses >1 with `deviceGateway.enabled` while it is off |
 | `operator.watchLabelSelector` | `""` | Reconcile only objects matching this label selector; empty reconciles every object |
 | `operator.strategy` | `{}` | Operator Deployment update strategy, rendered as given. Empty derives it from `deviceGateway.enabled`, `deviceGateway.persistence.enabled` and `operator.leaderElection.enabled`; see the table in [Health and Leadership](../../docs/operator.md#health-and-leadership) |
 | `agent.serverUrl` | `""` | Device gateway URL the node agent checks in to |
@@ -49,7 +49,7 @@ helm install cfgd oci://ghcr.io/tj-smith47/charts/cfgd -n cfgd-system --create-n
 | `webhook.objectSelector` | `{}` | Admit only objects matching this selector; empty admits every cfgd.io object |
 | `mutatingWebhook.failurePolicy` | `Ignore` | `Ignore` skips injection silently on webhook failure; set `Fail` to require it |
 | `deviceGateway.enrollmentMethod` | `token` | `token` (bootstrap tokens) or `key` (SSH/GPG challenge-response) |
-| `deviceGateway.persistence.enabled` | `true` | PVC for the gateway SQLite database (`deviceGateway.persistence.size`, default `1Gi`) |
+| `deviceGateway.persistence.enabled` | `true` | PVC for the gateway SQLite database (`deviceGateway.persistence.size`, default `1Gi`); needs `operator.replicaCount: 1`. Off, the database is an `emptyDir` and a new lease holder starts with an empty one |
 | `csiDriver.name` | `csi.cfgd.io` | The CSIDriver name, the kubelet plugin directory and the name the operator injects |
 | `csiDriver.cache.maxSizeGi` | `5` | Per-node module cache size |
 | `metrics.enabled` | `true` | Prometheus metrics endpoint; `metrics.serviceMonitor.enabled` (`false`) adds a ServiceMonitor |

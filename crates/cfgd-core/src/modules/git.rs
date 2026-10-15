@@ -22,6 +22,14 @@ pub struct GitSource {
     pub subdir: Option<String>,
 }
 
+impl GitSource {
+    /// The ref this source asks for: its tag, else its `?ref=`. `None` follows
+    /// the repository's default branch.
+    pub fn requested_ref(&self) -> Option<&str> {
+        self.tag.as_deref().or(self.git_ref.as_deref())
+    }
+}
+
 /// Check whether a source string is a git URL (not a local path).
 ///
 /// The single git-URL predicate for the whole workspace: module file sources,
@@ -139,11 +147,446 @@ pub fn parse_git_source(source: &str) -> Result<GitSource> {
     })
 }
 
-/// Compute the cache directory for a git source URL.
-/// Uses SHA-256 hash of the repo URL for uniqueness.
+/// The cached clone of a git repository, named by the SHA-256 of its URL.
+///
+/// It holds the repository's objects, tags and remote-tracking branches, and its
+/// working tree is the checkout an unpinned source follows. A source naming a
+/// ref reads its files from [`git_checkout_dir`].
 pub fn git_cache_dir(cache_base: &Path, repo_url: &str) -> PathBuf {
     let hash = crate::sha256_hex(repo_url.as_bytes());
     cache_base.join(&hash[..32])
+}
+
+/// Where cfgd keeps the trees it exports out of a clone, one per commit.
+const PINNED_CHECKOUTS_DIR: &str = "cfgd-checkouts";
+
+/// How long after a tree or clone was last written or handed out a sweep
+/// leaves it alone.
+///
+/// A run reading a source holds no lock a sweep could wait on, so a tree
+/// exported or handed out within this window may still be in use; an export
+/// in progress is younger than this too. [`checkout_ref`] refreshes the
+/// in-use stamp of what it hands out, so a long run keeps its trees.
+pub(crate) const IN_USE_WINDOW: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// The directory a source's files are read from: the clone's own working tree
+/// for `requested_ref: None`, and otherwise the tree exported for the commit
+/// that ref resolves to in the clone.
+///
+/// The trees are keyed by commit, so every ref naming one commit reads one
+/// tree, a ref that moves reads a new tree, and a tree once written never
+/// changes. They sit inside the clone's `.git`, out of its working tree, so
+/// removing the clone removes them too. `sweep_pinned_checkouts` removes the
+/// trees nothing reads any more.
+///
+/// A full object id that no tag or branch of the clone shadows names its own
+/// tree, so its path is known before the clone exists. Any other ref is
+/// resolved in the clone, and a ref the clone cannot resolve is an error.
+pub fn git_checkout_dir(
+    cache_base: &Path,
+    repo_url: &str,
+    requested_ref: Option<&str>,
+) -> Result<PathBuf> {
+    let clone = git_cache_dir(cache_base, repo_url);
+    match requested_ref {
+        None => Ok(clone),
+        Some(ref_name) => {
+            let commit = cached_commit_of(&clone, repo_url, ref_name)?;
+            Ok(pinned_checkout_in(&clone, &commit))
+        }
+    }
+}
+
+fn pinned_checkouts_of(clone: &Path) -> PathBuf {
+    clone.join(".git").join(PINNED_CHECKOUTS_DIR)
+}
+
+pub(crate) fn pinned_checkout_in(clone: &Path, commit: &str) -> PathBuf {
+    pinned_checkouts_of(clone).join(commit)
+}
+
+/// The commit `ref_name` names in the clone at `clone`, resolved the way
+/// [`checkout_ref`] resolves it.
+fn cached_commit_of(clone: &Path, repo_url: &str, ref_name: &str) -> Result<String> {
+    let repo = git2::Repository::open(clone);
+    if is_full_object_id(ref_name)
+        && repo
+            .as_ref()
+            .map_or(true, |repo| !named_ref_exists(repo, ref_name))
+    {
+        return Ok(ref_name.to_ascii_lowercase());
+    }
+    let failed = |message: String| -> crate::errors::CfgdError {
+        ModuleError::GitFetchFailed {
+            module: repo_url.to_string(),
+            url: repo_url.to_string(),
+            message,
+        }
+        .into()
+    };
+    let repo = repo.map_err(|e| {
+        failed(if clone.exists() {
+            format!("cannot open the cached clone: {e}")
+        } else {
+            format!("'{ref_name}' cannot be resolved: the repository is not cached yet")
+        })
+    })?;
+    resolve_ref_object(&repo, ref_name)
+        .and_then(|obj| obj.peel_to_commit())
+        .map(|commit| commit.id().to_string())
+        .map_err(|e| {
+            failed(format!(
+                "cannot resolve '{ref_name}' in the cached clone: {e}"
+            ))
+        })
+}
+
+/// The commit a source's files were materialized from by [`fetch_git_source`]:
+/// the clone's HEAD for an unpinned source, the commit its ref resolves to in
+/// the clone otherwise.
+pub fn checked_out_commit(cache_base: &Path, git_src: &GitSource) -> Result<String> {
+    let clone = git_cache_dir(cache_base, &git_src.repo_url);
+    match git_src.requested_ref() {
+        None => get_head_commit_sha(&clone),
+        Some(ref_name) => cached_commit_of(&clone, &git_src.repo_url, ref_name),
+    }
+}
+
+/// The trees and clones under one cache root that a sweep must keep, reduced
+/// to their roots.
+///
+/// A kept path may be spelled under the cache root as given, under its
+/// canonical form, or with a Windows `\\?\` verbatim prefix (what
+/// `read_link` and `canonicalize` hand back there). Each is folded to the
+/// cache root as given, which is how the sweep names what it finds.
+pub(crate) struct KeptCheckouts<'a> {
+    cache_base: &'a Path,
+    canonical_base: Option<PathBuf>,
+    roots: std::collections::HashSet<PathBuf>,
+}
+
+impl<'a> KeptCheckouts<'a> {
+    pub(crate) fn new(cache_base: &'a Path) -> Self {
+        let canonical_base = std::fs::canonicalize(cache_base)
+            .ok()
+            .map(|path| without_verbatim_prefix(&path).into_owned())
+            .filter(|canonical| canonical != cache_base);
+        Self {
+            cache_base,
+            canonical_base,
+            roots: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Keep the clone `path` lies in and, when it lies in an exported tree,
+    /// that tree. Returns whether `path` lies under the cache root at all.
+    pub(crate) fn keep(&mut self, path: &Path) -> bool {
+        let Some(relative) = self.relative(path) else {
+            return false;
+        };
+        let mut parts = relative.components();
+        let Some(clone) = parts.next() else {
+            return true;
+        };
+        let clone = self.cache_base.join(clone);
+        if let (Some(dot_git), Some(checkouts), Some(commit)) =
+            (parts.next(), parts.next(), parts.next())
+            && dot_git.as_os_str() == ".git"
+            && checkouts.as_os_str() == PINNED_CHECKOUTS_DIR
+        {
+            self.roots
+                .insert(clone.join(".git").join(PINNED_CHECKOUTS_DIR).join(commit));
+        }
+        self.roots.insert(clone);
+        true
+    }
+
+    /// Keep what the symlink at `link` points into, given its `target` as
+    /// `read_link` returned it. Returns whether it points at something that
+    /// exists under the cache root.
+    pub(crate) fn keep_link_target(&mut self, link: &Path, target: &Path) -> bool {
+        let resolved = match link.parent() {
+            Some(parent) => parent.join(target),
+            None => target.to_path_buf(),
+        };
+        if !resolved.exists() {
+            return false;
+        }
+        self.keep(&resolved)
+            || std::fs::canonicalize(&resolved).is_ok_and(|canonical| self.keep(&canonical))
+    }
+
+    fn relative<'p>(&self, path: &'p Path) -> Option<std::borrow::Cow<'p, Path>> {
+        if let Ok(relative) = path.strip_prefix(self.cache_base) {
+            return Some(relative.into());
+        }
+        let folded = without_verbatim_prefix(path);
+        let relative = std::iter::once(self.cache_base)
+            .chain(self.canonical_base.as_deref())
+            .find_map(|base| folded.strip_prefix(base).ok())?
+            .to_path_buf();
+        Some(relative.into())
+    }
+
+    fn holds(&self, path: &Path) -> bool {
+        self.roots.contains(path)
+    }
+}
+
+/// `path` with a Windows `\\?\` verbatim prefix dropped; any other path as is.
+fn without_verbatim_prefix(path: &Path) -> std::borrow::Cow<'_, Path> {
+    match path.to_str() {
+        Some(text) if crate::strip_windows_verbatim(text).len() != text.len() => {
+            Path::new(crate::strip_windows_verbatim(text))
+                .to_path_buf()
+                .into()
+        }
+        _ => path.into(),
+    }
+}
+
+/// Where a clone's in-use stamps live: inside its `.git`, which no
+/// derivation stamps as an input, so refreshing one leaves a saved plan over
+/// the tree current.
+const IN_USE_STAMPS_DIR: &str = "cfgd-in-use";
+
+/// The stamp a clone's own handouts refresh. No tree is named like it.
+const CLONE_STAMP: &str = "clone";
+
+/// The in-use stamp of the clone at `clone`.
+fn clone_stamp(clone: &Path) -> PathBuf {
+    clone.join(".git").join(IN_USE_STAMPS_DIR).join(CLONE_STAMP)
+}
+
+/// The in-use stamp of the tree at `tree`, a directory of
+/// `<clone>/.git/cfgd-checkouts`.
+fn tree_stamp(tree: &Path) -> Option<PathBuf> {
+    let dot_git = tree.parent()?.parent()?;
+    Some(dot_git.join(IN_USE_STAMPS_DIR).join(tree.file_name()?))
+}
+
+/// Refresh the in-use stamp at `stamp`, so a sweep inside [`IN_USE_WINDOW`]
+/// leaves what it stands for.
+///
+/// A failure only shortens how long the tree or clone is protected, and the
+/// next handout stamps it again, so it is not an error for the run.
+fn mark_in_use(stamp: &Path) {
+    let touched = stamp
+        .parent()
+        .map_or(Ok(()), std::fs::create_dir_all)
+        .and_then(|()| std::fs::File::create(stamp))
+        .and_then(|file| file.set_modified(std::time::SystemTime::now()));
+    if let Err(e) = touched {
+        tracing::debug!(
+            path = %crate::to_posix_string(stamp),
+            "cannot refresh the in-use stamp of a module checkout: {e}"
+        );
+    }
+}
+
+/// Mark the clone at `clone` as just used.
+pub(super) fn mark_clone_in_use(clone: &Path) {
+    mark_in_use(&clone_stamp(clone));
+}
+
+fn mark_tree_in_use(tree: &Path) {
+    if let Some(stamp) = tree_stamp(tree) {
+        mark_in_use(&stamp);
+    }
+}
+
+/// Remove every tree exported under `cache_base` and every clone that `keep`
+/// does not hold, and the leftovers of interrupted exports and sweeps. Returns
+/// one message per entry that could not be read or removed; the sweep goes on
+/// past each.
+///
+/// A tree or clone changed within `in_use_window` is left alone: a run that
+/// holds no apply lock may be reading it. A clone is removed only once no
+/// tree is left in it.
+///
+/// A tree or clone is first renamed to a `.stale-` name in the same directory
+/// and only then deleted, so a deletion that stops part way never leaves a
+/// partial tree at a commit's path, where a later export would take it as
+/// complete. A `.stale-` directory is always removed. Trees laid out by
+/// earlier releases under other names are removed like any unreferenced tree.
+pub(crate) fn sweep_pinned_checkouts(
+    keep: &KeptCheckouts<'_>,
+    in_use_window: std::time::Duration,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    let report = |failures: &mut Vec<String>, what: &str, path: &Path, e: std::io::Error| {
+        failures.push(format!(
+            "cannot {what} {}: {e}",
+            crate::to_posix_string(path)
+        ));
+    };
+    let cache_base = keep.cache_base;
+    let clones = match std::fs::read_dir(cache_base) {
+        Ok(clones) => clones,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return failures,
+        Err(e) => {
+            report(&mut failures, "read", cache_base, e);
+            return failures;
+        }
+    };
+    for clone in clones {
+        let clone = match clone {
+            Ok(clone) => clone,
+            Err(e) => {
+                report(&mut failures, "read", cache_base, e);
+                continue;
+            }
+        };
+        let path = clone.path();
+        let name = clone.file_name();
+        let name = name.to_str().unwrap_or_default();
+        if name.starts_with(STALE_PREFIX) {
+            if let Err(e) = absent_ok(std::fs::remove_dir_all(&path)) {
+                report(&mut failures, "remove", &path, e);
+            }
+            continue;
+        }
+        if !is_clone_name(name) {
+            continue;
+        }
+        let trees_left = sweep_trees_of(&path, keep, in_use_window, &mut failures);
+        if trees_left || keep.holds(&path) {
+            continue;
+        }
+        match used_within(&path, Some(&clone_stamp(&path)), in_use_window) {
+            Ok(true) => {}
+            Ok(false) => {
+                if let Err(e) = retire(cache_base, &path) {
+                    report(&mut failures, "remove", &path, e);
+                }
+            }
+            Err((_, e)) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err((at, e)) => report(&mut failures, "read", &at, e),
+        }
+    }
+    failures
+}
+
+/// Sweep the trees exported in the clone at `clone`, and return whether any
+/// tree is left there.
+fn sweep_trees_of(
+    clone: &Path,
+    keep: &KeptCheckouts<'_>,
+    in_use_window: std::time::Duration,
+    failures: &mut Vec<String>,
+) -> bool {
+    let mut report = |what: &str, path: &Path, e: std::io::Error| {
+        failures.push(format!(
+            "cannot {what} {}: {e}",
+            crate::to_posix_string(path)
+        ));
+    };
+    let slots = pinned_checkouts_of(clone);
+    let entries = match std::fs::read_dir(&slots) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(e) => {
+            report("read", &slots, e);
+            return true;
+        }
+    };
+    let mut trees_left = false;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                report("read", &slots, e);
+                trees_left = true;
+                continue;
+            }
+        };
+        let path = entry.path();
+        let name = entry.file_name();
+        if name.to_str().unwrap_or_default().starts_with(STALE_PREFIX) {
+            if let Err(e) = absent_ok(std::fs::remove_dir_all(&path)) {
+                report("remove", &path, e);
+                trees_left = true;
+            }
+            continue;
+        }
+        if keep.holds(&path) {
+            trees_left = true;
+            continue;
+        }
+        let stamp = tree_stamp(&path);
+        match used_within(&path, stamp.as_deref(), in_use_window) {
+            Ok(true) => trees_left = true,
+            Ok(false) => match retire(&slots, &path) {
+                Ok(()) => {
+                    if let Some(stamp) = &stamp
+                        && let Err(e) = absent_ok(std::fs::remove_file(stamp))
+                    {
+                        report("remove", stamp, e);
+                    }
+                }
+                Err(e) => {
+                    report("remove", &path, e);
+                    trees_left = true;
+                }
+            },
+            Err((_, e)) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err((at, e)) => {
+                report("read", &at, e);
+                trees_left = true;
+            }
+        }
+    }
+    trees_left
+}
+
+/// Whether the entry at `path`, or its in-use `stamp` when one exists, was
+/// modified within `window` of now. A time in the future counts as recent. An
+/// error names the path it came from.
+fn used_within(
+    path: &Path,
+    stamp: Option<&Path>,
+    window: std::time::Duration,
+) -> std::result::Result<bool, (PathBuf, std::io::Error)> {
+    let recent = |at: &Path| -> std::result::Result<bool, (PathBuf, std::io::Error)> {
+        let modified = std::fs::symlink_metadata(at)
+            .and_then(|meta| meta.modified())
+            .map_err(|e| (at.to_path_buf(), e))?;
+        Ok(modified.elapsed().map_or(true, |age| age < window))
+    };
+    if recent(path)? {
+        return Ok(true);
+    }
+    match stamp.map(recent) {
+        Some(Err((_, e))) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Some(answer) => answer,
+        None => Ok(false),
+    }
+}
+
+/// Whether `name` is how [`git_cache_dir`] names a clone.
+fn is_clone_name(name: &str) -> bool {
+    name.len() == 32 && name.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+const STALE_PREFIX: &str = ".stale-";
+const EXPORT_PREFIX: &str = ".export-";
+
+/// Move `path` into a fresh `.stale-` directory under `parent`, then delete it.
+fn retire(parent: &Path, path: &Path) -> std::io::Result<()> {
+    let aside = tempfile::Builder::new()
+        .prefix(STALE_PREFIX)
+        .tempdir_in(parent)?;
+    absent_ok(std::fs::rename(path, aside.path().join("tree")))?;
+    let aside = aside.keep();
+    std::fs::remove_dir_all(aside)
+}
+
+/// A filesystem call whose target was already gone succeeded.
+fn absent_ok(removal: std::io::Result<()>) -> std::io::Result<()> {
+    match removal {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
 }
 
 /// Default cache directory for module git sources: `<cache-root>/modules` under
@@ -227,9 +670,9 @@ pub fn fetch_git_source(
         clone_repo(&cache_dir, git_src, module_name, printer)?;
     }
 
-    checkout_ref(&cache_dir, git_src, module_name)?;
+    let checkout = checkout_ref(&cache_dir, git_src, module_name)?;
 
-    resolve_subdir(cache_dir, &git_src.subdir, module_name, &git_src.repo_url)
+    resolve_subdir(checkout, &git_src.subdir, module_name, &git_src.repo_url)
 }
 
 /// Whether the cached checkout can already answer `git_src`'s requested ref
@@ -255,7 +698,7 @@ pub fn fetch_git_source(
 /// immutable — the one shape where skipping the fetch could change what lands in
 /// the working tree.
 fn cache_answers_pinned_ref(repo_path: &Path, git_src: &GitSource) -> bool {
-    let Some(ref_name) = git_src.tag.as_deref().or(git_src.git_ref.as_deref()) else {
+    let Some(ref_name) = git_src.requested_ref() else {
         return false;
     };
     if !is_full_object_id(ref_name) {
@@ -338,7 +781,7 @@ fn resolve_ref_object<'r>(
 /// decides, and inside it the checkout advances only as far as the last
 /// transfer reached.
 fn cache_resolves_ref(repo_path: &Path, git_src: &GitSource) -> bool {
-    let Some(ref_name) = git_src.tag.as_deref().or(git_src.git_ref.as_deref()) else {
+    let Some(ref_name) = git_src.requested_ref() else {
         return true;
     };
     let Ok(repo) = git2::Repository::open(repo_path) else {
@@ -489,7 +932,7 @@ pub(super) fn clone_repo(
 
     // Try git CLI first with live progress output.
     let mut cmd = crate::git_cmd_safe(Some(&git_src.repo_url), None);
-    // absolute-path-ok: git argv, not a display slot
+    // absolute-path-ok: git argv, which takes the absolute path
     cmd.args(["clone", &git_src.repo_url, &dest.display().to_string()]);
 
     // Silent on success, like every other transfer cfgd narrates: the caller
@@ -566,7 +1009,7 @@ pub(super) fn fetch_existing_repo(
 
     // Try git CLI first with live progress output.
     let mut cmd = crate::git_cmd_safe(Some(&git_src.repo_url), None);
-    // absolute-path-ok: git argv, not a display slot
+    // absolute-path-ok: git argv, which takes the absolute path
     cmd.args(["-C", &repo_path.display().to_string(), "fetch", "origin"]);
 
     // Silent on success, for the reason the clone above is.
@@ -712,9 +1155,9 @@ fn advance_to_default_branch(
 
 /// Put the working tree on `commit`, discarding whatever is in it.
 ///
-/// The one checkout in this module: both the pinned and the unpinned paths land
-/// here, so a module's files are replaced the same way whichever named the
-/// commit. `label` is what the caller asked for, and names the failure.
+/// Only an unpinned source moves the clone's working tree; a pinned one is
+/// exported to a tree of its own by `export_commit`. `label` is what the caller
+/// asked for, and names the failure.
 fn detach_and_checkout(
     repo: &git2::Repository,
     commit: git2::Oid,
@@ -739,13 +1182,19 @@ fn detach_and_checkout(
     Ok(())
 }
 
-fn checkout_ref(repo_path: &Path, git_src: &GitSource, module_name: &str) -> Result<()> {
+/// Materialize `git_src`'s files out of the clone at `repo_path` and return the
+/// directory holding them.
+///
+/// An unpinned source advances the clone's own working tree. A source naming a
+/// ref is exported to the tree of the commit that ref resolves to (see
+/// [`git_checkout_dir`]), and the clone's working tree is left alone.
+fn checkout_ref(repo_path: &Path, git_src: &GitSource, module_name: &str) -> Result<PathBuf> {
     let repo = open_repo(repo_path, module_name, &git_src.repo_url)?;
+    mark_clone_in_use(repo_path);
 
-    let target_ref = git_src.tag.as_deref().or(git_src.git_ref.as_deref());
-
-    let Some(ref_name) = target_ref else {
-        return advance_to_default_branch(&repo, git_src, module_name);
+    let Some(ref_name) = git_src.requested_ref() else {
+        advance_to_default_branch(&repo, git_src, module_name)?;
+        return Ok(repo_path.to_path_buf());
     };
 
     // Try as a tag first, then as a branch
@@ -764,7 +1213,68 @@ fn checkout_ref(repo_path: &Path, git_src: &GitSource, module_name: &str) -> Res
             message: format!("ref '{ref_name}' does not point to a commit: {e}"),
         })?;
 
-    detach_and_checkout(&repo, commit.id(), ref_name, git_src, module_name)
+    export_commit(&repo, &commit, repo_path).map_err(|message| {
+        ModuleError::GitFetchFailed {
+            module: module_name.to_string(),
+            url: git_src.repo_url.clone(),
+            message: format!("cannot check out '{ref_name}': {message}"),
+        }
+        .into()
+    })
+}
+
+/// Write `commit`'s tree to its directory under the clone at `clone`, unless
+/// that directory already exists.
+///
+/// The tree is built in a directory unique to this call and renamed into
+/// place, so the commit's path only ever shows a complete tree. A tree never
+/// changes once written, because its path names the commit it holds: when the
+/// rename fails because another run put the tree there first, that tree is
+/// used.
+fn export_commit(
+    repo: &git2::Repository,
+    commit: &git2::Commit<'_>,
+    clone: &Path,
+) -> std::result::Result<PathBuf, String> {
+    let dest = pinned_checkout_in(clone, &commit.id().to_string());
+    if dest.is_dir() {
+        mark_tree_in_use(&dest);
+        return Ok(dest);
+    }
+    let io = |what: &str, path: &Path, e: std::io::Error| {
+        format!(
+            "{what} {}: {e}",
+            crate::fold_home_in_text(&crate::to_posix_string(path))
+        )
+    };
+    let slots = pinned_checkouts_of(clone);
+    std::fs::create_dir_all(&slots).map_err(|e| io("cannot create", &slots, e))?;
+
+    let staging = tempfile::Builder::new()
+        .prefix(EXPORT_PREFIX)
+        .tempdir_in(&slots)
+        .map_err(|e| io("cannot create a staging directory in", &slots, e))?;
+    let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout
+        .target_dir(staging.path())
+        .update_index(false)
+        .force();
+    repo.checkout_tree(commit.as_object(), Some(&mut checkout))
+        .map_err(|e| e.to_string())?;
+
+    match std::fs::rename(staging.path(), &dest) {
+        Ok(()) => {
+            // The staging path is gone; nothing is left for the guard to delete.
+            let _ = staging.keep();
+            mark_tree_in_use(&dest);
+            Ok(dest)
+        }
+        Err(_) if dest.is_dir() => {
+            mark_tree_in_use(&dest);
+            Ok(dest)
+        }
+        Err(e) => Err(io("cannot move into", &dest, e)),
+    }
 }
 
 /// Get the HEAD commit SHA from a git repo.
@@ -1537,7 +2047,11 @@ mod tests {
         assert_eq!(pinned.tag.as_deref(), Some(sha.as_str()));
         let again = fetch_git_source(&pinned, cache_base.path(), "pinned", &printer)
             .expect("a pinned SHA the cache already holds must resolve without the remote");
-        assert_eq!(again, path);
+        assert_ne!(again, path, "a pinned ref reads its own checkout");
+        assert_eq!(
+            again,
+            git_checkout_dir(cache_base.path(), &plain.repo_url, Some(&sha)).unwrap()
+        );
         assert_eq!(std::fs::read_to_string(again.join("a.txt")).unwrap(), "v1");
     }
 
@@ -1826,7 +2340,451 @@ mod tests {
         );
     }
 
-    // --- checkout_ref: ref that does not peel to a commit ---
+    // --- export_commit and the sweep: one whole tree per commit ---
+
+    fn commit_one_file(repo: &git2::Repository, content: &str) -> git2::Oid {
+        let workdir = repo.workdir().unwrap().to_path_buf();
+        std::fs::write(workdir.join("payload.txt"), content).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("payload.txt")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let parents: Vec<git2::Commit<'_>> = repo
+            .head()
+            .ok()
+            .and_then(|h| h.peel_to_commit().ok())
+            .into_iter()
+            .collect();
+        let parent_refs: Vec<&git2::Commit<'_>> = parents.iter().collect();
+        repo.commit(Some("HEAD"), &sig, &sig, content, &tree, &parent_refs)
+            .unwrap()
+    }
+
+    fn payload_of(tree: &Path) -> String {
+        let read = std::fs::read_to_string(tree.join("payload.txt")).unwrap();
+        crate::normalize_line_endings(&read).into_owned()
+    }
+
+    fn slot_names(clone: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(pinned_checkouts_of(clone))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn concurrent_exports_of_one_commit_each_end_on_a_whole_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        const RUNS: usize = 8;
+        let mut exported = Vec::new();
+        for round in 0..6 {
+            let content = format!("round {round} bytes\n");
+            let commit = commit_one_file(&repo, &content);
+            let dest = pinned_checkout_in(dir.path(), &commit.to_string());
+            let barrier = std::sync::Barrier::new(RUNS);
+            let results: Vec<_> = std::thread::scope(|s| {
+                let handles: Vec<_> = (0..RUNS)
+                    .map(|_| {
+                        s.spawn(|| {
+                            let repo = git2::Repository::open(dir.path()).unwrap();
+                            let commit = repo.find_commit(commit).unwrap();
+                            barrier.wait();
+                            let landed = export_commit(&repo, &commit, dir.path());
+                            // Each run reads the tree it was handed while the
+                            // others may still be landing theirs.
+                            let read = landed.as_deref().ok().map(payload_of);
+                            (landed, read)
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            for (landed, read) in results {
+                assert_eq!(landed.as_deref(), Ok(dest.as_path()), "round {round}");
+                assert_eq!(read.as_deref(), Some(content.as_str()), "round {round}");
+            }
+            exported.push(commit.to_string());
+            assert_eq!(
+                slot_names(dir.path()),
+                {
+                    let mut sorted = exported.clone();
+                    sorted.sort();
+                    sorted
+                },
+                "one tree per commit and no staging left behind"
+            );
+        }
+    }
+
+    #[test]
+    fn a_moved_ref_lands_in_a_new_tree_and_the_old_tree_stays() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let first = commit_one_file(&repo, "first\n");
+        repo.tag_lightweight("v", &repo.find_object(first, None).unwrap(), false)
+            .unwrap();
+        let source = GitSource {
+            repo_url: "https://example.invalid/moved.git".into(),
+            tag: Some("v".into()),
+            git_ref: None,
+            subdir: None,
+        };
+        let old = checkout_ref(dir.path(), &source, "moved").unwrap();
+        assert_eq!(old, pinned_checkout_in(dir.path(), &first.to_string()));
+
+        let second = commit_one_file(&repo, "second\n");
+        repo.tag_lightweight("v", &repo.find_object(second, None).unwrap(), true)
+            .unwrap();
+        let new = checkout_ref(dir.path(), &source, "moved").unwrap();
+        assert_eq!(new, pinned_checkout_in(dir.path(), &second.to_string()));
+        assert_eq!(payload_of(&new), "second\n");
+        assert_eq!(
+            payload_of(&old),
+            "first\n",
+            "a tree something may still link into is left as it was"
+        );
+    }
+
+    #[test]
+    fn a_ref_resolves_to_the_tree_of_its_commit() {
+        let cache_base = tempfile::tempdir().unwrap();
+        let url = "https://example.invalid/resolve.git";
+        let clone = git_cache_dir(cache_base.path(), url);
+        let repo = git2::Repository::init(&clone).unwrap();
+        let commit = commit_one_file(&repo, "bytes\n");
+        repo.tag_lightweight("v1", &repo.find_object(commit, None).unwrap(), false)
+            .unwrap();
+        let tree = pinned_checkout_in(&clone, &commit.to_string());
+        assert_eq!(
+            git_checkout_dir(cache_base.path(), url, Some("v1")).unwrap(),
+            tree
+        );
+        let upper = commit.to_string().to_ascii_uppercase();
+        assert_eq!(
+            git_checkout_dir(cache_base.path(), url, Some(&upper)).unwrap(),
+            tree,
+            "an object id names one tree whatever its case"
+        );
+        assert!(
+            git_checkout_dir(cache_base.path(), url, Some("no-such-tag")).is_err(),
+            "a ref the clone cannot resolve names no tree"
+        );
+    }
+
+    /// A clone under `cache_base` holding the trees of two commits, plus the
+    /// leftovers a sweep must deal with. Returns the clone and both trees.
+    fn clone_with_two_trees(cache_base: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let clone = git_cache_dir(cache_base, "https://example.invalid/sweep.git");
+        let repo = git2::Repository::init(&clone).unwrap();
+        let mut trees = Vec::new();
+        for content in ["kept\n", "unread\n"] {
+            let id = commit_one_file(&repo, content);
+            trees.push(export_commit(&repo, &repo.find_commit(id).unwrap(), &clone).unwrap());
+        }
+        let slots = pinned_checkouts_of(&clone);
+        for leftover in [".stale-left", ".export-busy"] {
+            std::fs::create_dir_all(slots.join(leftover).join("sub")).unwrap();
+            std::fs::write(slots.join(leftover).join("sub").join("f"), "x").unwrap();
+        }
+        // A tree an earlier release laid out under a hash of the ref name.
+        let earlier = slots.join("0123456789abcdef0123456789abcdef");
+        std::fs::create_dir_all(earlier.join("tree")).unwrap();
+        std::fs::write(earlier.join("commit"), "deadbeef").unwrap();
+        let unread = trees.pop().unwrap();
+        (clone, trees.pop().unwrap(), unread)
+    }
+
+    /// Sweep `cache_base` keeping `kept`, with the window every apply uses.
+    fn sweep(cache_base: &Path, kept: &[&Path]) -> Vec<String> {
+        let mut keep = KeptCheckouts::new(cache_base);
+        for path in kept {
+            assert!(keep.keep(path), "{} lies under the cache", path.display());
+        }
+        sweep_pinned_checkouts(&keep, IN_USE_WINDOW)
+    }
+
+    /// Move the modification time of the directory at `dir`, and of the
+    /// in-use stamp of the tree or clone it is, back past [`IN_USE_WINDOW`].
+    fn backdate(dir: &Path) {
+        let then = std::time::SystemTime::now() - IN_USE_WINDOW - IN_USE_WINDOW;
+        crate::test_helpers::set_dir_modified(dir, then);
+        for stamp in [Some(clone_stamp(dir)), tree_stamp(dir)]
+            .into_iter()
+            .flatten()
+        {
+            if stamp.is_file() {
+                std::fs::File::options()
+                    .write(true)
+                    .open(&stamp)
+                    .unwrap()
+                    .set_modified(then)
+                    .unwrap();
+            }
+        }
+    }
+
+    fn modified(path: &Path) -> std::time::SystemTime {
+        std::fs::metadata(path).unwrap().modified().unwrap()
+    }
+
+    fn is_young(dir: &Path, stamp: &Path) -> bool {
+        used_within(dir, Some(stamp), IN_USE_WINDOW).unwrap()
+    }
+
+    #[test]
+    fn a_sweep_removes_every_tree_nothing_reads_and_keeps_the_rest() {
+        let cache_base = tempfile::tempdir().unwrap();
+        let (clone, kept, unread) = clone_with_two_trees(cache_base.path());
+        let slots = pinned_checkouts_of(&clone);
+        let kept_name = kept.file_name().unwrap().to_str().unwrap().to_string();
+        let mut all = slot_names(&clone);
+        all.retain(|name| name != ".stale-left");
+
+        let failures = sweep(cache_base.path(), &[]);
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(
+            slot_names(&clone),
+            all,
+            "every tree written within the window stays, kept or not; only the \
+             stale leftover goes"
+        );
+
+        for name in &all {
+            backdate(&slots.join(name));
+        }
+        let (kept_stamp, unread_stamp) = (tree_stamp(&kept).unwrap(), tree_stamp(&unread).unwrap());
+        assert!(
+            kept_stamp.is_file() && unread_stamp.is_file(),
+            "an export stamps its tree"
+        );
+        let failures = sweep(cache_base.path(), &[&kept.join("payload.txt")]);
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(
+            slot_names(&clone),
+            vec![kept_name],
+            "the unread tree, the earlier layout and the abandoned export are gone"
+        );
+        assert!(!unread.exists());
+        assert!(
+            !unread_stamp.exists(),
+            "a removed tree takes its in-use stamp with it"
+        );
+        assert!(kept_stamp.is_file(), "a kept tree keeps its in-use stamp");
+        assert_eq!(payload_of(&kept), "kept\n");
+        assert!(clone.join(".git").is_dir(), "a clone holding a tree stays");
+    }
+
+    #[test]
+    fn handing_out_a_tree_protects_it_and_its_clone_for_the_window() {
+        let cache_base = tempfile::tempdir().unwrap();
+        let url = "https://example.invalid/handout.git";
+        let clone = git_cache_dir(cache_base.path(), url);
+        let repo = git2::Repository::init(&clone).unwrap();
+        let commit = commit_one_file(&repo, "bytes\n");
+        repo.tag_lightweight("v1", &repo.find_object(commit, None).unwrap(), false)
+            .unwrap();
+        let source = GitSource {
+            repo_url: url.into(),
+            tag: Some("v1".into()),
+            git_ref: None,
+            subdir: None,
+        };
+        let tree = checkout_ref(&clone, &source, "handout").unwrap();
+        backdate(&tree);
+        backdate(&clone);
+        let (tree_stamp, clone_stamp) = (tree_stamp(&tree).unwrap(), clone_stamp(&clone));
+        assert!(!is_young(&tree, &tree_stamp));
+        assert!(!is_young(&clone, &clone_stamp));
+        let recorded = (modified(&tree), modified(&clone));
+
+        assert_eq!(checkout_ref(&clone, &source, "handout").unwrap(), tree);
+        assert!(
+            is_young(&tree, &tree_stamp),
+            "handing out a tree refreshes its stamp"
+        );
+        assert!(
+            is_young(&clone, &clone_stamp),
+            "handing out a tree refreshes its clone's stamp"
+        );
+        assert_eq!(
+            (modified(&tree), modified(&clone)),
+            recorded,
+            "the stamps live apart from the tree and the clone a derivation records"
+        );
+        let failures = sweep(cache_base.path(), &[]);
+        assert!(failures.is_empty(), "{failures:?}");
+        assert_eq!(payload_of(&tree), "bytes\n", "a tree in use is left alone");
+
+        backdate(&tree);
+        backdate(&clone);
+        let failures = sweep(cache_base.path(), &[]);
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(
+            !tree.exists(),
+            "the tree nothing read for the window is gone"
+        );
+        assert!(!clone.exists(), "and so is the clone it emptied");
+    }
+
+    #[test]
+    fn a_sweep_removes_a_clone_nothing_references_and_keeps_the_rest() {
+        let cache_base = tempfile::tempdir().unwrap();
+        let clone_of = |url: &str| {
+            let clone = git_cache_dir(cache_base.path(), url);
+            let repo = git2::Repository::init(&clone).unwrap();
+            commit_one_file(&repo, url);
+            clone
+        };
+        let referenced = clone_of("https://example.invalid/referenced.git");
+        let unreferenced = clone_of("https://example.invalid/unreferenced.git");
+        let young = clone_of("https://example.invalid/young.git");
+        let not_a_clone = cache_base.path().join("notes");
+        std::fs::create_dir_all(&not_a_clone).unwrap();
+        for dir in [&referenced, &unreferenced, &not_a_clone] {
+            backdate(dir);
+        }
+
+        let failures = sweep(cache_base.path(), &[&referenced.join("payload.txt")]);
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(!unreferenced.exists(), "a clone nothing references is gone");
+        assert!(referenced.join(".git").is_dir(), "a referenced clone stays");
+        assert!(
+            young.join(".git").is_dir(),
+            "a clone used within the window stays"
+        );
+        assert!(
+            not_a_clone.is_dir(),
+            "a directory no clone is named like stays"
+        );
+        let mut left: Vec<String> = std::fs::read_dir(cache_base.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        let mut expected: Vec<String> = [&referenced, &young, &not_a_clone]
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
+            .collect();
+        expected.sort();
+        assert_eq!(left, expected, "the removal leaves no `.stale-` directory");
+    }
+
+    #[test]
+    fn a_sweep_of_a_cache_with_no_trees_does_nothing() {
+        let cache_base = tempfile::tempdir().unwrap();
+        assert!(sweep(cache_base.path(), &[]).is_empty());
+        let missing = cache_base.path().join("missing");
+        assert!(sweep(&missing, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_sweep_reports_every_entry_it_cannot_read_and_goes_on() {
+        let cache_base = tempfile::tempdir().unwrap();
+        let (clone, kept, unread) = clone_with_two_trees(cache_base.path());
+        let unreadable = git_cache_dir(cache_base.path(), "https://example.invalid/odd.git");
+        std::fs::create_dir_all(unreadable.join(".git")).unwrap();
+        let slots_file = pinned_checkouts_of(&unreadable);
+        std::fs::write(&slots_file, "not a directory").unwrap();
+        backdate(&unreadable);
+        backdate(&unread);
+
+        let failures = sweep(cache_base.path(), &[&kept]);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].starts_with(&format!(
+                "cannot read {}: ",
+                crate::to_posix_string(&slots_file)
+            )),
+            "the failure names the path it could not read: {failures:?}"
+        );
+        assert!(unreadable.is_dir(), "a clone that could not be read stays");
+        assert!(!unread.exists(), "the sweep went on past the failure");
+        assert!(clone.join(".git").is_dir());
+
+        let file_base = cache_base.path().join("file");
+        std::fs::write(&file_base, "").unwrap();
+        let failures = sweep_pinned_checkouts(&KeptCheckouts::new(&file_base), IN_USE_WINDOW);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].starts_with(&format!(
+                "cannot read {}: ",
+                crate::to_posix_string(&file_base)
+            )),
+            "{failures:?}"
+        );
+    }
+
+    #[test]
+    fn a_kept_path_keeps_its_tree_in_every_spelling_of_the_cache_root() {
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let tree = |base: &Path| {
+            base.join("0123456789abcdef0123456789abcdef")
+                .join(".git")
+                .join(PINNED_CHECKOUTS_DIR)
+                .join("c0ffee")
+        };
+        std::fs::create_dir_all(tree(&real)).unwrap();
+
+        let mut keep = KeptCheckouts::new(&real);
+        assert!(keep.keep(&tree(&real).join("payload.txt")));
+        assert!(keep.holds(&tree(&real)));
+        assert!(keep.holds(&real.join("0123456789abcdef0123456789abcdef")));
+        assert!(
+            !keep.keep(root.path()),
+            "a path outside the cache keeps nothing"
+        );
+
+        let canonical =
+            without_verbatim_prefix(&std::fs::canonicalize(&real).unwrap()).into_owned();
+        let mut keep = KeptCheckouts::new(&real);
+        assert!(keep.keep(&tree(&canonical)), "the canonical spelling");
+        assert!(keep.holds(&tree(&real)));
+
+        let verbatim = PathBuf::from(format!(r"\\?\{}", canonical.display()));
+        let mut keep = KeptCheckouts::new(&real);
+        if cfg!(windows) {
+            assert!(keep.keep(&tree(&verbatim)), "the verbatim spelling");
+            assert!(keep.holds(&tree(&real)));
+        }
+
+        // A cache root reached through a link is matched by its canonical
+        // form, the spelling a link's target resolves to.
+        let linked = root.path().join("linked");
+        crate::create_symlink(&real, &linked).unwrap();
+        let mut keep = KeptCheckouts::new(&linked);
+        assert!(keep.keep(&tree(&canonical)));
+        assert!(keep.holds(&tree(&linked)));
+    }
+
+    /// Windows refuses to rename a directory holding an open file. The sweep
+    /// reports that tree and leaves it whole.
+    #[cfg(windows)]
+    #[test]
+    fn a_sweep_reports_a_tree_it_cannot_move_and_leaves_it_whole() {
+        let cache_base = tempfile::tempdir().unwrap();
+        let (clone, kept, unread) = clone_with_two_trees(cache_base.path());
+        backdate(&unread);
+        let held = std::fs::File::open(unread.join("payload.txt")).unwrap();
+
+        let failures = sweep(cache_base.path(), &[&kept]);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].starts_with("cannot remove"), "{failures:?}");
+        assert_eq!(payload_of(&unread), "unread\n");
+        drop(held);
+
+        backdate(&unread);
+        assert!(sweep(cache_base.path(), &[&kept]).is_empty());
+        assert!(!unread.exists());
+        assert!(
+            slot_names(&clone).contains(&kept.file_name().unwrap().to_str().unwrap().to_string())
+        );
+    }
 
     #[test]
     fn checkout_ref_errors_when_ref_points_to_non_commit() {

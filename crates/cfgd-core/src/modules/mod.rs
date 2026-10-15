@@ -21,22 +21,21 @@ mod resolve;
 mod surfaces;
 
 #[cfg(any(test, feature = "test-helpers"))]
+pub(crate) use git::pinned_checkout_in;
+#[cfg(any(test, feature = "test-helpers"))]
 pub(crate) use git::set_repo_refresh_ttl_override;
-// The host-INDEPENDENT half of the floor route, exported for the registry walk
-// that lives in the binary crate because only that crate builds the registry.
-// Gated so no production caller outside `resolve.rs` can reach past
-// `floor_bootstrap_route`, which is the one that asks the host question.
 pub use git::{
-    GitSource, TagSignatureStatus, check_tag_signature, default_module_cache_dir,
-    default_module_cache_dir_for, fetch_git_source, get_head_commit_sha, git_cache_dir,
-    is_git_source, parse_git_source,
+    GitSource, TagSignatureStatus, check_tag_signature, checked_out_commit,
+    default_module_cache_dir, default_module_cache_dir_for, fetch_git_source, get_head_commit_sha,
+    git_cache_dir, git_checkout_dir, is_git_source, parse_git_source,
 };
+pub(crate) use git::{IN_USE_WINDOW, KeptCheckouts, sweep_pinned_checkouts};
 pub use loader::{
     declared_modules_dir, load_module, load_modules, resolve_dependency_order, validate_module_name,
 };
 pub use lockfile::{
     ChangedScript, SpecChange, diff_module_specs, hash_module_contents, load_all_modules,
-    load_locked_modules, load_lockfile, load_source_modules, save_lockfile,
+    load_locked_modules, load_lockfile, load_source_modules, locked_module_dir, save_lockfile,
     verify_lockfile_integrity,
 };
 pub use registry::{
@@ -44,6 +43,10 @@ pub use registry::{
     fetch_registry_modules, fetch_remote_module, is_registry_ref, latest_module_version,
     latest_module_version_remote, parse_registry_ref, resolve_profile_module_name,
 };
+// The host-INDEPENDENT half of the floor route, exported for the registry walk
+// that lives in the binary crate because only that crate builds the registry.
+// Gated so no production caller outside `resolve.rs` can reach past
+// `floor_bootstrap_route`, which is the one that asks the host question.
 #[cfg(any(test, feature = "test-helpers"))]
 pub use resolve::floor_bootstrap_via;
 pub use resolve::{
@@ -138,7 +141,9 @@ pub struct ResolvedFile {
     /// Local source path (after git clone if needed).
     #[serde(serialize_with = "crate::serialize_fs_path")]
     pub source: PathBuf,
-    /// Target path on the machine.
+    /// Target path on the machine, with a leading `~` already expanded by
+    /// [`resolve_module_files`], so no
+    /// reader expands it again.
     #[serde(serialize_with = "crate::serialize_fs_path")]
     pub target: PathBuf,
     /// Whether the source was fetched from git.

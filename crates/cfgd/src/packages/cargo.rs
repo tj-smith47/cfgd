@@ -48,8 +48,8 @@ const CARGO_MEDIATED: MediatedArms = MediatedArms {
 
 /// Cargo fallback locations when `cargo` is not on `$PATH`.
 fn cargo_fallbacks() -> Vec<PathBuf> {
-    std::env::var_os("HOME")
-        .map(|h| vec![PathBuf::from(h).join(".cargo/bin/cargo")])
+    cfgd_core::home_dir()
+        .map(|h| vec![h.join(".cargo/bin/cargo")])
         .unwrap_or_default()
 }
 

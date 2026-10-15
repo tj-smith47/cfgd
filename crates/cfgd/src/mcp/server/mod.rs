@@ -345,9 +345,7 @@ pub fn run_mcp_server(
         .unwrap_or_else(|| std::path::Path::new("."))
         .to_path_buf();
 
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    let home = cfgd_core::home_dir()?;
 
     let resolved = crate::cli::run_state_dir(state_dir, scope)?;
     let mut server = McpServer::new(repo_root, home, &resolved)?;

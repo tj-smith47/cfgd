@@ -153,7 +153,7 @@ fn owner_token(word: &str) -> Option<super::OwnerLabel> {
     // this into it would make an arbitrary colon-bearing word (an OCI ref, a
     // URL) a false owner match instead of plain text.
     // long-line-ok: a hatch is read off its own line, so it cannot wrap
-    // owner-split-ok: shape-only heuristic parse of rendered text, not a read of a stored owner token
+    // owner-split-ok: shape-only heuristic parse of rendered text; it reads no stored owner token
     let (kind, name) = word.split_once(':')?;
     let plain_kind = !kind.is_empty() && kind.chars().all(|c| c.is_ascii_lowercase());
     let plain_name = !name.is_empty() && !name.contains([':', '/', '\\']);

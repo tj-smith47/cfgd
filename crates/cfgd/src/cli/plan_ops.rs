@@ -8,7 +8,7 @@ use cfgd_core::output::{Doc, ICON_ARROW, PhaseLabel, Printer, Role};
 
 // --- Plan output rendering ---
 
-// basename-ok: sourceability, not the verb
+// basename-ok: a plan caveat asks whether the file is sourceable, and classifies no recorded row
 /// Basename of the bash/zsh managed env file the reconciler writes.
 const UNIX_ENV_FILE: &str = ".cfgd.env";
 /// Basename of the PowerShell managed env file the reconciler writes.
@@ -440,9 +440,9 @@ pub(in crate::cli) fn withheld_for_run(
     ctx.resolve_manifest_packages(&mut local.packages, &mut local.layer_sources)?;
 
     let scope = if config_parsed {
-        reconciler::DecisionScope::new(cfg.spec.sources.iter().map(|s| s.name.as_str()), &local)
+        reconciler::DecisionScope::new(cfg.spec.sources.iter().map(|s| s.name.as_str()), &local)?
     } else {
-        reconciler::DecisionScope::unverified(&local)
+        reconciler::DecisionScope::unverified(&local)?
     };
 
     // Fail-CLOSED on both reads: a run that cannot tell a decided resource from
@@ -473,7 +473,7 @@ pub(in crate::cli) fn withheld_for_run(
     }
     let withheld = reconciler::WithheldDecisions::read(state, &scope)?
         .with_policy_declined(review.declined.clone())
-        .with_unrecorded(&review.to_mint, &scope)
+        .with_unrecorded(&review.to_mint, &scope)?
         .with_undecidable(review.undecidable.clone())
         .with_auto_accepted(&review.auto_accepted);
     // Resolved AFTER the folds above, so an unrecorded row this run classified
@@ -764,10 +764,14 @@ fn plan_refusal(
 /// at a second machine picture: the recorded actions run while the header, the
 /// resolved modules and the profile the `applies` row is written under all
 /// come from the other config.
+///
+/// `state` is `None` for a run with no home directory and no `state.db`: no
+/// store exists for the plan to be checked against, and none may be created
+/// before the run knows it can write, so the replay refuses for the home.
 pub(in crate::cli) fn load_saved_plan(
     path: &std::path::Path,
     config: &std::path::Path,
-    state: &cfgd_core::state::StateStore,
+    state: Option<&cfgd_core::state::StateStore>,
 ) -> anyhow::Result<LoadedPlan> {
     let shown = path.display(); // native-ok: a human-facing error; no key is built from it
     let body = std::fs::read_to_string(path).map_err(|e| {
@@ -864,6 +868,32 @@ pub(in crate::cli) fn load_saved_plan(
         ));
     }
 
+    let Some(state) = state else {
+        let home = cfgd_core::errors::StateError::HomeUnset;
+        let message =
+            format!("cannot replay {shown}: there is no state store to check it against: {home}");
+        return Err(super::cli_error_ctx(
+            cfgd_core::errors::CfgdError::from(home).into(),
+            "plan",
+            "home_unresolved",
+            message,
+            serde_json::json!({ "file": path.display_posix() }),
+        ));
+    };
+    // A store an older cfgd wrote carries no identity until a writable open
+    // migrates it, and that migration mints one no plan recorded.
+    if !state.schema_is_current()? {
+        return Err(plan_refusal(
+            path,
+            "stale",
+            format!(
+                "{shown} is stale: the state store this run reads was written by an older cfgd \
+                 and carries no identity, so it is not the store the plan was derived against \
+                 — run `cfgd plan -o json` against this store"
+            ),
+            serde_json::json!({ "storeId": null, "recordedStoreId": saved.store_id }),
+        ));
+    }
     // Asked before the serial: a serial read off another store is a number from
     // a different sequence, so comparing it would name an apply that never ran
     // on the store the plan came from.
@@ -912,6 +942,19 @@ pub(in crate::cli) fn load_saved_plan(
     }
 
     if !saved.config_inputs.unchanged() {
+        if let Some(unread) = saved.config_inputs.first_unreadable() {
+            let unread_shown = unread.display(); // native-ok: a human-facing error; no key is built from it
+            return Err(plan_refusal(
+                path,
+                "stale",
+                format!(
+                    "{shown} is stale: {unread_shown} could not be read when it was written, so \
+                     cfgd cannot tell whether anything beneath it changed — run `cfgd plan -o \
+                     json` again"
+                ),
+                serde_json::json!({ "changed": unread.display_posix(), "unreadable": true }),
+            ));
+        }
         let moved_path = saved.config_inputs.first_moved();
         let moved = moved_path.as_ref().map_or_else(
             || "the config".to_string(),

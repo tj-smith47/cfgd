@@ -45,6 +45,7 @@ async fn node_get_info_returns_node_id() {
 
 #[tokio::test]
 async fn node_publish_volume_missing_module_attr() {
+    // registry-env-held: request validation refuses it before the cache pulls.
     let dir = tempfile::tempdir().unwrap();
     let node = test_node(test_cache(dir.path()));
     let req = NodePublishVolumeRequest {
@@ -63,6 +64,7 @@ async fn node_publish_volume_missing_module_attr() {
 
 #[tokio::test]
 async fn node_publish_volume_missing_version_attr() {
+    // registry-env-held: request validation refuses it before the cache pulls.
     let dir = tempfile::tempdir().unwrap();
     let node = test_node(test_cache(dir.path()));
     let req = NodePublishVolumeRequest {
@@ -83,6 +85,7 @@ async fn node_publish_volume_missing_version_attr() {
 
 #[tokio::test]
 async fn node_publish_volume_missing_target_path() {
+    // registry-env-held: request validation refuses it before the cache pulls.
     let dir = tempfile::tempdir().unwrap();
     let node = test_node(test_cache(dir.path()));
     let req = NodePublishVolumeRequest {
@@ -105,6 +108,7 @@ async fn node_publish_volume_missing_target_path() {
 
 #[tokio::test]
 async fn node_publish_volume_missing_volume_id() {
+    // registry-env-held: request validation refuses it before the cache pulls.
     let dir = tempfile::tempdir().unwrap();
     let node = test_node(test_cache(dir.path()));
     let req = NodePublishVolumeRequest {
@@ -128,6 +132,7 @@ async fn node_publish_volume_missing_volume_id() {
 
 #[tokio::test]
 async fn node_stage_volume_missing_module_attr() {
+    // registry-env-held: request validation refuses it before the cache pulls.
     let dir = tempfile::tempdir().unwrap();
     let node = test_node(test_cache(dir.path()));
     let req = NodeStageVolumeRequest {
@@ -142,6 +147,7 @@ async fn node_stage_volume_missing_module_attr() {
 
 #[tokio::test]
 async fn node_stage_volume_missing_volume_id() {
+    // registry-env-held: request validation refuses it before the cache pulls.
     let dir = tempfile::tempdir().unwrap();
     let node = test_node(test_cache(dir.path()));
     let req = NodeStageVolumeRequest {
@@ -157,6 +163,7 @@ async fn node_stage_volume_missing_volume_id() {
 
 #[tokio::test]
 async fn node_stage_volume_missing_staging_path() {
+    // registry-env-held: request validation refuses it before the cache pulls.
     let dir = tempfile::tempdir().unwrap();
     let node = test_node(test_cache(dir.path()));
     let req = NodeStageVolumeRequest {
@@ -706,6 +713,7 @@ fn parse_allowed_registries_from_env_returns_none_for_empty_string() {
 #[tokio::test]
 #[serial_test::serial]
 async fn node_stage_volume_cache_pull_failure_returns_internal_status() {
+    let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
     // `test_node()` caches CFGD_CSI_ALLOWED_REGISTRIES at construction. A
     // parallel `*_rejects_disallowed_registry` test that sets it would
     // pin this Node to its allow-list, making 127.0.0.1 fail with
@@ -747,6 +755,7 @@ async fn node_stage_volume_cache_pull_failure_returns_internal_status() {
 #[tokio::test]
 #[serial_test::serial]
 async fn node_publish_volume_cache_pull_failure_returns_internal_status() {
+    let _registry_env = cfgd_core::test_helpers::isolate_registry_host_env();
     // Same race as the stage-volume counterpart: see comment above.
     let _g =
         cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV);
@@ -783,6 +792,7 @@ async fn node_publish_volume_cache_pull_failure_returns_internal_status() {
 #[tokio::test]
 #[serial_test::serial]
 async fn node_stage_volume_rejects_disallowed_registry() {
+    // registry-env-held: the allow-list refuses the registry before the cache pulls.
     // SAFETY: serialised — env mutation is process-global.
     unsafe {
         std::env::set_var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV, "ghcr.io");
@@ -823,6 +833,7 @@ async fn node_stage_volume_rejects_disallowed_registry() {
 #[tokio::test]
 #[serial_test::serial]
 async fn node_publish_volume_rejects_disallowed_registry() {
+    // registry-env-held: the allow-list refuses the registry before the cache pulls.
     // SAFETY: serialised — env mutation is process-global.
     unsafe {
         std::env::set_var(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV, "ghcr.io");
@@ -1185,6 +1196,7 @@ fn walk_volume_stats_deeply_nested_dirs_counts_all_entries() {
 /// to whatever it would be joined onto.
 #[tokio::test]
 async fn unusable_paths_are_rejected_with_the_value_and_the_reason() {
+    // registry-env-held: path validation refuses every request before the cache pulls.
     let dir = tempfile::tempdir().unwrap();
     let node = test_node(test_cache(dir.path()));
     let context: std::collections::HashMap<String, String> = [
@@ -1253,6 +1265,7 @@ async fn unusable_paths_are_rejected_with_the_value_and_the_reason() {
 #[tokio::test]
 #[serial_test::serial]
 async fn a_cache_hit_counts_once_per_mount_at_an_unstaged_publish_or_a_stage() {
+    // registry-env-held: every mount is a cache hit, which returns before any registry read.
     let _g =
         cfgd_core::test_helpers::EnvVarGuard::unset(cfgd_core::CFGD_CSI_ALLOWED_REGISTRIES_ENV);
     let dir = tempfile::tempdir().unwrap();

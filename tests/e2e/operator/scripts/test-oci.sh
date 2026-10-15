@@ -14,7 +14,7 @@ begin_test "OP-OCI-01: OCI supply chain: push, pull, verify"
 TEST_MODULE_DIR=$(mktemp -d)
 create_test_module_dir "$TEST_MODULE_DIR" "e2e-oci-test" "1.0.0"
 
-OCI_REF="${REGISTRY}/cfgd-e2e/oci-test:v1.0"
+OCI_REF="$(e2e_scratch_ref "oci-test:v1.0")"
 
 ensure_cfgd_binary
 

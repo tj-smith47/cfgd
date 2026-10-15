@@ -65,12 +65,18 @@ pub fn watch_config() -> WatcherConfig {
     }
 }
 
+/// This operator's own pod name, read from `POD_NAME` (the chart sets it
+/// through the downward API). `None` outside a pod.
+pub fn pod_name() -> Option<String> {
+    std::env::var("POD_NAME").ok()
+}
+
 /// The identity string this operator instance uses for leader election.
 /// Reads `POD_NAME`; falls back to a per-process random UUID. Two instances
 /// without `POD_NAME` set will get different identities, which is the
 /// correct behaviour for development.
 pub fn leader_identity() -> String {
-    std::env::var("POD_NAME").unwrap_or_else(|_| Uuid::new_v4().to_string())
+    pod_name().unwrap_or_else(|| Uuid::new_v4().to_string())
 }
 
 /// `true` iff `cert_dir/tls.crt` exists. Used to decide whether to start
@@ -108,7 +114,8 @@ pub fn build_gateway_config(
 fn gateway_db_path() -> cfgd_core::errors::Result<String> {
     let path = cfgd_core::env_or(cfgd_core::CFGD_SERVER_DB_PATH_ENV, "/data/cfgd-gateway.db");
     Ok(
-        cfgd_core::expand_tilde_strict(std::path::Path::new(&path), "gateway database")?
+        // home-refusal-ok: the operator's gateway database; no apply or plan path reaches it
+        cfgd_core::expand_tilde(std::path::Path::new(&path), "gateway database")?
             .to_string_lossy()
             .into_owned(),
     )
@@ -475,7 +482,6 @@ mod tests {
         for anchor in [
             "chart/cfgd/templates/operator-deployment.yaml",
             "tests/e2e/operator/manifests/operator-deployment.yaml",
-            "tests/e2e/node/manifests/cfgd-server.yaml",
             "ecosystem/olm/manifests/cfgd-operator.clusterserviceversion.yaml",
         ] {
             assert!(

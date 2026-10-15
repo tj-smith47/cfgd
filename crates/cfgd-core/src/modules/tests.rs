@@ -2443,6 +2443,10 @@ fn hash_module_contents_skips_dot_git() {
 
 // --- Integrity verification tests ---
 
+/// The commit a hand-built lock entry records. A full object id names its
+/// tree with no clone to resolve it in.
+const LOCKED_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
 #[test]
 fn verify_lockfile_integrity_success() {
     let dir = tempfile::tempdir().unwrap();
@@ -2450,7 +2454,12 @@ fn verify_lockfile_integrity_success() {
     // Build a fake lock entry that points to an "http" URL whose SHA hash
     // maps to a predictable cache dir
     let url = "https://example.com/fake.git@v1.0";
-    let expected_cache_dir = git_cache_dir(dir.path(), "https://example.com/fake.git");
+    let expected_cache_dir = git_checkout_dir(
+        dir.path(),
+        "https://example.com/fake.git",
+        Some(LOCKED_COMMIT),
+    )
+    .unwrap();
     // Create content in the expected cache dir
     std::fs::create_dir_all(&expected_cache_dir).unwrap();
     std::fs::write(expected_cache_dir.join("module.yaml"), "test content\n").unwrap();
@@ -2461,7 +2470,7 @@ fn verify_lockfile_integrity_success() {
         name: "test".into(),
         url: url.into(),
         pinned_ref: "v1.0".into(),
-        commit: "abc".into(),
+        commit: LOCKED_COMMIT.into(),
         integrity: actual_integrity,
         subdir: None,
     };
@@ -2487,7 +2496,12 @@ fn verify_lockfile_integrity_success() {
 fn verify_lockfile_integrity_mismatch() {
     let dir = tempfile::tempdir().unwrap();
     let url = "https://example.com/mod.git@v1.0";
-    let cache_dir = git_cache_dir(dir.path(), "https://example.com/mod.git");
+    let cache_dir = git_checkout_dir(
+        dir.path(),
+        "https://example.com/mod.git",
+        Some(LOCKED_COMMIT),
+    )
+    .unwrap();
     std::fs::create_dir_all(&cache_dir).unwrap();
     std::fs::write(cache_dir.join("module.yaml"), "tampered\n").unwrap();
 
@@ -2495,7 +2509,7 @@ fn verify_lockfile_integrity_mismatch() {
         name: "test".into(),
         url: url.into(),
         pinned_ref: "v1.0".into(),
-        commit: "abc".into(),
+        commit: LOCKED_COMMIT.into(),
         integrity: "sha256:wrong".into(),
         subdir: None,
     };
@@ -3758,7 +3772,7 @@ fn verify_lockfile_integrity_missing_cache_dir() {
         name: "test".to_string(),
         url: "https://github.com/user/repo.git@v1.0".to_string(),
         pinned_ref: "v1.0".to_string(),
-        commit: "abc".to_string(),
+        commit: LOCKED_COMMIT.to_string(),
         integrity: "sha256:xxx".to_string(),
         subdir: None,
     };
@@ -3768,6 +3782,20 @@ fn verify_lockfile_integrity_missing_cache_dir() {
     assert!(
         err.contains("does not exist") || err.contains("update"),
         "expected cache-not-found error, got: {err}"
+    );
+
+    // A hand-edited entry whose commit is no full id falls back to its tag,
+    // which only a cached clone can resolve.
+    let short = crate::config::ModuleLockEntry {
+        commit: "abc".to_string(),
+        ..entry
+    };
+    let err = verify_lockfile_integrity(&short, cache_base.path())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("'v1.0' cannot be resolved: the repository is not cached yet"),
+        "{err}"
     );
 }
 
@@ -6571,7 +6599,12 @@ fn hash_module_contents_streams_a_file_larger_than_its_read_buffer() {
 fn verify_lockfile_integrity_with_subdir() {
     let cache_base = tempfile::tempdir().unwrap();
     let url = "https://example.com/multi.git@v1.0";
-    let cache_dir = git_cache_dir(cache_base.path(), "https://example.com/multi.git");
+    let cache_dir = git_checkout_dir(
+        cache_base.path(),
+        "https://example.com/multi.git",
+        Some(LOCKED_COMMIT),
+    )
+    .unwrap();
     let subdir_path = cache_dir.join("nvim");
     std::fs::create_dir_all(&subdir_path).unwrap();
     std::fs::write(subdir_path.join("module.yaml"), "test content\n").unwrap();
@@ -6582,7 +6615,7 @@ fn verify_lockfile_integrity_with_subdir() {
         name: "nvim".into(),
         url: url.into(),
         pinned_ref: "v1.0".into(),
-        commit: "abc".into(),
+        commit: LOCKED_COMMIT.into(),
         integrity: actual_integrity,
         subdir: Some("nvim".into()),
     };
@@ -6751,8 +6784,10 @@ fn dependency_order_exceeds_module_count_limit() {
 
 mod git_fixture_tests {
     use super::super::git::{
-        TagSignatureStatus, check_tag_signature, fetch_git_source, get_head_commit_sha, open_repo,
+        TagSignatureStatus, check_tag_signature, checked_out_commit, fetch_git_source,
+        get_head_commit_sha, git_cache_dir, git_checkout_dir, open_repo, parse_git_source,
     };
+    use crate::config::ModuleLockEntry;
     use crate::modules::GitSource;
     use crate::output::Printer;
     use std::path::Path;
@@ -7039,11 +7074,14 @@ mod git_fixture_tests {
         };
 
         let dest = fetch_git_source(&git_src, cache.path(), "mymod", &printer).unwrap();
-        let cloned_head = get_head_commit_sha(&dest).unwrap();
         assert_eq!(
-            cloned_head,
+            checked_out_commit(cache.path(), &git_src).unwrap(),
             first_commit.to_string(),
-            "tag should pin HEAD to the tagged commit, not the branch tip"
+            "a tag source checks out the commit the tag names"
+        );
+        assert!(
+            !dest.join("later.txt").exists(),
+            "the tagged checkout must not hold a file committed after the tag"
         );
     }
 
@@ -7073,6 +7111,458 @@ mod git_fixture_tests {
         // And the subdir must physically exist in the clone since the test
         // created `docs/index.md` in source.
         assert!(dest.join("index.md").exists());
+    }
+
+    /// A module whose two `files:` entries come from one repository pinned by
+    /// tag: the whole checkout, and its `docs` subdirectory. The second entry's
+    /// fetch checks the pinned ref out again inside the same derivation.
+    fn module_with_two_pinned_git_files(src: &Path) -> crate::modules::LoadedModule {
+        use crate::config::{ModuleFileEntry, ModuleSpec};
+        use crate::modules::LoadedModule;
+        let entry = |source: String, target: &str| ModuleFileEntry {
+            patch: None,
+            source,
+            target: target.into(),
+            strategy: None,
+            private: false,
+            encryption: None,
+            permissions: None,
+        };
+        let url = file_url(src);
+        LoadedModule {
+            version: None,
+            name: "dots".into(),
+            spec: ModuleSpec {
+                files: vec![
+                    entry(format!("{url}@v1.0"), "/home/user/.dots"),
+                    entry(format!("{url}//docs@v1.0"), "/home/user/.docs"),
+                ],
+                ..Default::default()
+            },
+            dir: src.to_path_buf(),
+            origin: None,
+        }
+    }
+
+    fn tagged_repo_with_docs(dir: &Path) {
+        let (repo, _) = init_repo_with_commit(dir);
+        let docs = add_commit(&repo, "docs/index.md", "# docs");
+        let commit = repo.find_commit(docs).unwrap();
+        repo.tag_lightweight("v1.0", commit.as_object(), false)
+            .unwrap();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn two_file_entries_from_one_pinned_repository_leave_the_derivation_unchanged() {
+        crate::test_helpers::with_test_env_var(
+            crate::CFGD_ALLOW_LOCAL_SOURCES_ENV,
+            Some("1"),
+            || {
+                let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
+                let src = tempfile::tempdir().unwrap();
+                tagged_repo_with_docs(src.path());
+                let module = module_with_two_pinned_git_files(src.path());
+                let cache = tempfile::tempdir().unwrap();
+                let (printer, _) = Printer::for_test();
+
+                let rec = crate::ConfigInputRecorder::start();
+                let resolved =
+                    crate::modules::resolve_module_files(&module, cache.path(), &printer).unwrap();
+                let inputs = rec.finish();
+
+                let readme = resolved[0].source.join("README.md");
+                assert!(
+                    inputs.paths().any(|p| p == readme),
+                    "a tracked working-tree file of the checkout is stamped: {:?}",
+                    inputs.paths().collect::<Vec<_>>()
+                );
+                assert!(
+                    inputs.unchanged(),
+                    "the second entry's checkout of the same ref moved a stamped input: {:?}",
+                    inputs.first_moved()
+                );
+            },
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn an_edit_to_a_git_sourced_module_file_moves_the_derivation() {
+        crate::test_helpers::with_test_env_var(
+            crate::CFGD_ALLOW_LOCAL_SOURCES_ENV,
+            Some("1"),
+            || {
+                let src = tempfile::tempdir().unwrap();
+                tagged_repo_with_docs(src.path());
+                let module = module_with_two_pinned_git_files(src.path());
+                let cache = tempfile::tempdir().unwrap();
+                let (printer, _) = Printer::for_test();
+
+                let rec = crate::ConfigInputRecorder::start();
+                let resolved =
+                    crate::modules::resolve_module_files(&module, cache.path(), &printer).unwrap();
+                let inputs = rec.finish();
+
+                let page = resolved[1].source.join("index.md");
+                std::fs::write(&page, "# docs, edited in the cache").unwrap();
+                assert_eq!(
+                    inputs.first_moved(),
+                    Some(page.as_path()),
+                    "an edit to a checked-out file the plan deploys moves its stamp"
+                );
+            },
+        );
+    }
+
+    /// A repository tagged `v1.0` and `v2.0`, each tag holding its own
+    /// `docs/index.md`; the default branch's tip is `v2.0`.
+    fn repo_with_two_doc_tags(dir: &Path) -> git2::Repository {
+        let (repo, _) = init_repo_with_commit(dir);
+        for (tag, page) in [("v1.0", "# docs"), ("v2.0", "# docs, version two, longer")] {
+            let id = add_commit(&repo, "docs/index.md", page);
+            let commit = repo.find_commit(id).unwrap();
+            repo.tag_lightweight(tag, commit.as_object(), false)
+                .unwrap();
+        }
+        repo
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn two_pinned_refs_of_one_repository_each_read_their_own_bytes() {
+        crate::test_helpers::with_test_env_var(
+            crate::CFGD_ALLOW_LOCAL_SOURCES_ENV,
+            Some("1"),
+            || {
+                let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
+                let src = tempfile::tempdir().unwrap();
+                repo_with_two_doc_tags(src.path());
+                let mut module = module_with_two_pinned_git_files(src.path());
+                let url = file_url(src.path());
+                module.spec.files[0].source = format!("{url}//docs@v1.0");
+                module.spec.files[1].source = format!("{url}//docs@v2.0");
+                let cache = tempfile::tempdir().unwrap();
+                let (printer, _) = Printer::for_test();
+
+                let rec = crate::ConfigInputRecorder::start();
+                let resolved =
+                    crate::modules::resolve_module_files(&module, cache.path(), &printer).unwrap();
+                let inputs = rec.finish();
+
+                assert!(
+                    inputs.unchanged(),
+                    "checking out v2.0 moved a file stamped for v1.0: {:?}",
+                    inputs.first_moved()
+                );
+                let page = |i: usize| {
+                    let text =
+                        std::fs::read_to_string(resolved[i].source.join("index.md")).unwrap();
+                    crate::normalize_line_endings(&text).into_owned()
+                };
+                assert_eq!(page(0), "# docs", "the v1.0 entry reads the v1.0 bytes");
+                assert_eq!(page(1), "# docs, version two, longer");
+            },
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_pinned_entry_never_reads_the_working_tree_of_a_url_keyed_clone() {
+        crate::test_helpers::with_test_env_var(
+            crate::CFGD_ALLOW_LOCAL_SOURCES_ENV,
+            Some("1"),
+            || {
+                let _window = crate::test_helpers::GitRefreshWindowGuard::always_expired();
+                let src = tempfile::tempdir().unwrap();
+                repo_with_two_doc_tags(src.path());
+                let url = file_url(src.path());
+                let cache = tempfile::tempdir().unwrap();
+                // The layout 0.12.0 left behind: a clone keyed by URL alone,
+                // its working tree at the default branch's tip.
+                let clone_dir = git_cache_dir(cache.path(), &url);
+                git2::Repository::clone(&url, &clone_dir).unwrap();
+                let (printer, _) = Printer::for_test();
+
+                let pinned = parse_git_source(&format!("{url}//docs@v1.0")).unwrap();
+                let dest = fetch_git_source(&pinned, cache.path(), "docs", &printer).unwrap();
+
+                let dest_page = std::fs::read_to_string(dest.join("index.md")).unwrap();
+                assert_eq!(crate::normalize_line_endings(&dest_page), "# docs");
+                let clone_page = std::fs::read_to_string(clone_dir.join("docs/index.md")).unwrap();
+                assert_eq!(
+                    crate::normalize_line_endings(&clone_page),
+                    "# docs, version two, longer",
+                    "a pinned fetch leaves the clone's own working tree where it was"
+                );
+            },
+        );
+    }
+
+    /// The trees of `url`'s `v1.0` and `v2.0` under `cache`, and a lockfile
+    /// in `config` naming `v2.0`.
+    fn two_trees_and_a_lock_on_the_second(
+        url: &str,
+        cache: &Path,
+        config: &Path,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let (printer, _) = Printer::for_test();
+        let mut trees = Vec::new();
+        for tag in ["v1.0", "v2.0"] {
+            let source = parse_git_source(&format!("{url}@{tag}")).unwrap();
+            fetch_git_source(&source, cache, "docs", &printer).unwrap();
+            trees.push(git_checkout_dir(cache, url, Some(tag)).unwrap());
+        }
+        let (v1, v2) = (trees[0].clone(), trees[1].clone());
+        assert_ne!(v1, v2);
+        crate::modules::save_lockfile(
+            config,
+            &crate::config::ModuleLockfile {
+                modules: vec![ModuleLockEntry {
+                    name: "docs".into(),
+                    url: format!("{url}@v2.0"),
+                    pinned_ref: "v2.0".into(),
+                    commit: v2.file_name().unwrap().to_str().unwrap().to_string(),
+                    integrity: String::new(),
+                    subdir: None,
+                }],
+            },
+        )
+        .unwrap();
+        (v1, v2)
+    }
+
+    /// Link `link` to `target` the way cfgd deploys a module file. On Windows
+    /// the target is spelled with the `\\?\` prefix `canonicalize` returns
+    /// there, so the sweep has to fold it to match the cache root.
+    fn deploy_link(target: &Path, link: &Path) {
+        #[cfg(windows)]
+        let target = &std::path::PathBuf::from(format!(
+            r"\\?\{}",
+            std::fs::canonicalize(target)
+                .unwrap()
+                .display()
+                .to_string()
+                .trim_start_matches(r"\\?\")
+        ));
+        crate::create_symlink(target, link).unwrap();
+    }
+
+    fn record_deployed(state: &crate::state::StateStore, module: &str, link: &Path) {
+        let apply = state
+            .record_apply("p", "h", crate::state::ApplyStatus::Success, None)
+            .unwrap();
+        state
+            .upsert_module_file(module, &crate::to_posix_fs_key(link), "", "Symlink", apply)
+            .unwrap();
+    }
+
+    fn manifest_paths(state: &crate::state::StateStore) -> Vec<String> {
+        state
+            .module_file_manifest()
+            .unwrap()
+            .into_iter()
+            .map(|row| format!("{}:{}", row.module_name, row.file_path))
+            .collect()
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_sweep_keeps_every_tree_the_lockfile_or_the_state_store_reads() {
+        crate::test_helpers::with_test_env_var(
+            crate::CFGD_ALLOW_LOCAL_SOURCES_ENV,
+            Some("1"),
+            || {
+                let src = tempfile::tempdir().unwrap();
+                repo_with_two_doc_tags(src.path());
+                let url = file_url(src.path());
+                let cache = tempfile::tempdir().unwrap();
+                let config = tempfile::tempdir().unwrap();
+                let (v1, v2) =
+                    two_trees_and_a_lock_on_the_second(&url, cache.path(), config.path());
+                let state = crate::state::StateStore::open_in_memory().unwrap();
+                let sweep = || {
+                    crate::reconciler::sweep_unread_module_checkouts(
+                        &crate::reconciler::ModuleCache {
+                            state: &state,
+                            config_dir: config.path(),
+                            root: cache.path(),
+                            modules: &[],
+                            registries: &[],
+                        },
+                        std::time::Duration::ZERO,
+                    )
+                    .unwrap()
+                };
+
+                let recorded = serde_json::json!([{
+                    "source": crate::to_posix_string(v1.join("docs").join("index.md")),
+                    "target": "/elsewhere/index.md",
+                }])
+                .to_string();
+                state
+                    .upsert_module_state("other", None, "", "", Some(&recorded), "installed")
+                    .unwrap();
+                assert!(sweep().is_empty());
+                assert!(
+                    v1.join("docs").join("index.md").is_file(),
+                    "a git file source the state store recorded keeps its tree"
+                );
+
+                state
+                    .upsert_module_state("other", None, "", "", None, "installed")
+                    .unwrap();
+                let deployed = config.path().join("index-link.md");
+                deploy_link(&v1.join("docs").join("index.md"), &deployed);
+                record_deployed(&state, "other", &deployed);
+                let failures = sweep();
+                assert!(failures.is_empty(), "{failures:?}");
+                assert!(
+                    v1.join("docs").join("index.md").is_file(),
+                    "a deployed link keeps the tree it points into"
+                );
+                state.delete_module_files("other").unwrap();
+
+                state.remove_module_state("other").unwrap();
+                assert!(sweep().is_empty());
+                assert!(!v1.exists(), "a tree nothing reads is removed");
+                assert!(
+                    v2.join("docs").join("index.md").is_file(),
+                    "the tree the lock entry reads stays"
+                );
+                assert!(
+                    git_cache_dir(cache.path(), &url).join(".git").is_dir(),
+                    "the clone a lock entry reads stays"
+                );
+
+                std::fs::remove_file(config.path().join("modules.lock")).unwrap();
+                assert!(sweep().is_empty());
+                assert!(
+                    !git_cache_dir(cache.path(), &url).exists(),
+                    "a clone nothing references any more is removed"
+                );
+            },
+        );
+    }
+
+    /// A registry's clone is read by `cfgd module search` and `module add`
+    /// and holds no lock entry, so the sweep keeps it for as long as
+    /// `spec.modules.registries` names it and removes it once it does not.
+    #[test]
+    fn a_sweep_keeps_the_clone_of_every_configured_registry_and_removes_the_rest() {
+        let cache = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let state = crate::state::StateStore::open_in_memory().unwrap();
+        let configured = crate::config::ModuleRegistryEntry {
+            name: "kept".into(),
+            url: "https://example.invalid/kept.git".into(),
+        };
+        let dropped_url = "https://example.invalid/dropped.git";
+        let clone_of = |url: &str| {
+            let clone = git_cache_dir(cache.path(), url);
+            std::fs::create_dir_all(clone.join(".git")).unwrap();
+            std::fs::write(clone.join("module.yaml"), "x").unwrap();
+            clone
+        };
+        let (kept, dropped) = (clone_of(&configured.url), clone_of(dropped_url));
+
+        let failures = crate::reconciler::sweep_unread_module_checkouts(
+            &crate::reconciler::ModuleCache {
+                state: &state,
+                config_dir: config.path(),
+                root: cache.path(),
+                modules: &[],
+                registries: std::slice::from_ref(&configured),
+            },
+            std::time::Duration::ZERO,
+        )
+        .unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(
+            kept.join("module.yaml").is_file(),
+            "the clone of a configured registry stays"
+        );
+        assert!(
+            !dropped.exists(),
+            "the clone of a registry no longer configured is removed"
+        );
+    }
+
+    /// `cfgd module delete`, and `cfgd profile update --module -<name>` with
+    /// the removal declined, leave the module's links in place and its file
+    /// manifest rows with them. Each link keeps the tree it points into for as
+    /// long as it exists and points there.
+    #[test]
+    #[serial_test::serial]
+    fn a_link_left_behind_by_a_removed_module_keeps_its_tree_while_it_points_there() {
+        crate::test_helpers::with_test_env_var(
+            crate::CFGD_ALLOW_LOCAL_SOURCES_ENV,
+            Some("1"),
+            || {
+                let src = tempfile::tempdir().unwrap();
+                repo_with_two_doc_tags(src.path());
+                let url = file_url(src.path());
+                let cache = tempfile::tempdir().unwrap();
+                let config = tempfile::tempdir().unwrap();
+                let (v1, v2) =
+                    two_trees_and_a_lock_on_the_second(&url, cache.path(), config.path());
+                let state = crate::state::StateStore::open_in_memory().unwrap();
+                let sweep = || {
+                    crate::reconciler::sweep_unread_module_checkouts(
+                        &crate::reconciler::ModuleCache {
+                            state: &state,
+                            config_dir: config.path(),
+                            root: cache.path(),
+                            modules: &[],
+                            registries: &[],
+                        },
+                        std::time::Duration::ZERO,
+                    )
+                    .unwrap()
+                };
+                let left = config.path().join("left.md");
+                deploy_link(&v1.join("docs").join("index.md"), &left);
+                record_deployed(&state, "removed", &left);
+                let gone = config.path().join("gone.md");
+                record_deployed(&state, "removed", &gone);
+                state
+                    .upsert_module_state("applied", None, "", "", None, "installed")
+                    .unwrap();
+                let not_yet = config.path().join("not-yet.md");
+                record_deployed(&state, "applied", &not_yet);
+
+                let failures = sweep();
+                assert!(failures.is_empty(), "{failures:?}");
+                assert!(
+                    v1.join("docs").join("index.md").is_file(),
+                    "the link a removed module left keeps its tree"
+                );
+                assert_eq!(
+                    manifest_paths(&state),
+                    vec![
+                        format!("applied:{}", crate::to_posix_fs_key(&not_yet)),
+                        format!("removed:{}", crate::to_posix_fs_key(&left)),
+                    ],
+                    "the record of a link that is gone is dropped; an applied module's \
+                     rows are its own manifest and stay"
+                );
+
+                std::fs::remove_file(&left).unwrap();
+                let elsewhere = config.path().join("elsewhere.md");
+                std::fs::write(&elsewhere, "mine").unwrap();
+                crate::create_symlink(&elsewhere, &left).unwrap();
+                let failures = sweep();
+                assert!(failures.is_empty(), "{failures:?}");
+                assert!(!v1.exists(), "a link pointing elsewhere keeps nothing");
+                assert!(v2.is_dir());
+                assert_eq!(
+                    manifest_paths(&state),
+                    vec![format!("applied:{}", crate::to_posix_fs_key(&not_yet))],
+                    "the record of a link that points elsewhere is dropped"
+                );
+                assert_eq!(std::fs::read_to_string(&left).unwrap(), "mine");
+            },
+        );
     }
 
     #[test]
@@ -7150,11 +7640,14 @@ mod git_fixture_tests {
         };
 
         let dest = fetch_git_source(&git_src, cache.path(), "mymod", &printer).unwrap();
-        let cloned_head = get_head_commit_sha(&dest).unwrap();
         assert_eq!(
-            cloned_head,
+            checked_out_commit(cache.path(), &git_src).unwrap(),
             first_commit.to_string(),
-            "git_ref=topic should land HEAD on the topic-branch tip (first commit)"
+            "git_ref=topic should check out the topic-branch tip (first commit)"
+        );
+        assert!(
+            !dest.join("advance.txt").exists(),
+            "the topic checkout must not hold a file committed only on master"
         );
     }
 

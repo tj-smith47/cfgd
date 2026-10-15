@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::SKILL_ROLE;
 use super::{
     Detection, RenderedSkill, SkillProvider, SkillScope, frontmatter_envelope, render_skill_body,
 };
@@ -24,21 +25,27 @@ impl SkillProvider for ClaudeCodeProvider {
         "claude-code"
     }
 
-    fn detect(&self, scope: SkillScope) -> Detection {
+    fn detect(&self, scope: SkillScope) -> Result<Detection> {
         let found = match scope {
             SkillScope::Project => std::env::current_dir()
                 .ok()
                 .is_some_and(|d| d.join(".claude").exists()),
-            SkillScope::User => expand_tilde(Path::new("~/.claude")).exists(),
+            // home-refusal-ok: a skill verb, the startup update check and the daemon's
+            // update pass reach it; each reports a failure as a skipped refresh, and no
+            // apply or plan refuses for it
+            SkillScope::User => expand_tilde(Path::new("~/.claude"), SKILL_ROLE)?.exists(),
         };
-        Detection::present(found)
+        Ok(Detection::present(found))
     }
 
-    fn target_path(&self, kind: SkillKind, scope: SkillScope) -> Option<PathBuf> {
+    fn target_path(&self, kind: SkillKind, scope: SkillScope) -> Result<Option<PathBuf>> {
         let relative = relative_skill_path(kind.command_token());
         match scope {
-            SkillScope::Project => Some(std::env::current_dir().ok()?.join(relative)),
-            SkillScope::User => Some(expand_tilde(&Path::new("~").join(relative))),
+            SkillScope::Project => Ok(std::env::current_dir().ok().map(|d| d.join(relative))),
+            // home-refusal-ok: a skill verb, the startup update check and the daemon's
+            // update pass reach it; each reports a failure as a skipped refresh, and no
+            // apply or plan refuses for it
+            SkillScope::User => expand_tilde(&Path::new("~").join(relative), SKILL_ROLE).map(Some),
         }
     }
 
@@ -106,6 +113,7 @@ mod tests {
         crate::with_test_home(home.path(), || {
             let target = ClaudeCodeProvider
                 .target_path(SkillKind::Module, SkillScope::User)
+                .unwrap()
                 .expect("user scope always has a target");
             assert!(target.is_absolute(), "target must be absolute: {target:?}");
             assert!(target.starts_with(home.path()));
@@ -119,13 +127,13 @@ mod tests {
         let home = tempfile::tempdir().expect("tempdir");
         crate::with_test_home(home.path(), || {
             assert_eq!(
-                ClaudeCodeProvider.detect(SkillScope::User),
+                ClaudeCodeProvider.detect(SkillScope::User).unwrap(),
                 Detection::Absent,
                 "no ~/.claude yet"
             );
             std::fs::create_dir_all(home.path().join(".claude")).expect("create ~/.claude");
             assert_eq!(
-                ClaudeCodeProvider.detect(SkillScope::User),
+                ClaudeCodeProvider.detect(SkillScope::User).unwrap(),
                 Detection::Present
             );
         });

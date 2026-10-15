@@ -911,10 +911,11 @@ pub fn resolve_module_files(
         if is_git_source(&entry.source) {
             let git_src = parse_git_source(&entry.source)?;
             let local_path = fetch_git_source(&git_src, cache_base, &module.name, printer)?;
+            crate::record_config_input_tree(&local_path);
 
             resolved.push(ResolvedFile {
                 source: local_path,
-                target: crate::expand_tilde(Path::new(&entry.target)),
+                target: crate::expand_tilde(Path::new(&entry.target), crate::FILE_TARGET_ROLE)?,
                 is_git_source: true,
                 strategy: entry.strategy,
                 encryption: entry.encryption.clone(),
@@ -928,7 +929,7 @@ pub fn resolve_module_files(
             // `source.exists()` branch would read as a deployable payload.
             resolved.push(ResolvedFile {
                 source: PathBuf::new(),
-                target: crate::expand_tilde(Path::new(&entry.target)),
+                target: crate::expand_tilde(Path::new(&entry.target), crate::FILE_TARGET_ROLE)?,
                 is_git_source: false,
                 strategy: entry.strategy,
                 encryption: entry.encryption.clone(),
@@ -964,6 +965,9 @@ pub fn resolve_module_files(
                 }
                 .into());
             }
+            // Stamped ahead of the `private` skip below: a private source that
+            // appears later changes what this resolution yields.
+            crate::record_config_input_tree(&source);
             // `private` marks the source local-only: on a machine where it
             // does not exist the entry resolves to nothing, so no downstream
             // consumer has to know the flag existed. An absent NON-private
@@ -975,7 +979,7 @@ pub fn resolve_module_files(
             }
             resolved.push(ResolvedFile {
                 source,
-                target: crate::expand_tilde(Path::new(&entry.target)),
+                target: crate::expand_tilde(Path::new(&entry.target), crate::FILE_TARGET_ROLE)?,
                 is_git_source: false,
                 strategy: entry.strategy,
                 encryption: entry.encryption.clone(),
@@ -1017,8 +1021,8 @@ pub fn resolve_modules(
         .iter()
         .map(|r| resolve_profile_module_name(r).to_string())
         .collect();
-    // tracing-ok: internal resolution-set diagnostic, not user-facing — nothing
-    // else prints the requested module set before dependency order is walked
+    // tracing-ok: internal resolution-set diagnostic, read under RUST_LOG alone;
+    // nothing else prints the requested module set before dependency order is walked
     tracing::debug!(names = ?resolved_names, "resolving modules");
 
     let order = resolve_dependency_order(&resolved_names, &all_modules)

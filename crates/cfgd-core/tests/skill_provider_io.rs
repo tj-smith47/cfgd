@@ -28,6 +28,7 @@ fn install_then_remove_is_clean_roundtrip() {
         // with exactly the rendered contents (not merely "contains").
         let expected_path = provider
             .target_path(SkillKind::Module, SkillScope::User)
+            .expect("home resolves")
             .expect("user scope has a target");
         assert_eq!(path, expected_path);
         assert!(
@@ -81,6 +82,7 @@ fn agents_md_managed_section_surgery_preserves_user_content() {
 
         let target = provider
             .target_path(SkillKind::Module, SkillScope::User)
+            .expect("home resolves")
             .expect("user scope has a target");
         std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir ~/.codex");
 
@@ -151,6 +153,7 @@ fn agents_md_inplace_block_preserves_trailing_user_content() {
 
         let target = provider
             .target_path(SkillKind::Module, SkillScope::User)
+            .expect("home resolves")
             .expect("user scope has a target");
         std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir ~/.codex");
 
@@ -263,6 +266,7 @@ fn project_scope_install_leaves_no_lock_file_in_project_dir() {
 
         let target = provider
             .target_path(SkillKind::Module, SkillScope::Project)
+            .expect("home resolves")
             .expect("project scope has a target");
         // The target is the project-root AGENTS.md (its parent is the cwd).
         // `target_path` derives the parent from `std::env::current_dir()`; the
@@ -389,6 +393,7 @@ fn concurrent_installs_of_different_kinds_dont_corrupt_delimiters() {
     let target = with_test_home(home.path(), || {
         let target = CodexProvider
             .target_path(SkillKind::Profile, SkillScope::User)
+            .expect("home resolves")
             .expect("user scope has a target");
         std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir ~/.codex");
         target
@@ -536,6 +541,7 @@ fn reinstall_is_idempotent_noop_diff() {
         let xmodel = skill_model_for(SkillKind::Profile, env!("CARGO_PKG_VERSION"));
         let xtarget = codex
             .target_path(SkillKind::Profile, SkillScope::User)
+            .expect("home resolves")
             .expect("codex user target");
         std::fs::create_dir_all(xtarget.parent().expect("parent")).expect("mkdir ~/.codex");
         std::fs::write(&xtarget, "# AGENTS\n\nuser line\n").expect("seed");

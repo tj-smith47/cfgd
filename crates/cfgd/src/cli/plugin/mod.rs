@@ -427,6 +427,7 @@ pub fn plugin_main() -> anyhow::Result<()> {
     // renders exactly one failure representation (one ✗ / one structured payload) and
     // exits with the resolved code — there is one error sink for the whole binary.
     if let Err(e) = result {
+        // exit-ok: the kubectl plugin entry runs before the migration gate and holds no answer.
         crate::cli::error::render_cli_error(&printer, &e).exit();
     }
     Ok(())
@@ -535,7 +536,7 @@ pub fn build_debug_doc(
         )
         .kv_block([
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // modules-row-ok: the modules this invocation injects into a POD, named by the caller, not this host's resolved profile
+            // modules-row-ok: the modules this invocation injects into a POD, as the caller named them
             ("Modules", module_names.join(", ")),
             ("Mount Path", mount_dirs.join(", ")),
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
@@ -617,6 +618,7 @@ pub fn cmd_exec(
 
     let code = super::kubectl::run_argv_inherit(&exec_args)?;
     if code != 0 {
+        // exit-ok: the kubectl plugin entry runs before the migration gate and holds no answer.
         std::process::exit(code);
     }
     Ok(())
@@ -640,7 +642,7 @@ pub fn build_exec_doc(
         )
         .kv_block([
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // modules-row-ok: the modules this invocation injects into a POD, named by the caller, not this host's resolved profile
+            // modules-row-ok: the modules this invocation injects into a POD, as the caller named them
             ("Modules", module_names.join(", ")),
             ("Mount Path", mount_dirs.join(", ")),
             // long-line-ok: a hatch is read off its own line, so it cannot wrap

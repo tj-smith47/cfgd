@@ -623,13 +623,14 @@ fn run_cosign_verify_blob(
     if let Some(cert) = cert_path {
         cmd.arg(format!("--certificate={}", cert.display()));
     }
-    let output = crate::command_output(
+    let output = crate::cosign_output_with_timeout(
         cmd.arg(format!("--certificate-oidc-issuer={COSIGN_OIDC_ISSUER}"))
             .arg(format!(
                 "--certificate-identity-regexp={COSIGN_IDENTITY_REGEXP}"
             ))
             .arg("--")
             .arg(checksums_path),
+        "verify-blob",
     );
 
     match output {
@@ -640,9 +641,7 @@ fn run_cosign_verify_blob(
                 message: format!("cosign verify-blob failed: {stderr}"),
             })
         }
-        Err(e) => Err(UpgradeError::DownloadFailed {
-            message: format!("cosign invocation failed: {e}"),
-        }),
+        Err(message) => Err(UpgradeError::DownloadFailed { message }),
     }
 }
 
@@ -1236,6 +1235,7 @@ fn cache_dir() -> Option<PathBuf> {
     // sandboxed run that redirects the cache via env would otherwise fall
     // through to a `ProjectDirs` lookup that can fail to resolve a home,
     // surfacing a spurious "cannot determine cache directory" warning.
+    // home-optional-ok: with no cache location the check runs uncached and records nothing
     crate::default_cache_dir_for(crate::Scope::User).ok()
 }
 

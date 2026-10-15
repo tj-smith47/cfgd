@@ -123,6 +123,7 @@ fn ride_along_does_not_install_kinds_the_user_never_had() {
 
         let target = ClaudeCodeProvider
             .target_path(SkillKind::Module, SkillScope::User)
+            .expect("home resolves")
             .expect("user scope has a target");
         assert!(
             !target.exists(),

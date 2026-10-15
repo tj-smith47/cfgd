@@ -1,0 +1,40 @@
+- kind: Service
+  name: cfgd-gateway
+  selector:
+    app.kubernetes.io/name: cfgd
+    app.kubernetes.io/instance: cfgd
+    app.kubernetes.io/component: operator
+    cfgd.io/gateway-leader: "true"
+- kind: Service
+  name: cfgd-webhook
+  selector:
+    app.kubernetes.io/name: cfgd
+    app.kubernetes.io/instance: cfgd
+    app.kubernetes.io/component: operator
+- kind: Role
+  name: cfgd-operator-gateway
+  namespace: cfgd-system
+  rules:
+    - apiGroups: [""]
+      resources: ["pods"]
+      verbs: ["patch"]
+  roleRef: null
+  subjects: null
+- kind: RoleBinding
+  name: cfgd-operator-gateway
+  namespace: cfgd-system
+  rules: null
+  roleRef:
+    apiGroup: rbac.authorization.k8s.io
+    kind: Role
+    name: cfgd-operator-gateway
+  subjects:
+    - kind: ServiceAccount
+      name: cfgd
+      namespace: cfgd-system
+- kind: Deployment
+  name: cfgd-operator
+  gatewayData:
+    - name: gateway-data
+      persistentVolumeClaim:
+        claimName: cfgd-gateway-data

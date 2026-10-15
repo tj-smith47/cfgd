@@ -37,15 +37,13 @@ fn default_permissions() -> String {
 
 impl SshKeySpec {
     /// Resolve the effective private key path (expands tilde, applies type default).
-    fn resolved_path(&self) -> PathBuf {
-        if let Some(ref p) = self.path {
-            cfgd_core::expand_tilde(Path::new(p))
-        } else {
-            match self.key_type.as_str() {
-                "rsa" => cfgd_core::expand_tilde(Path::new("~/.ssh/id_rsa")),
-                _ => cfgd_core::expand_tilde(Path::new("~/.ssh/id_ed25519")),
-            }
-        }
+    fn resolved_path(&self) -> Result<PathBuf> {
+        let declared = match (&self.path, self.key_type.as_str()) {
+            (Some(p), _) => p.as_str(),
+            (None, "rsa") => "~/.ssh/id_rsa",
+            (None, _) => "~/.ssh/id_ed25519",
+        };
+        cfgd_core::expand_tilde(Path::new(declared), "SSH key path")
     }
 
     /// Parse the `permissions` string (octal like "600") into a u32 mode.
@@ -229,6 +227,14 @@ impl SystemConfigurator for SshKeysConfigurator {
         Some("ssh-keygen")
     }
 
+    fn home_refusal(&self, desired: &serde_yaml::Value) -> Option<cfgd_core::errors::StateError> {
+        // A malformed entry is the diff's to report.
+        Self::parse_desired(desired)
+            .ok()?
+            .iter()
+            .find_map(|spec| cfgd_core::home_refusal_of(spec.resolved_path()))
+    }
+
     fn current_state(&self) -> Result<serde_yaml::Value> {
         // Return empty sequence — state is computed on demand during diff
         Ok(serde_yaml::Value::Sequence(Vec::new()))
@@ -239,7 +245,7 @@ impl SystemConfigurator for SshKeysConfigurator {
         let mut drifts = Vec::new();
 
         for spec in &specs {
-            let path = spec.resolved_path();
+            let path = spec.resolved_path()?;
             // The reconciler composes `system:<configurator>.<key>` around this
             // key, so naming the configurator here would double it into the
             // persisted resource id and every rendered line.
@@ -285,7 +291,7 @@ impl SystemConfigurator for SshKeysConfigurator {
         let specs = Self::parse_desired(desired)?;
 
         for spec in &specs {
-            let path = spec.resolved_path();
+            let path = spec.resolved_path()?;
 
             // Warn about unsupported passphrase field
             if spec.passphrase.is_some() {

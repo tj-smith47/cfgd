@@ -259,9 +259,37 @@ pub(super) fn manifest_accept() -> String {
     format!("{MEDIA_TYPE_OCI_MANIFEST}, {MEDIA_TYPE_OCI_INDEX}, {MEDIA_TYPE_DOCKER_MANIFEST_LIST}")
 }
 
+/// The variable naming registries cfgd reaches over plain HTTP (comma-separated).
+pub const OCI_INSECURE_REGISTRIES_ENV: &str = "OCI_INSECURE_REGISTRIES";
+/// The username half of the credential cfgd sends every registry.
+pub const REGISTRY_USERNAME_ENV: &str = "REGISTRY_USERNAME";
+/// The password half of the credential cfgd sends every registry.
+pub const REGISTRY_PASSWORD_ENV: &str = "REGISTRY_PASSWORD";
+/// The directory cfgd reads the Docker `config.json` from, in place of `~/.docker`.
+pub const DOCKER_CONFIG_ENV: &str = "DOCKER_CONFIG";
+
+/// Every environment variable the registry client's own code reads: which
+/// registries take plain HTTP and which credential each request carries. The
+/// HTTP agent under it reads [`crate::http::PROXY_ENV`] as well, and
+/// [`registry_request_env`] is the two together.
+pub const REGISTRY_HOST_ENV: [&str; 4] = [
+    OCI_INSECURE_REGISTRIES_ENV,
+    REGISTRY_USERNAME_ENV,
+    REGISTRY_PASSWORD_ENV,
+    DOCKER_CONFIG_ENV,
+];
+
+/// Every environment variable a registry request reads, each a fact about the
+/// host it runs on: [`REGISTRY_HOST_ENV`] followed by the HTTP agent's
+/// [`crate::http::PROXY_ENV`]. A test that must not inherit the host's
+/// registry setup removes every one of them.
+pub fn registry_request_env() -> impl Iterator<Item = &'static str> {
+    REGISTRY_HOST_ENV.into_iter().chain(crate::http::PROXY_ENV)
+}
+
 /// Check if a registry is listed in `OCI_INSECURE_REGISTRIES` (comma-separated).
 fn is_insecure_registry(registry: &str) -> bool {
-    std::env::var("OCI_INSECURE_REGISTRIES")
+    std::env::var(OCI_INSECURE_REGISTRIES_ENV)
         .unwrap_or_default()
         .split(',')
         .any(|r| r.trim() == registry)
@@ -401,6 +429,20 @@ pub(super) mod test_helpers {
             .to_string()
     }
 
+    /// Answer `404` for every cosign attestation tag in `repository`, as a
+    /// registry holding an artifact nobody attested does.
+    pub(crate) fn serve_no_attestations(server: &mut mockito::ServerGuard, repository: &str) {
+        server
+            .mock(
+                "GET",
+                mockito::Matcher::Regex(format!(
+                    r"^/v2/{repository}/manifests/sha256-[0-9a-f]+\.att$"
+                )),
+            )
+            .with_status(404)
+            .create();
+    }
+
     /// Helper: create a module directory with a valid module.yaml for push tests.
     pub(crate) fn create_test_module_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -491,6 +533,7 @@ pub(super) mod test_helpers {
                 })
                 .create();
 
+            serve_no_attestations(&mut server, repository);
             let manifests = format!("^/v2/{repository}/manifests/");
             let reference = |req: &mockito::Request| {
                 req.path()

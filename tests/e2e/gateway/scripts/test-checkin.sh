@@ -64,7 +64,10 @@ begin_test "GW-09: Checkin with compliance data"
 if [ -z "${DEVICE_API_KEY:-}" ]; then
     skip_test "GW-09" "No device enrolled (GW-02 may have failed)"
 else
-    GW09_COMPLIANCE='{"compliant":true,"totalChecks":5,"passedChecks":5,"failedChecks":0}'
+    # Shaped like the agent's report: distinct counts, so the read-back shows
+    # which field each one was stored under, and the non-compliant checks listed
+    # violations first, then warnings.
+    GW09_COMPLIANCE='{"compliant":3,"warning":1,"violation":2,"checks":[{"category":"file","name":"/etc/e2e-gw09/managed.conf","status":"Violation","detail":"managed file missing"},{"category":"system","name":"sysctl.net.ipv4.ip_forward","status":"Violation","detail":"expected 1, found 0"},{"category":"watchPath","name":"/etc/e2e-gw09/watched","status":"Warning","detail":"path does not exist"}]}'
     GW09_CHECKIN_CODE=$(curl -s -o "$GW_SCRATCH/gw09-checkin.txt" -w "%{http_code}" \
         -X POST "${GW_URL}/api/v1/checkin" \
         -H "Authorization: Bearer ${DEVICE_API_KEY}" \
@@ -93,16 +96,11 @@ else
         echo "$GW09_DEVICE_BODY" | head -c 500 | sed 's/^/    /'
         echo ""
 
-        if [ "$GW09_DEVICE_CODE" = "200" ] && echo "$GW09_DEVICE_BODY" | jq -e '.complianceSummary' >/dev/null 2>&1; then
-            # Verify the compliance data matches what the check-in sent
-            GW09_STORED_COMPLIANT=$(echo "$GW09_DEVICE_BODY" | jq -r '.complianceSummary.compliant // empty' 2>/dev/null)
-            if [ "$GW09_STORED_COMPLIANT" = "true" ]; then
-                pass_test "GW-09"
-            else
-                fail_test "GW-09" "Compliance data stored but 'compliant' field mismatch (got: $GW09_STORED_COMPLIANT)"
-            fi
+        if [ "$GW09_DEVICE_CODE" = "200" ] && echo "$GW09_DEVICE_BODY" | jq -e --argjson sent "$GW09_COMPLIANCE" '.complianceSummary == $sent' >/dev/null 2>&1; then
+            pass_test "GW-09"
         else
-            fail_test "GW-09" "Device response missing complianceSummary (HTTP $GW09_DEVICE_CODE)"
+            GW09_STORED=$(echo "$GW09_DEVICE_BODY" | jq -c '.complianceSummary' 2>/dev/null || echo "unreadable")
+            fail_test "GW-09" "Stored complianceSummary $GW09_STORED differs from the one sent, $GW09_COMPLIANCE (HTTP $GW09_DEVICE_CODE)"
         fi
     fi
 fi
@@ -312,7 +310,7 @@ EOF
             # check-in succeed, so a silent 409 shows up here and nowhere else.
             # The read is asserted on its own: an empty log and a log that could
             # not be read look alike, and only one of them is a passing test.
-            GW31_LOG=$(kubectl logs -n cfgd-system deploy/cfgd-server --since=2m 2>&1)
+            GW31_LOG=$(kubectl logs -n "$E2E_INSTALL_NS" -l "$E2E_GATEWAY_LEADER_PODS" --since=2m --tail=-1 2>&1)
             GW31_LOG_RC=$?
             GW31_LOG_READ=empty
             [ -n "$GW31_LOG" ] && GW31_LOG_READ="read"

@@ -21,6 +21,7 @@ single-source-of-truth wiring.
 | crossplane version + sha256 | `.github/actions/setup-crossplane` input defaults | release (function/push jobs), e2e-setup; `tests/e2e/setup-cluster.sh` fallback mirrors it for local runs |
 | cosign version | `COSIGN_VERSION` env in e2e.yml | both cosign-installer steps |
 | shellcheck version + sha256 | `.github/actions/setup-shellcheck` input defaults | ci.yml `audit` job (ahead of `task shellcheck`) and `snapshot` job (ahead of `task installer:shellcheck`); both tasks read the version default and refuse any other local version (the runner image's own shellcheck is older and reports different findings) |
+| shfmt version + sha256 | `.github/actions/setup-shfmt` input defaults | ci.yml `audit` job, ahead of `task e2e:tags:check`, whose operator item-read scan reads the syntax tree `shfmt --to-json` prints; `_shfmt:pin` reads the version default and refuses any other local version |
 | yq version + sha256 | `YQ_VERSION` / `YQ_SHA256` env on the ci.yml `audit` job's `Install yq` step | `task e2e:tags:check` in that job; `test-pr-install.sh` refuses any yq but mikefarah v4. The runner image ships a mikefarah v4 of its own that moves on the image's schedule; the pin makes the check's yq change only with this line |
 | MSRV | `rust-version` in root Cargo.toml | ci.yml msrv job reads it with sed |
 | FreeBSD guest packages, `safe.directory` trust, synced `.git` | ci.yml `test-freebsd` vmactions `prepare:` | Taskfile `test:freebsd` (`npm` is CI-only: only `test:freebsd:npm-prefix` reads it); compared by `the_local_freebsd_leg_prepares_the_guest_ci_prepares` |
@@ -353,6 +354,27 @@ single-source-of-truth wiring.
   determinism-shards.yml and the two publish workflows run no `cargo` step at
   all: anodizer-action owns those builds, and a determinism rebuild must start
   from a clean `target/` by definition.
+- e2e.yml's `e2e-teardown` job runs `bash tests/e2e/pr-install-down.sh`
+  with no go-task step, as e2e-setup.yml runs `setup-cluster.sh`: a tool
+  install that times out there leaves the PR install on the cluster, and the
+  next run's setup refuses it until its heartbeat is stale. The suite jobs keep
+  `task e2e:<suite>`: a failed go-task install there fails that suite and
+  leaves nothing behind. The teardown job's `timeout-minutes` (15) covers the
+  script's worst case of 660s (four `--timeout=90s` deletes, the 180s
+  `RUN_NS_TIMEOUT` wait and `helm uninstall --timeout=120s`) plus checkout and
+  reads: a job killed mid-teardown leaks the install. A change to one of those
+  waits rechecks the budget.
+- A job in e2e.yml whose suite deletes operator pods runs after every job
+  whose suite talks to the PR install's device gateway, through its `needs:`
+  directly or through another job. The gateway runs in the operator leader
+  pod, so OP-LC-03's leader delete would otherwise break a gateway case
+  running beside it. `operator-tests` therefore needs `gateway-tests`,
+  `full-stack-tests`, `node-tests`, `server-tests` and `helm-tests`, and runs
+  whatever they concluded (`!cancelled()` with a successful setup).
+  `tests/e2e/common/test-pr-install.sh` (`task e2e:tags:check`) reads the job
+  graph with `tests/e2e/common/job-graph.awk`, follows each job's `task e2e:*`
+  target to its scripts, and fails on a deleting job that does not wait for a
+  gateway job.
 - Self-hosted runner labels for actionlint live in `.github/actionlint.yaml`.
 - Any job that `uses: ./.github/actions/...` MUST have a checkout step
   before it (the local action file only exists on the runner after

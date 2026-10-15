@@ -50,7 +50,7 @@ dp_cfgd() {
 # background forks first, so `$!` would name a wrapper whose death says nothing
 # about the process still holding the state store. `exec` replaces that fork.
 dp_spawn_daemon() {
-    exec env "${DP_ENV[@]}" "$CFGD_BIN" --config "$DP_CONF" --color never daemon
+    exec env "${DP_ENV[@]}" "$CFGD_BIN" --config "$DP_CONF" --color never daemon # device-id-ok: a daemon check-in sends no drift report, the only request the gateway makes a DriftAlert from
 }
 
 # `pgrep`'s own availability, probed once: its "no match" and "not installed"
@@ -179,7 +179,7 @@ else
     # this build reads that the config does not declare) goes to stderr, and
     # merged ahead of the JSON it would leave jq nothing to parse.
     GW32_ERR="$DP_ROOT/gw32-enroll.stderr"
-    GW32_OUT=$(dp_cfgd -o json enroll --server-url "$GW_URL" --token "$DP_TOKEN" 2> "$GW32_ERR")
+    GW32_OUT=$(dp_cfgd -o json enroll --server-url "$GW_URL" --token "$DP_TOKEN" 2> "$GW32_ERR") # device-id-ok: GW-32 asserts the id the binary derives; enroll sends no drift report
     GW32_RC=$?
     echo "  enroll rc=$GW32_RC"
     echo "$GW32_OUT" | head -c 400 | sed 's/^/    /'
@@ -277,7 +277,7 @@ EOF
         -o jsonpath="{.status.units[?(@.hostname==\"${DP_HOSTNAME}\")].owner}" 2>/dev/null || echo "")
     echo "  policy row: schedule='${GW33_ROW_SCHEDULE}' owner='${GW33_ROW_OWNER}' (rc=${GW33_ROW_RC})"
 
-    GW33_CHECKIN=$(dp_cfgd checkin --server-url "$GW_URL" 2>&1)
+    GW33_CHECKIN=$(dp_cfgd checkin --server-url "$GW_URL" 2>&1) # device-id-ok: the dp_write_profile profile declares only backups, so the checkin has no system setting drift to report
     GW33_CHECKIN_RC=$?
     echo "  checkin rc=$GW33_CHECKIN_RC"
     printf '%s\n' "$GW33_CHECKIN" | strip_sgr | head -12 | sed 's/^/    /'

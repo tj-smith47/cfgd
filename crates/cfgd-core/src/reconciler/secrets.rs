@@ -46,7 +46,7 @@ impl<'a> super::Reconciler<'a> {
                     || backend.decrypt_file(&source_path),
                 )?;
 
-                let target_path = expand_tilde(target);
+                let target_path = expand_tilde(target, crate::SECRET_TARGET_ROLE)?;
                 crate::atomic_write(&target_path, decrypted.expose_secret().as_bytes())?;
 
                 // Resource-id key, not display: `to_posix_string` folds on every
@@ -67,7 +67,7 @@ impl<'a> super::Reconciler<'a> {
                 let value = self.resolve_provider_secret(provider, reference)?;
                 let rendered = templated_secret(template.as_deref(), value.expose_secret());
 
-                let target_path = expand_tilde(target);
+                let target_path = expand_tilde(target, crate::SECRET_TARGET_ROLE)?;
                 crate::atomic_write(&target_path, rendered.as_bytes())?;
 
                 Ok(format!(

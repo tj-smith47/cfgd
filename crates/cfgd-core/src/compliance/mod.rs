@@ -181,62 +181,130 @@ pub fn collect_snapshot(
     system_diffs: Option<&[SystemDiff]>,
     constraint_violations: &[crate::composition::ConstraintViolation],
 ) -> Result<ComplianceSnapshot> {
-    let platform = Platform::current();
-    let hostname = crate::hostname_string();
+    let storeless = StorelessChecks::collect(
+        profile_name,
+        profile,
+        modules,
+        config_dir,
+        registry,
+        scope,
+        system_diffs,
+    )?;
+    storeless.finish(
+        profile_name,
+        profile,
+        modules,
+        registry,
+        scope,
+        sources,
+        printer,
+        state,
+        constraint_violations,
+    )
+}
 
-    let machine = MachineInfo {
-        hostname,
-        os: platform.os.as_str().to_owned(),
-        arch: platform.arch.as_str().to_owned(),
-    };
+/// The checks of a snapshot that read no state store: the file, system,
+/// secret and watch-path checks, which are also the ones that expand a `~`
+/// against the home. A caller that has not opened its store yet collects these
+/// first, so a run the home refuses has opened none; [`Self::finish`] adds the
+/// package checks the store serves.
+pub struct StorelessChecks {
+    files: Vec<ComplianceCheck>,
+    system: Vec<ComplianceCheck>,
+    secrets: Vec<ComplianceCheck>,
+    watch_paths: Vec<ComplianceCheck>,
+}
 
-    let cx = PackageContext::new(printer, state);
-
-    let mut checks = Vec::new();
-
-    if scope.files {
-        checks.extend(collect_file_checks(
-            profile_name,
-            profile,
-            modules,
-            config_dir,
-            registry,
-        ));
-    }
-    if scope.packages {
-        checks.extend(collect_package_checks(profile, modules, registry, &cx)?);
-    }
-    if scope.system {
-        match system_diffs {
-            Some(collected) => checks.extend(system_checks_from_diffs(collected)),
-            None => checks.extend(collect_system_checks(profile, modules, registry)?),
+impl StorelessChecks {
+    /// Collect the checks `scope` enables that read no state store. The
+    /// arguments mean what they mean to [`collect_snapshot`].
+    pub fn collect(
+        profile_name: &str,
+        profile: &MergedProfile,
+        modules: &[ResolvedModule],
+        config_dir: &Path,
+        registry: &ProviderRegistry,
+        scope: &ComplianceScope,
+        system_diffs: Option<&[SystemDiff]>,
+    ) -> Result<Self> {
+        let files = if scope.files {
+            collect_file_checks(profile_name, profile, modules, config_dir, registry)?
+        } else {
+            Vec::new()
+        };
+        let system = match (scope.system, system_diffs) {
+            (false, _) => Vec::new(),
+            (true, Some(collected)) => system_checks_from_diffs(collected),
+            (true, None) => collect_system_checks(profile, modules, registry)?,
+        };
+        let secrets = if scope.secrets {
+            collect_secret_checks(profile)?
+        } else {
+            Vec::new()
+        };
+        let mut watch_paths = Vec::new();
+        for watch_path in &scope.watch_paths {
+            watch_paths.extend(collect_watch_path_checks(watch_path)?);
         }
+        Ok(Self {
+            files,
+            system,
+            secrets,
+            watch_paths,
+        })
     }
-    if scope.secrets {
-        checks.extend(collect_secret_checks(profile));
-    }
-    for watch_path in &scope.watch_paths {
-        checks.extend(collect_watch_path_checks(watch_path));
-    }
-    for manager_name in &scope.watch_package_managers {
-        checks.extend(collect_watched_package_manager_checks(
-            manager_name,
-            registry,
-            &cx,
-        )?);
-    }
-    checks.extend(constraint_violation_checks(constraint_violations));
 
-    let summary = compute_summary(&checks);
+    /// The snapshot these checks and the store-served package checks make,
+    /// in the order every snapshot lists its checks. The arguments mean what
+    /// they mean to [`collect_snapshot`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn finish(
+        self,
+        profile_name: &str,
+        profile: &MergedProfile,
+        modules: &[ResolvedModule],
+        registry: &ProviderRegistry,
+        scope: &ComplianceScope,
+        sources: &[String],
+        printer: &Printer,
+        state: &StateStore,
+        constraint_violations: &[crate::composition::ConstraintViolation],
+    ) -> Result<ComplianceSnapshot> {
+        let platform = Platform::current();
+        let machine = MachineInfo {
+            hostname: crate::hostname_string(),
+            os: platform.os.as_str().to_owned(),
+            arch: platform.arch.as_str().to_owned(),
+        };
+        let cx = PackageContext::new(printer, state);
 
-    Ok(ComplianceSnapshot {
-        timestamp: crate::utc_now_iso8601(),
-        machine,
-        profile: profile_name.to_owned(),
-        sources: sources.to_vec(),
-        checks,
-        summary,
-    })
+        let mut checks = self.files;
+        if scope.packages {
+            checks.extend(collect_package_checks(profile, modules, registry, &cx)?);
+        }
+        checks.extend(self.system);
+        checks.extend(self.secrets);
+        checks.extend(self.watch_paths);
+        for manager_name in &scope.watch_package_managers {
+            checks.extend(collect_watched_package_manager_checks(
+                manager_name,
+                registry,
+                &cx,
+            )?);
+        }
+        checks.extend(constraint_violation_checks(constraint_violations));
+
+        let summary = compute_summary(&checks);
+
+        Ok(ComplianceSnapshot {
+            timestamp: crate::utc_now_iso8601(),
+            machine,
+            profile: profile_name.to_owned(),
+            sources: sources.to_vec(),
+            checks,
+            summary,
+        })
+    }
 }
 
 /// Map a source-constraint violation `kind` to a compliance check category.
@@ -365,8 +433,23 @@ pub fn export_snapshot_to_file(
     snapshot: &ComplianceSnapshot,
     export: &ComplianceExport,
 ) -> Result<PathBuf> {
-    let export_dir = crate::expand_tilde(Path::new(&export.path));
-    std::fs::create_dir_all(&export_dir)?;
+    export_snapshot_into(snapshot, export, &export_dir(export)?)
+}
+
+/// The directory `export` names, with a leading `~` expanded against the home.
+/// A caller that must know the home can hold the export before it opens its
+/// state store resolves this first and exports through [`export_snapshot_into`].
+pub fn export_dir(export: &ComplianceExport) -> Result<PathBuf> {
+    crate::expand_tilde(Path::new(&export.path), "compliance export directory")
+}
+
+/// [`export_snapshot_to_file`] into the already resolved `export_dir`.
+pub fn export_snapshot_into(
+    snapshot: &ComplianceSnapshot,
+    export: &ComplianceExport,
+    export_dir: &Path,
+) -> Result<PathBuf> {
+    std::fs::create_dir_all(export_dir)?;
 
     let timestamp_safe = crate::iso8601_to_filename_safe(&snapshot.timestamp);
     let ext = match export.format {
@@ -417,7 +500,7 @@ pub fn collect_file_checks(
     modules: &[ResolvedModule],
     config_dir: &Path,
     registry: &ProviderRegistry,
-) -> Vec<ComplianceCheck> {
+) -> Result<Vec<ComplianceCheck>> {
     let mut checks = Vec::new();
     // The RESOLVED strategy for every declared target, so an entry that names
     // none is judged against the profile-wide default here exactly as it is on
@@ -427,10 +510,10 @@ pub fn collect_file_checks(
         modules,
         config_dir,
         registry.default_file_strategy,
-    );
+    )?;
 
     for file in effective_files(profile, modules, config_dir) {
-        let target = crate::expand_tilde(&file.target);
+        let target = crate::expand_tilde(&file.target, crate::FILE_TARGET_ROLE)?;
         let exists = target.exists();
         let suffix = origin_suffix(&file.origin);
 
@@ -617,7 +700,7 @@ pub fn collect_file_checks(
         }
     }
 
-    checks
+    Ok(checks)
 }
 
 // ---------------------------------------------------------------------------
@@ -1015,7 +1098,7 @@ pub fn collect_system_checks(
 
 /// Check secrets: for secrets with file targets, verify the target file exists
 /// and check its permissions. NEVER reads or logs secret values.
-pub fn collect_secret_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
+pub fn collect_secret_checks(profile: &MergedProfile) -> Result<Vec<ComplianceCheck>> {
     let mut checks = Vec::new();
 
     for secret in &profile.secrets {
@@ -1024,7 +1107,7 @@ pub fn collect_secret_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
             continue;
         };
 
-        let target = crate::expand_tilde(target_path);
+        let target = crate::expand_tilde(target_path, crate::SECRET_TARGET_ROLE)?;
         if target.exists() {
             checks.push(ComplianceCheck {
                 category: "secret".into(),
@@ -1044,7 +1127,7 @@ pub fn collect_secret_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
         }
     }
 
-    checks
+    Ok(checks)
 }
 
 // ---------------------------------------------------------------------------
@@ -1052,9 +1135,12 @@ pub fn collect_secret_checks(profile: &MergedProfile) -> Vec<ComplianceCheck> {
 // ---------------------------------------------------------------------------
 
 /// Stat a watch path and report basic info.
-fn collect_watch_path_checks(path_str: &str) -> Vec<ComplianceCheck> {
-    let path = crate::expand_tilde(Path::new(path_str));
+fn collect_watch_path_checks(path_str: &str) -> Result<Vec<ComplianceCheck>> {
+    let path = crate::expand_tilde(Path::new(path_str), "watch path")?;
+    Ok(watch_path_checks(&path))
+}
 
+fn watch_path_checks(path: &Path) -> Vec<ComplianceCheck> {
     if !path.exists() {
         return vec![ComplianceCheck {
             category: "watchPath".into(),

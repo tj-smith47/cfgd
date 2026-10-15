@@ -1096,16 +1096,11 @@ pub fn module_file_resource_id(module: &str, target: &str) -> String {
 /// The id the live module-file check mints for one DECLARED module file,
 /// answered from the spec alone — kept beside the producer because a
 /// presenting caller probes a drifted-id set with it before the check's own
-/// record exists, and two derivations of the target half (a `Patch` target
-/// stays unexpanded; every other strategy's is `~`-expanded) would let the
-/// probe and the finding spell one file two ways.
+/// record exists, and two derivations of the target half would let the probe
+/// and the finding spell one file two ways. The target is the resolved one,
+/// already `~`-expanded.
 pub fn module_file_spec_resource_id(module: &str, file: &crate::modules::ResolvedFile) -> String {
-    let target = if file.patch.is_some() {
-        file.target.display_posix()
-    } else {
-        crate::expand_tilde(&file.target).display_posix()
-    };
-    module_file_resource_id(module, &target)
+    module_file_resource_id(module, &file.target.display_posix())
 }
 
 /// The inverse of [`module_file_resource_id`]: the module a finding belongs to

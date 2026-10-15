@@ -25,7 +25,7 @@ NC='\033[0m'
 
 # --- Pod helpers (replaces KIND node helpers) ---
 
-REGISTRY="${REGISTRY:?E2E_REGISTRY must be set (e.g. export REGISTRY=your.registry.io)}"
+REGISTRY="${REGISTRY:?REGISTRY must be set (e.g. export REGISTRY=your.registry.io)}"
 IMAGE_TAG="${IMAGE_TAG:-e2e-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo latest)}"
 
 # Each crate releases at its own version and its image is tagged with it, so
@@ -61,19 +61,91 @@ e2e_image_overridden() {
     [ -n "${!var:-}" ]
 }
 
-# The warning setup prints when an override is set for a component whose spec
-# another owner controls: <image> <owner> <object> <image the object runs>.
-# Prints nothing when the image has no override, or when the object already
-# runs the overridden reference, since the override then took effect.
-e2e_override_unused_warning() {
-    local image="$1" owner="$2" object="$3" running="$4"
-    if e2e_image_overridden "$image" && [ "$running" != "$(e2e_image "$image")" ]; then
-        echo "  WARN: $(e2e_image_override_var "$image") is set, but $owner owns $object, which runs $running; the override does not reach it"
-    fi
+# shellcheck source=tests/e2e/common/chart-pins.sh
+source "$E2E_ROOT/common/chart-pins.sh"
+
+# semver_below <a> <b>: 0 when a is a lower semver than b, 1 when it is not, 2
+# when either is not `[v]MAJOR.MINOR.PATCH[-pre]`. A pre-release sorts below its
+# release.
+semver_below() {
+    local re='^v?([0-9]+)\.([0-9]+)\.([0-9]+)(-([0-9A-Za-z.-]+))?$' i
+    local -a a b
+    [[ $1 =~ $re ]] || return 2
+    a=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[5]}")
+    [[ $2 =~ $re ]] || return 2
+    b=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[5]}")
+    for i in 0 1 2; do
+        if ((10#${a[i]} < 10#${b[i]})); then return 0; fi
+        if ((10#${a[i]} > 10#${b[i]})); then return 1; fi
+    done
+    [ -n "${a[3]}" ] && [ "${a[3]}" != "${b[3]}" ] || return 1
+    [ -z "${b[3]}" ] || [ "$(printf '%s\n%s\n' "${a[3]}" "${b[3]}" | sort -V | head -n 1)" = "${a[3]}" ]
 }
 
+# The chart's templates and the PR install's values assume what the images it
+# pins ship (the gateway leader label, for one), so an older override cannot
+# pass setup and is refused before setup writes anything. Every first-party
+# image the chart pins is checked; an override that is not a semver (latest, a
+# sha, a PR tag) cannot be ordered and passes. A pin that cannot be read or
+# ordered refuses, since passing it would skip the check unseen.
+e2e_refuse_overrides_below_chart_pins() {
+    local chart="${1:-$REPO_ROOT/chart/cfgd}" refs ref image pin var tag rc shown refused=0
+    shown="${chart#"$REPO_ROOT"/}"
+    if ! refs="$(chart_image_pins "$chart")"; then
+        echo "ERROR: could not read the image tags $shown pins, so no image override can be checked against them. Run helm template on the chart, fix the error and rerun setup." >&2
+        return 1
+    fi
+    for ref in $refs; do
+        image="${ref##*/}"
+        pin="${image##*:}"
+        image="${image%%:*}"
+        if ! var="$(e2e_image_override_var "$image" 2>/dev/null)"; then
+            echo "ERROR: $shown pins $image, which has no override variable in e2e_image_override_var, so setup cannot tell whether the run overrides it. Add one and rerun setup." >&2
+            refused=1
+            continue
+        fi
+        e2e_image_overridden "$image" || continue
+        tag="${!var}"
+        rc=0
+        semver_below "$pin" "$pin" || rc=$?
+        if [ "$rc" -eq 2 ]; then
+            echo "ERROR: $shown pins $image at '$pin', which is not a semver, so $var=$tag cannot be checked against it. Fix the pin and rerun setup." >&2
+            refused=1
+        elif semver_below "$tag" "$pin"; then
+            echo "ERROR: $var=$tag is older than the $image this chart requires ($pin, $shown). Use that tag or newer, or run the suites from a checkout of the release tag that shipped $tag (tests/e2e/README.md)." >&2
+            refused=1
+        fi
+    done
+    return "$refused"
+}
+
+# Crossplane keys its package lock by repository, and ArgoCD's function-cfgd
+# already installs from the release registry, so a run's Function installed from
+# that repository never turns Healthy. Setup copies a released function-cfgd into
+# REGISTRY and the run installs the copy.
+e2e_image_copied_from_release() {
+    [ "$1" = function-cfgd ] && [ -n "${RELEASE_REGISTRY:-}" ] && e2e_image_overridden "$1"
+}
+
+# REGISTRY is where setup pushes every image it builds and where the suites push
+# their scratch artifacts. RELEASE_REGISTRY, when set, is where an image whose
+# tag is overridden is pulled from, so a released set is tested where it was
+# published while nothing the run writes leaves REGISTRY.
+# `e2e_image_repo --release <image>` names the image's repository under
+# RELEASE_REGISTRY, the source setup copies function-cfgd from.
 e2e_image_repo() {
-    printf '%s/%s\n' "$REGISTRY" "$1"
+    local var registry="$REGISTRY" release=false
+    if [ "$1" = --release ]; then
+        release=true
+        shift
+    fi
+    var="$(e2e_image_override_var "$1")" || return 1
+    if [ "$release" = true ]; then
+        registry="${RELEASE_REGISTRY:?RELEASE_REGISTRY is not set}"
+    elif [ -n "${RELEASE_REGISTRY:-}" ] && [ -n "${!var:-}" ] && ! e2e_image_copied_from_release "$1"; then
+        registry="$RELEASE_REGISTRY"
+    fi
+    printf '%s/%s\n' "$registry" "$1"
 }
 
 e2e_image() {
@@ -81,10 +153,80 @@ e2e_image() {
     tag="$(e2e_image_tag "$1")" || return 1
     printf '%s:%s\n' "$(e2e_image_repo "$1")" "$tag"
 }
+
+# A scratch OCI artifact the suites push and read back: <name>:<tag> under
+# REGISTRY's cfgd-e2e path.
+e2e_scratch_ref() {
+    printf '%s/cfgd-e2e/%s\n' "$REGISTRY" "$1"
+}
+
+# Registry-backed buildx cache flags for one image scope, or nothing when
+# caching is disabled (local runs). Emitted onto a buildx arg array via mapfile.
+# `type=registry` (a `:buildcache` tag under REGISTRY) replaces
+# `type=gha`: GitHub's Actions cache is a 10GB/repo LRU pool, and three
+# mode=max image caches evict one another between runs, so every push
+# recompiled the cargo-chef dependency layer from cold and overran the setup
+# timeout. The registry cache has no LRU eviction, so an unchanged dependency
+# layer restores across runs and the build stays warm.
+buildcache_args() {
+    [ "${SCCACHE_GHA_ENABLED:-}" = "true" ] || return 0
+    local ref
+    # The cache is a scratch artifact the run writes, so it is composed under
+    # REGISTRY whatever registry the image itself comes from.
+    ref="$(e2e_scratch_ref "$1:buildcache")"
+    # ignore-error: the cache export is an optimization, and a registry-side
+    # blob rejection during it aborts an otherwise-successful build, which
+    # fails setup, which cascades every E2E suite to "skipped" without a
+    # single test having run. A cold next build is the correct penalty.
+    printf '%s\n' "--cache-from" "type=registry,ref=${ref}" \
+                  "--cache-to" "type=registry,ref=${ref},mode=max,ignore-error=true"
+}
+
+# Pushes <ref> with docker, the Crossplane CLI, or a registry-to-registry copy
+# (`e2e_push copy <ref> <source>`); extra arguments follow the ref. Any ref
+# outside REGISTRY is refused, so a run never writes to the registry a released
+# set comes from.
+e2e_push() {
+    local tool="$1" ref="$2"
+    shift 2
+    case "$ref" in
+        "$REGISTRY"/*) ;;
+        *)
+            echo "ERROR: refusing to push $ref: pushes go to $REGISTRY only" >&2
+            return 1
+            ;;
+    esac
+    case "$tool" in
+        docker) docker push "$ref" "$@" ;;
+        xpkg) crossplane xpkg push "$ref" "$@" ;;
+        copy) docker buildx imagetools create --tag "$ref" "$@" ;;
+        *)
+            echo "e2e_push: unknown tool '$tool'" >&2
+            return 1
+            ;;
+    esac
+}
 E2E_NAMESPACE="${E2E_NAMESPACE:-cfgd-e2e-${GITHUB_RUN_ID:-$(date +%s)-$$}}"
-# A local run id comes from the checkout, so the setup process and each suite
-# process name the same PR install.
-E2E_RUN_ID="${GITHUB_RUN_ID:-local-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)}"
+# A local run takes its id from HEAD when setup starts, and setup records it in
+# this git-ignored file. Every later process (each suite, the teardown) reads
+# it back, so a commit between setup and teardown still names the install setup
+# made. setup-cluster.sh sets E2E_NEW_LOCAL_RUN, unexported, to mint a fresh id.
+E2E_LOCAL_RUN_ID_FILE="${E2E_LOCAL_RUN_ID_FILE:-$REPO_ROOT/.cache/e2e/local-run-id}"
+if [ -n "${GITHUB_RUN_ID:-}" ]; then
+    E2E_RUN_ID="$GITHUB_RUN_ID"
+    E2E_RUN_ID_SOURCE="GITHUB_RUN_ID"
+elif [ -z "${E2E_NEW_LOCAL_RUN:-}" ] && [ -s "$E2E_LOCAL_RUN_ID_FILE" ]; then
+    E2E_RUN_ID="$(<"$E2E_LOCAL_RUN_ID_FILE")"
+    E2E_RUN_ID_SOURCE="recorded by setup in $E2E_LOCAL_RUN_ID_FILE"
+else
+    E2E_RUN_ID="local-$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)"
+    if [ -n "${E2E_NEW_LOCAL_RUN:-}" ]; then
+        E2E_RUN_ID_SOURCE="HEAD, recorded in $E2E_LOCAL_RUN_ID_FILE"
+    else
+        E2E_RUN_ID_SOURCE="HEAD; no setup record in $E2E_LOCAL_RUN_ID_FILE"
+    fi
+fi
+export E2E_RUN_ID_SOURCE
 E2E_RUN_LABEL="cfgd.io/e2e-run=$E2E_RUN_ID"
 # Job-specific label for cluster-scoped resources (prevents parallel job cleanup races)
 E2E_JOB_LABEL="cfgd.io/e2e-job=$E2E_NAMESPACE"
@@ -105,6 +247,18 @@ export E2E_VALIDATING_WEBHOOK="$E2E_INSTALL_RELEASE"
 export E2E_MUTATING_WEBHOOK="$E2E_INSTALL_RELEASE-pod-injector"
 export E2E_OPERATOR_PODS="app.kubernetes.io/instance=$E2E_INSTALL_RELEASE,app.kubernetes.io/component=operator"
 export E2E_CSI_PODS="app.kubernetes.io/instance=$E2E_INSTALL_RELEASE,app.kubernetes.io/component=csi-driver"
+# The install's device gateway. Its Service selects only the operator pod that
+# holds the lease and carries the gateway leader label, so a suite reaches the
+# gateway through these names alone.
+# Setup passes the port and the admin key to helm.
+export E2E_GATEWAY_SVC="$E2E_INSTALL_RELEASE-gateway"
+export E2E_GATEWAY_PORT=8080
+export E2E_GATEWAY_URL="http://$E2E_GATEWAY_SVC.$E2E_INSTALL_NS.svc.cluster.local:$E2E_GATEWAY_PORT"
+# The operator sets this label to true on the one pod whose gateway serves
+# (leader::GATEWAY_LEADER_LABEL in cfgd-operator).
+export E2E_GATEWAY_LEADER_LABEL=cfgd.io/gateway-leader
+export E2E_GATEWAY_LEADER_PODS="$E2E_OPERATOR_PODS,$E2E_GATEWAY_LEADER_LABEL=true"
+export E2E_GATEWAY_API_KEY="${CFGD_E2E_API_KEY:-cfgd-e2e-admin-key}"
 # The Crossplane suite's own Function and Composition, beside ArgoCD's
 # function-cfgd and teamconfig-to-machineconfigs.
 export E2E_FUNCTION="function-cfgd-$E2E_RUN_ID"
@@ -116,9 +270,14 @@ export E2E_RELEASE_MUTATING_WEBHOOK="cfgd-mutating-webhooks"
 
 TEST_POD=""
 
-# Heartbeat refresh interval. Must be well under the janitor's freshness window
-# (HEARTBEAT_STALE_SECONDS=900s in e2e-cleanup-cronjob.yaml) so that even a
-# missed beat or two never lets a live run's namespace look stale to the reaper.
+# A heartbeat this old means its run is dead. The janitor reaps by the same
+# value: HEARTBEAT_STALE_SECONDS in
+# /db/manifests/k3s/namespaces/cfgd-system/e2e-cleanup-cronjob.yaml.
+HEARTBEAT_STALE_SECONDS=900
+
+# Heartbeat refresh interval. Must be well under HEARTBEAT_STALE_SECONDS so
+# that even a missed beat or two never lets a live run's namespace look stale
+# to the reaper.
 HEARTBEAT_INTERVAL_SECONDS="${HEARTBEAT_INTERVAL_SECONDS:-120}"
 HEARTBEAT_PID=""
 
@@ -145,6 +304,111 @@ start_heartbeat() {
 stop_heartbeat() {
     [ -n "$HEARTBEAT_PID" ] && kill "$HEARTBEAT_PID" 2>/dev/null || true
     HEARTBEAT_PID=""
+}
+
+# claim_csidriver: clears the way for this install's CSIDriver, which every
+# run's install registers under the same name; Helm's release-namespace
+# annotation says whose it is. An owner namespace that is gone died without
+# uninstalling, whatever its run id, so its CSIDriver is deleted; one still
+# Terminating refuses setup until it is gone; a live one of another run goes
+# to reclaim_stale_install. A live owner that is this install's namespace is
+# left for the Helm upgrade to keep. Returns 1 when setup must stop.
+claim_csidriver() {
+    local driver owner phase
+    if ! driver=$(kubectl get csidriver "$CSI_DRIVER_NAME" --ignore-not-found -o name); then
+        echo "ERROR: could not read csidriver/$CSI_DRIVER_NAME. Check that the runner can get csidrivers, then rerun setup." >&2
+        return 1
+    fi
+    [ -n "$driver" ] || return 0
+    if ! owner=$(kubectl get csidriver "$CSI_DRIVER_NAME" \
+        -o jsonpath='{.metadata.annotations.meta\.helm\.sh/release-namespace}'); then
+        echo "ERROR: could not read the Helm owner of csidriver/$CSI_DRIVER_NAME. Check that the runner can get csidrivers, then rerun setup." >&2
+        return 1
+    fi
+    if [ -z "$owner" ]; then
+        {
+            echo "ERROR: csidriver/$CSI_DRIVER_NAME exists and no Helm release owns it, so the PR install cannot take it over."
+            echo "  Delete it (kubectl delete csidriver $CSI_DRIVER_NAME) and rerun setup."
+        } >&2
+        return 1
+    fi
+    if ! phase=$(kubectl get namespace "$owner" --ignore-not-found -o jsonpath='{.status.phase}'); then
+        echo "ERROR: could not check whether namespace $owner, which owns csidriver/$CSI_DRIVER_NAME, still exists. Check that the runner can get namespaces, then rerun setup." >&2
+        return 1
+    fi
+    if [ "$phase" = Terminating ]; then
+        echo "ERROR: namespace $owner, which owns csidriver/$CSI_DRIVER_NAME, is being deleted; rerun setup once it is gone" >&2
+        return 1
+    fi
+    if [ -z "$phase" ]; then
+        echo "  csidriver/$CSI_DRIVER_NAME was left by an install in $owner, which no longer exists; deleting it"
+        if ! kubectl delete csidriver "$CSI_DRIVER_NAME"; then
+            echo "ERROR: could not delete the leftover csidriver/$CSI_DRIVER_NAME. Delete it by hand and rerun setup." >&2
+            return 1
+        fi
+        return 0
+    fi
+    if [ "$owner" != "$E2E_INSTALL_NS" ]; then
+        reclaim_stale_install "$owner" || return 1
+    fi
+}
+
+# reclaim_stale_install <owner namespace>: the PR install in <owner namespace>
+# holds what this run's install needs. When its run's heartbeat is at least
+# HEARTBEAT_STALE_SECONDS old, that run is dead, so its install is removed with
+# pr-install-down.sh under its own run id and this returns 0. A fresh, future,
+# missing or unreadable heartbeat, a namespace without a run label, or one gone
+# by the time it is read, returns 1 after naming the owner.
+reclaim_stale_install() {
+    local owner_ns="$1" meta owner_run heartbeat age
+    if ! meta=$(kubectl get namespace "$owner_ns" --ignore-not-found \
+        -o jsonpath='{.metadata.labels.cfgd\.io/e2e-run}|{.metadata.annotations.cfgd\.io/heartbeat}'); then
+        echo "ERROR: could not read the run label and heartbeat of namespace $owner_ns, which holds the PR install. Check that the runner can get namespaces, then rerun setup." >&2
+        return 1
+    fi
+    if [ -z "$meta" ]; then
+        echo "ERROR: namespace $owner_ns, which held the PR install, finished deleting while setup read it; rerun setup." >&2
+        return 1
+    fi
+    IFS='|' read -r owner_run heartbeat <<<"$meta"
+    if [ -z "$owner_run" ]; then
+        {
+            echo "ERROR: namespace $owner_ns holds the PR install and carries no cfgd.io/e2e-run label, so its run cannot be named."
+            echo "  Remove that install by hand (helm uninstall -n $owner_ns, then kubectl delete namespace $owner_ns) and rerun setup."
+        } >&2
+        return 1
+    fi
+    if ! [[ "$heartbeat" =~ ^[0-9]+$ ]]; then
+        {
+            echo "ERROR: the PR install of run $owner_run in $owner_ns has no readable cfgd.io/heartbeat ('$heartbeat'), so setup cannot tell whether that run is alive."
+            echo "  If it is dead, remove its install (GITHUB_RUN_ID=$owner_run bash tests/e2e/pr-install-down.sh) and rerun setup."
+        } >&2
+        return 1
+    fi
+    # 10# keeps a leading zero from reading as octal.
+    age=$(($(date -u +%s) - 10#$heartbeat))
+    if [ "$age" -lt 0 ]; then
+        {
+            echo "ERROR: the PR install belongs to run $owner_run in $owner_ns, whose heartbeat is $((-age))s in the future (clock skew?), so setup takes that run as alive; one PR install runs at a time."
+            echo "  Rerun setup once that run has finished, or once its heartbeat is ${HEARTBEAT_STALE_SECONDS}s old and setup removes its install."
+        } >&2
+        return 1
+    fi
+    if [ "$age" -lt "$HEARTBEAT_STALE_SECONDS" ]; then
+        {
+            echo "ERROR: the PR install belongs to run $owner_run in $owner_ns, whose heartbeat is ${age}s old (under ${HEARTBEAT_STALE_SECONDS}s); one PR install runs at a time."
+            echo "  Rerun setup once that run has finished, or once its heartbeat is ${HEARTBEAT_STALE_SECONDS}s old and setup removes its install."
+        } >&2
+        return 1
+    fi
+    echo "  run $owner_run's heartbeat in $owner_ns is ${age}s old (${HEARTBEAT_STALE_SECONDS}s or more), so that run is dead; removing its PR install"
+    # The child sources helpers.sh afresh, so every run-derived name comes from
+    # the GITHUB_RUN_ID given here. Its EXIT trap removes the scratch root named
+    # in E2E_SCRATCH_OWNED, which is this process's own, so it is unset.
+    if ! env -u E2E_SCRATCH_OWNED GITHUB_RUN_ID="$owner_run" bash "$E2E_ROOT/pr-install-down.sh"; then
+        echo "ERROR: could not remove the PR install of dead run $owner_run. Read the teardown's errors above, then rerun setup." >&2
+        return 1
+    fi
 }
 
 # Deploy the privileged test pod and wait for it to be Running.
@@ -324,6 +588,30 @@ create_e2e_namespace() {
         echo "  WARN: registry-credentials not replicated to $E2E_NAMESPACE (Reflector may not be running)"
 }
 
+# The device ids this job sends to the install's gateway. The DriftAlerts the
+# gateway creates for them in its own namespace carry no run label, so
+# cleanup_e2e deletes them by their cfgd.io/device-id label. Re-sourcing this
+# file keeps the list.
+[[ -v E2E_GATEWAY_DEVICES ]] || E2E_GATEWAY_DEVICES=()
+
+# gateway_device <var> <id>: set <var> to <id> and record the id for
+# cleanup_e2e. The gateway labels an alert with the id cut to a label value,
+# so an id that is not already one would escape the selector; the cluster
+# janitor reaps a leaked alert by the e2e- and fullstack-device- prefixes.
+# Refuses any other id.
+gateway_device() {
+    local var="$1" id="$2" seen
+    if ! [[ $id =~ ^(e2e-|fullstack-device-)[a-z0-9-]*[a-z0-9]$ ]] || [ "${#id}" -gt 63 ]; then
+        echo "ERROR: gateway device id '$id' is not a label value of at most 63 characters starting with e2e- or fullstack-device-" >&2
+        return 1
+    fi
+    printf -v "$var" '%s' "$id"
+    for seen in "${E2E_GATEWAY_DEVICES[@]}"; do
+        [ "$seen" != "$id" ] || return 0
+    done
+    E2E_GATEWAY_DEVICES+=("$id")
+}
+
 cleanup_e2e() {
     echo "Cleaning up E2E resources for run $E2E_RUN_ID..."
 
@@ -344,6 +632,14 @@ cleanup_e2e() {
     for kind in module clusterconfigpolicy; do
         kubectl delete "$kind" -l "$E2E_JOB_LABEL" --ignore-not-found 2>/dev/null || true
     done
+
+    if [ "${#E2E_GATEWAY_DEVICES[@]}" -gt 0 ]; then
+        local device_ids delete_err
+        device_ids="$(IFS=,; echo "${E2E_GATEWAY_DEVICES[*]}")"
+        if ! delete_err="$(kubectl delete driftalert -n "$E2E_INSTALL_NS" -l "cfgd.io/device-id in ($device_ids)" --ignore-not-found 2>&1 >/dev/null)"; then
+            echo "WARN: could not delete the DriftAlerts of $device_ids: $delete_err" >&2
+        fi
+    fi
 
     # Last: the scratch root holds this run's $HOME, and every kubectl above
     # resolves its discovery cache under it. It is removed here when
@@ -569,25 +865,34 @@ wait_for_injection() {
 
 # --- K8s helpers ---
 
+# wait_for_pod <namespace> <selector> [timeout_s, default 120]: wait until the
+# selector matches at least one pod and every pod it matches is Running. A
+# Deployment with a standby or a DaemonSet selects several, and the first in
+# the list says nothing about the others.
 wait_for_pod() {
     local namespace="$1"
     local label="$2"
     local timeout="${3:-120}"
 
-    echo "  Waiting for pod $label in $namespace (timeout: ${timeout}s)..."
+    echo "  Waiting for pods $label in $namespace (timeout: ${timeout}s)..."
     local deadline=$((SECONDS + timeout))
     while [ $SECONDS -lt $deadline ]; do
-        local status
+        local status phase running=0 others=0
+        local -a phases
         status=$(kubectl get pods -n "$namespace" -l "$label" \
-            -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
-        if [ "$status" = "Running" ]; then
-            echo "  Pod is Running"
+            -o jsonpath='{.items[*].status.phase}' 2>/dev/null || echo "")
+        read -ra phases <<<"$status"
+        for phase in "${phases[@]}"; do
+            if [ "$phase" = "Running" ]; then running=$((running + 1)); else others=$((others + 1)); fi
+        done
+        if [ "$running" -gt 0 ] && [ "$others" -eq 0 ]; then
+            echo "  Every pod is Running ($running)"
             return 0
         fi
         sleep 2
     done
     {
-        echo "  Timed out after ${timeout}s waiting for a Running pod $label in $namespace; pods there:"
+        echo "  Timed out after ${timeout}s waiting for every pod $label in $namespace to be Running; pods there:"
         kubectl get pods -n "$namespace" -l "$label" -o wide 2>&1 || true
     } >&2
     return 1
@@ -599,6 +904,55 @@ wait_for_deployment() {
     local timeout="${3:-120}"
     kubectl wait --for=condition=available "deployment/$name" \
         -n "$namespace" --timeout="${timeout}s"
+}
+
+# restart_deployment <namespace> <name> [timeout_s, default 120]: roll the
+# Deployment so its pods pull what its image tag names now, and return 0 only
+# once the roll is observed done: `.status.observedGeneration` has reached
+# `.metadata.generation` and `.status.updatedReplicas` equals `.spec.replicas`.
+# A roll that does not finish in time gets the selector's pods deleted (an old
+# pod can hold a ReadWriteOnce volume the new one waits on) and one more wait.
+# Every failed step prints an ERROR naming it, with kubectl's own error left on
+# stderr, and returns 1. Available alone would pass on the old pods.
+restart_deployment() {
+    local namespace="$1" name="$2" timeout="${3:-120}" selector
+    if ! kubectl rollout restart "deployment/$name" -n "$namespace"; then
+        echo "ERROR: kubectl rollout restart deployment/$name in $namespace failed (kubectl's error is above), so its pods still run the image they pulled before." >&2
+        return 1
+    fi
+    if ! kubectl rollout status "deployment/$name" -n "$namespace" --timeout="${timeout}s"; then
+        echo "  Rollout of $name did not finish in ${timeout}s: deleting its pods to release a ReadWriteOnce volume..."
+        if ! selector="$(kubectl get deployment "$name" -n "$namespace" -o json |
+            jq -er '.spec.selector.matchLabels | to_entries | map("\(.key)=\(.value)") | join(",") | select(. != "")')"; then
+            echo "ERROR: could not read the matchLabels selector of deployment/$name in $namespace, so its stuck pods cannot be deleted." >&2
+            return 1
+        fi
+        if ! kubectl delete pods -n "$namespace" -l "$selector" --ignore-not-found --grace-period=5 --wait=false; then
+            echo "ERROR: could not delete the pods $selector in $namespace (kubectl's error is above), so the roll of $name stays stuck." >&2
+            return 1
+        fi
+        if ! kubectl rollout status "deployment/$name" -n "$namespace" --timeout="${timeout}s"; then
+            echo "ERROR: the roll of deployment/$name in $namespace did not finish in ${timeout}s after its pods were deleted. Read kubectl describe deployment/$name -n $namespace and its pods' events." >&2
+            return 1
+        fi
+    fi
+    deployment_rolled "$namespace" "$name"
+}
+
+# deployment_rolled <namespace> <name>: 0 when the Deployment controller has
+# observed the newest spec and every replica it asks for runs that template.
+# Otherwise prints an ERROR with the four numbers it read and returns 1.
+deployment_rolled() {
+    local namespace="$1" name="$2" deploy_json
+    if ! deploy_json="$(kubectl get deployment "$name" -n "$namespace" -o json)"; then
+        echo "ERROR: could not read deployment/$name in $namespace (kubectl's error is above)." >&2
+        return 1
+    fi
+    if ! jq -e '(.status.observedGeneration // 0) >= .metadata.generation
+        and (.status.updatedReplicas // 0) == (.spec.replicas // 1)' <<<"$deploy_json" >/dev/null; then
+        echo "ERROR: deployment/$name in $namespace has not rolled: $(jq -r '"generation \(.metadata.generation), observedGeneration \(.status.observedGeneration // "unset"), spec.replicas \(.spec.replicas // 1), updatedReplicas \(.status.updatedReplicas // 0)"' <<<"$deploy_json" 2>&1)." >&2
+        return 1
+    fi
 }
 
 wait_for_daemonset() {
@@ -1100,8 +1454,8 @@ EOF
 # Earlier checkins leave events behind, so a case compares the count before
 # and after the checkin it drives.
 gateway_drift_count() {
-    exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" \
-        "${SERVER_URL}/api/v1/devices/$1/drift" 2>/dev/null \
+    exec_in_pod curl -sf -H "Authorization: Bearer $E2E_GATEWAY_API_KEY" \
+        "${E2E_GATEWAY_URL}/api/v1/devices/$1/drift" 2>/dev/null \
         | jq --arg f "$2" '[.[] | select(.details | contains($f))] | length' 2>/dev/null
 }
 
@@ -1194,6 +1548,38 @@ wait_for_service_endpoints() {
     return 1
 }
 
+# watch_endpoints_until <timeout_s> <namespace> <service> <command...>: read the
+# Service's ready addresses, then run the command, until the command exits 0.
+# Nothing paces the reads but the command itself, so an outage of a second
+# shows up in the samples. ENDPOINT_SAMPLES counts the reads that returned,
+# ENDPOINT_EMPTY those with no ready address, ENDPOINT_EMPTY_AT when each of
+# those came (#<sample> at +<s>s) and ENDPOINT_UNREAD the reads kubectl failed.
+# Returns 1 without a message when the timeout passes first, since the caller's
+# verdict names what the command waited for.
+watch_endpoints_until() {
+    local timeout="$1" namespace="$2" service="$3"
+    shift 3
+    local start=$SECONDS deadline=$((SECONDS + timeout)) addrs
+    ENDPOINT_SAMPLES=0
+    ENDPOINT_EMPTY=0
+    ENDPOINT_EMPTY_AT=""
+    ENDPOINT_UNREAD=0
+    while [ $SECONDS -lt $deadline ]; do
+        if addrs=$(kubectl get endpoints "$service" -n "$namespace" \
+            -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null); then
+            ENDPOINT_SAMPLES=$((ENDPOINT_SAMPLES + 1))
+            if [ -z "$addrs" ]; then
+                ENDPOINT_EMPTY=$((ENDPOINT_EMPTY + 1))
+                ENDPOINT_EMPTY_AT="${ENDPOINT_EMPTY_AT:+$ENDPOINT_EMPTY_AT, }#$ENDPOINT_SAMPLES at +$((SECONDS - start))s"
+            fi
+        else
+            ENDPOINT_UNREAD=$((ENDPOINT_UNREAD + 1))
+        fi
+        "$@" && return 0
+    done
+    return 1
+}
+
 # --- Build helpers ---
 
 # Ensure the cfgd binary is built (idempotent). Sets CFGD_BIN, and returns
@@ -1266,6 +1652,16 @@ assert_equals() {
     return 1
 }
 
+# helm_ok <case id> <helm exit status> <helm output>: 0 when the case's helm
+# command exited 0; otherwise fails the case with the exit status and helm's
+# output and returns 1, since a case reading the objects a failed --wait left
+# behind would judge a release that never came up.
+helm_ok() {
+    [ "$2" -eq 0 ] && return 0
+    fail_test "$1" "helm exited $2: $(echo "$3" | head -20)"
+    return 1
+}
+
 # Print the head of a command's captured stderr ($1), indented, so a case that
 # kept stderr out of the document it parses still shows it for diagnosis.
 print_stderr_head() {
@@ -1280,6 +1676,34 @@ pod_compliance_json() {
     local err="$CLI_SCRATCH/pod-compliance.stderr"
     exec_in_pod cfgd --config "$1" compliance -o json --no-color 2> "$err" || true
     print_stderr_head "$err" >&2
+}
+
+# checkin_compliance_want <config>: prints, as compact JSON, the
+# complianceSummary the gateway must store after a `cfgd checkin` against
+# config $1, built from the test pod's own compliance run by the rule
+# CheckinCompliance::from_snapshot applies: the three counts, then the
+# violations followed by the warnings, cut at the MachineConfig CRD's
+# status.compliance.checks maxItems, each named by ComplianceCheck::subject_name
+# (target, name, key or path); `checks` is left out when none failed. The cap
+# is read from schemas/crds.yaml, which schemars generates from
+# MAX_REPORTED_CHECKS; crd_docs_json reads it because the e2e runner image has
+# no yq. Prints nothing and returns 1 when the cap is not an integer or the
+# run yields no snapshot.
+checkin_compliance_want() {
+    local max
+    max="$(crd_docs_json < "$REPO_ROOT/schemas/crds.yaml" | jq -r 'select(.spec.names.plural == "machineconfigs")
+        | .spec.versions[0].schema.openAPIV3Schema.properties.status.properties.compliance.properties.checks.maxItems')" || max=""
+    if ! [[ "$max" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: the MachineConfig CRD in schemas/crds.yaml gave '${max}' as status.compliance.checks maxItems, which is not an integer." >&2
+        return 1
+    fi
+    pod_compliance_json "$1" | jq -ce --argjson max "$max" '
+        .snapshot
+        | ([(.checks[] | select(.status == "Violation")), (.checks[] | select(.status == "Warning"))][:$max]
+           | map({category, name: (.target // .name // .key // .path // "(unknown)"), status}
+                 + (if .detail == null then {} else {detail} end))) as $checks
+        | {compliant: .summary.compliant, warning: .summary.warning, violation: .summary.violation}
+          + (if ($checks | length) > 0 then {checks: $checks} else {} end)'
 }
 
 # The compliance status of one sysctl key ($2) in a `compliance -o json`

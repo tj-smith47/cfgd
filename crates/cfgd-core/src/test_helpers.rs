@@ -163,7 +163,7 @@ impl crate::providers::FileManager for MockFileManager {
 
         // Mirror production (`CfgdFileManager::file_drift_one`): tilde-expand the
         // target and report it POSIX-normalized so tests see the same shape.
-        let target_path = crate::expand_tilde(target);
+        let target_path = crate::expand_tilde(target, crate::FILE_TARGET_ROLE)?;
         let target_id = crate::PathDisplayExt::display_posix(&target_path);
         if !source.exists() {
             return Ok(FileDriftResult {
@@ -687,6 +687,52 @@ pub fn folded_temp_root(root: &Path) -> PathBuf {
     })
 }
 
+/// Set the modification time of the directory at `dir` to `when`, on every
+/// OS: opening a directory for a time change takes flags of its own on
+/// Windows.
+pub fn set_dir_modified(dir: &Path, when: std::time::SystemTime) {
+    #[cfg(windows)]
+    let handle = {
+        use std::os::windows::fs::OpenOptionsExt;
+        // FILE_FLAG_BACKUP_SEMANTICS is what lets Windows open a directory,
+        // and FILE_WRITE_ATTRIBUTES is the right a time needs.
+        std::fs::OpenOptions::new()
+            .access_mode(0x0100)
+            .custom_flags(0x0200_0000)
+            .open(dir)
+    };
+    #[cfg(not(windows))]
+    let handle = std::fs::File::open(dir);
+    if let Err(e) = handle.and_then(|handle| handle.set_modified(when)) {
+        panic!(
+            "cannot set the modification time of {}: {e}",
+            crate::to_posix_string(dir)
+        );
+    }
+}
+
+/// Plant two module cache entries under the module cache root `root` that no
+/// config this test writes refers to, both last touched before the in-use
+/// window: a registry's clone, and a pinned checkout inside another clone (the
+/// tree a lock entry of some other config would name). Returns
+/// `(registry_clone, pinned_tree)`; a sweep removes both, and a run that owns
+/// no sweep leaves both in place.
+pub fn plant_unread_module_trees(root: &Path) -> (PathBuf, PathBuf) {
+    let long_ago = std::time::SystemTime::now() - crate::modules::IN_USE_WINDOW * 2;
+    let registry_clone =
+        crate::modules::git_cache_dir(root, "https://example.invalid/registry.git");
+    std::fs::create_dir_all(registry_clone.join(".git")).unwrap();
+    std::fs::write(registry_clone.join("module.yaml"), "x").unwrap();
+    set_dir_modified(&registry_clone, long_ago);
+    let locked_clone = crate::modules::git_cache_dir(root, "https://example.invalid/locked.git");
+    let pinned_tree = crate::modules::pinned_checkout_in(&locked_clone, &"c0ffee12".repeat(5));
+    std::fs::create_dir_all(&pinned_tree).unwrap();
+    std::fs::write(pinned_tree.join("module.yaml"), "x").unwrap();
+    set_dir_modified(&pinned_tree, long_ago);
+    set_dir_modified(&locked_clone, long_ago);
+    (registry_clone, pinned_tree)
+}
+
 /// Shared snapshot-golden assertion for output snapshot tests.
 ///
 /// `base.join(name)` is the golden file. With `INSTA_UPDATE=always` (or when
@@ -1109,7 +1155,7 @@ impl BareGitRepo {
     /// handle is dropped first; if the removal is still refused, the
     /// repository is broken in place (HEAD, config, refs) until it stops
     /// answering. Query methods (`has_tag`, `tags`, …) panic after this.
-    // env-mutator-ok: deletes a fixture repo; its `drop(…)` is `std::mem::drop`, not a guard's.
+    // env-mutator-ok: deletes a fixture repo; `drop(…)` is `std::mem::drop` and drops no guard.
     pub fn remove_upstream(&mut self) {
         drop(self.bare_repo.take());
         if std::fs::remove_dir_all(&self.bare_path).is_ok() {
@@ -1267,7 +1313,7 @@ pub fn install_tracing_journal() {
     INSTALL.call_once(|| {
         let subscriber = tracing_subscriber::fmt()
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // unfolded-writer-ok: a test capture read back as a String, not a stream anyone is looking at
+            // unfolded-writer-ok: a test capture read back as a String that nobody watches
             .with_writer(TracingJournalWriter)
             .with_max_level(tracing::Level::INFO)
             .with_ansi(false)
@@ -2195,10 +2241,6 @@ impl crate::daemon::DaemonHooks for NoopDaemonHooks {
         _: &mut crate::providers::ProviderRegistry,
         _: &crate::config::PackagesSpec,
     ) {
-    }
-
-    fn expand_tilde(&self, path: &std::path::Path) -> PathBuf {
-        crate::expand_tilde(path)
     }
 }
 
@@ -3384,7 +3426,7 @@ impl Drop for SpawnEnvGuard {
 /// avoids — it would let a `PATH`/cwd mutation run while the in-flight spawn
 /// this lock exists to protect is still resolving its program. Take the
 /// exclusive guard first, or not inside a spawn.
-// env-mutator-ok: takes cfgd's PATH lock; it guards a caller's write, never performs one.
+// env-mutator-ok: takes cfgd's PATH lock; it guards a caller's write and makes none.
 pub fn path_env_mutation_guard() -> ExclusiveEnvGuard {
     debug_assert!(
         SPAWN_GUARD_DEPTH.with(std::cell::Cell::get) == 0,
@@ -4047,6 +4089,45 @@ pub fn clear_update_optouts() -> [EnvVarGuard; crate::upgrade::OPTOUT_VARS.len()
     crate::upgrade::OPTOUT_VARS.map(EnvVarGuard::unset)
 }
 
+/// Every variable a registry request reads
+/// ([`crate::oci::registry_request_env`]: the client's credential and
+/// plain-HTTP variables and the HTTP agent's proxy variables) unset, and
+/// `DOCKER_CONFIG` then pointed at an empty directory, for as long as the
+/// returned value lives.
+///
+/// The client resolves the credential each request carries from the process
+/// environment, falling back to `~/.docker/config.json`, so a credential, a
+/// Docker config or a proxy a developer's shell or a CI runner exports changes
+/// what a mock registry receives. `DOCKER_CONFIG` names an empty directory, since an
+/// unset one sends the client to the home's own Docker config. Every test
+/// reaching a registry read takes this first and runs under
+/// `#[serial_test::serial]`; `every_test_reaching_a_registry_read_isolates_the_registry_host_env`
+/// fails until it does.
+pub fn isolate_registry_host_env() -> RegistryHostEnv {
+    let docker_config = tempfile::tempdir().expect("create an empty Docker config directory");
+    let unset = crate::oci::registry_request_env()
+        .map(EnvVarGuard::unset)
+        .collect();
+    let docker = EnvVarGuard::set(
+        crate::oci::DOCKER_CONFIG_ENV,
+        &docker_config.path().to_string_lossy(),
+    );
+    RegistryHostEnv {
+        _docker: docker,
+        _unset: unset,
+        _docker_config: docker_config,
+    }
+}
+
+/// What [`isolate_registry_host_env`] holds. The `DOCKER_CONFIG` guard drops
+/// first, restoring the value the unset guards then restore in turn, and the
+/// empty directory outlives both.
+pub struct RegistryHostEnv {
+    _docker: EnvVarGuard,
+    _unset: Vec<EnvVarGuard>,
+    _docker_config: tempfile::TempDir,
+}
+
 /// `PATH` is read by every `command_path` resolution and by every spawn, so a
 /// write to it is only sound inside the window [`path_env_mutation_guard`]
 /// holds: the guard is what blocks a concurrent reader, and declaring it AFTER
@@ -4249,6 +4330,7 @@ struct CosignEnvSnapshot {
     keygen: Option<std::ffi::OsString>,
     stderr: Option<std::ffi::OsString>,
     exit: Option<std::ffi::OsString>,
+    sleep: Option<std::ffi::OsString>,
 }
 
 impl CosignTestShim {
@@ -4259,6 +4341,7 @@ impl CosignTestShim {
             keygen: false,
             exit_code: 0,
             stderr: String::new(),
+            sleep: None,
         }
     }
 
@@ -4296,6 +4379,7 @@ impl Drop for CosignTestShim {
             restore_env("CFGD_FAKE_COSIGN_KEYGEN", self.prior.keygen.take());
             restore_env("CFGD_FAKE_COSIGN_STDERR", self.prior.stderr.take());
             restore_env("CFGD_FAKE_COSIGN_EXIT", self.prior.exit.take());
+            restore_env("CFGD_FAKE_COSIGN_SLEEP_MS", self.prior.sleep.take());
         }
     }
 }
@@ -4327,6 +4411,7 @@ pub struct CosignTestShimBuilder {
     keygen: bool,
     exit_code: i32,
     stderr: String,
+    sleep: Option<std::time::Duration>,
 }
 
 impl CosignTestShimBuilder {
@@ -4359,9 +4444,16 @@ impl CosignTestShimBuilder {
         self
     }
 
+    /// Make every invocation sleep for `duration` before it exits. Default: no
+    /// sleep.
+    pub fn with_sleep(mut self, duration: std::time::Duration) -> Self {
+        self.sleep = Some(duration);
+        self
+    }
+
     /// Point `CFGD_COSIGN_BIN` at the compiled fake-cosign binary and set the
     /// per-invocation behavior env vars (`CFGD_FAKE_COSIGN_{LOG,KEYGEN,STDERR,
-    /// EXIT}`). Prior values of every mutated var are captured for restoration
+    /// EXIT,SLEEP_MS}`). Prior values of every mutated var are captured for restoration
     /// on drop. A tempdir holds the argv log; it is removed with the guard.
     // long-line-ok: a hatch is read off its own line, so it cannot wrap
     // env-mutator-ok: a builder exists only through `CosignTestShim::builder`, which the roster counts.
@@ -4378,6 +4470,7 @@ impl CosignTestShimBuilder {
             keygen: std::env::var_os("CFGD_FAKE_COSIGN_KEYGEN"),
             stderr: std::env::var_os("CFGD_FAKE_COSIGN_STDERR"),
             exit: std::env::var_os("CFGD_FAKE_COSIGN_EXIT"),
+            sleep: std::env::var_os("CFGD_FAKE_COSIGN_SLEEP_MS"),
         };
 
         // SAFETY: callers wrap with `serial_test::serial`, so no concurrent
@@ -4397,6 +4490,12 @@ impl CosignTestShimBuilder {
             }
             std::env::set_var("CFGD_FAKE_COSIGN_STDERR", &self.stderr);
             std::env::set_var("CFGD_FAKE_COSIGN_EXIT", self.exit_code.to_string());
+            match self.sleep {
+                Some(sleep) => {
+                    std::env::set_var("CFGD_FAKE_COSIGN_SLEEP_MS", sleep.as_millis().to_string());
+                }
+                None => std::env::remove_var("CFGD_FAKE_COSIGN_SLEEP_MS"),
+            }
         }
 
         CosignTestShim {
@@ -4922,7 +5021,7 @@ impl crate::providers::PackageManager for MockPackageManager {
         let _in_flight = self.witness.as_ref().map(|w| w.enter());
         if let Some(delay) = self.install_delay {
             // long-line-ok: a hatch is read off its own line, so it cannot wrap
-            // sleep-ok: simulates a slow install to widen the overlap window a ConcurrencyWitness observes — the witness peak is the actual assertion, not this duration
+            // sleep-ok: simulates a slow install to widen the overlap window a ConcurrencyWitness observes; the test asserts the witness peak
             std::thread::sleep(delay);
         }
         self.install_calls.lock().unwrap().push(packages.to_vec());
@@ -5229,7 +5328,7 @@ fn parse_profile_yaml_to_resolved(yaml: &str) -> crate::config::ResolvedProfile 
 /// `cfgd-version` to `0.0.1` so `list` flags it stale (stamp != running). The
 /// whole-file claude provider carries the stamp on a `cfgd-version:` frontmatter
 /// line, so a line rewrite faithfully reproduces an old install.
-// env-mutator-ok: writes a skill file; its `install(…)` is `SkillProvider`'s, not a shim's.
+// env-mutator-ok: writes a skill file through `SkillProvider::install`, which writes no shim.
 pub fn seed_stale_skill(
     kind: crate::generate::SkillKind,
     scope: crate::providers::skill::SkillScope,
@@ -5832,7 +5931,9 @@ pub fn plant_managed_env_files(
     home: &Path,
     scope: crate::config::EnvScope,
 ) -> Vec<(std::path::PathBuf, String)> {
-    let planted = merged.managed_env_files(home, scope);
+    let planted = merged
+        .managed_env_files(home, scope)
+        .expect("the fixture's env renders");
     for (path, content) in &planted {
         crate::ensure_parent_dir(path).expect("a planted env file needs its directory");
         std::fs::write(path, content).expect("planting a managed env file");

@@ -631,7 +631,7 @@ impl ServerClient {
         let body = DriftReport { details };
         let body_json = serde_json::to_string(&body).map_err(|e| {
             CfgdError::Io(std::io::Error::other(format!(
-                // fleet-drift-ok: an internal serialization failure, not a claim
+                // fleet-drift-ok: an internal serialization failure, which claims no drift
                 "failed to serialize drift report: {}",
                 e
             )))
@@ -702,7 +702,7 @@ impl ServerClient {
     /// Query the server's enrollment method (token or key).
     pub fn enroll_info(&self) -> Result<EnrollInfoResponse> {
         let url = format!("{}/api/v1/enroll/info", self.base_url);
-        let mut resp = ureq::get(&url).call().map_err(|e| {
+        let mut resp = self.agent().get(&url).call().map_err(|e| {
             CfgdError::Io(std::io::Error::new(
                 std::io::ErrorKind::ConnectionRefused,
                 format!("failed to query enrollment info: {}", e),

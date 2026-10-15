@@ -5,6 +5,35 @@
 echo ""
 echo "=== MachineConfig Tests ==="
 
+# The PR install runs a leader and a standby, and a crash on either is a crash,
+# so the error cases read every operator pod.
+
+# operator_pod_states: one line per PR-install operator pod, sorted by name:
+# <name> <phase> <restarts summed over its containers> <first waiting reason,
+# or - when none waits>. Returns 1 with kubectl's error on stdout when the
+# pods cannot be listed.
+operator_pod_states() {
+    local json
+    json="$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" -o json 2>&1)" || {
+        printf '%s\n' "$json"
+        return 1
+    }
+    jq -r '.items | sort_by(.metadata.name)[]
+        | [.metadata.name, .status.phase,
+           ([.status.containerStatuses[]?.restartCount] | add // 0),
+           ([.status.containerStatuses[]?.state.waiting.reason // empty] | first // "-")]
+        | map(tostring) | join(" ")' <<<"$json"
+}
+
+# operators_running: 0 when the PR install has an operator pod and every one
+# is Running with no container in CrashLoopBackOff, which keeps the pod's phase
+# Running. OPERATOR_STATES keeps what was read, for the verdict.
+operators_running() {
+    OPERATOR_STATES="$(operator_pod_states)" || return 1
+    [ -n "$OPERATOR_STATES" ] &&
+        ! awk '$2 != "Running" || $4 == "CrashLoopBackOff" { bad = 1 } END { exit !bad }' <<<"$OPERATOR_STATES"
+}
+
 # =================================================================
 # OP-MC-01: Create MachineConfig: controller reconciles and sets status
 # =================================================================
@@ -125,15 +154,14 @@ MODULES_REASON=$(kubectl get machineconfig "e2e-bad-moduleref-${E2E_RUN_ID}" -n 
 echo "  ModulesResolved status: ${MODULES_RESOLVED:-not set}"
 echo "  ModulesResolved reason: ${MODULES_REASON:-not set}"
 
-# Verify the operator pod is not crash-looping
-OPERATOR_STATUS=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
-    -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
-echo "  Operator pod status: ${OPERATOR_STATUS:-unknown}"
+ERR01_RUNNING=false
+if operators_running; then ERR01_RUNNING=true; fi
+echo "  Operator pods (name phase restarts waiting): $(tr '\n' ';' <<<"$OPERATOR_STATES")"
 
-if [ "$MODULES_RESOLVED" = "False" ] && [ "$OPERATOR_STATUS" = "Running" ]; then
+if [ "$MODULES_RESOLVED" = "False" ] && $ERR01_RUNNING; then
     pass_test "OP-ERR-01"
-elif [ "$OPERATOR_STATUS" != "Running" ]; then
-    fail_test "OP-ERR-01" "Operator pod is not Running (status: ${OPERATOR_STATUS})"
+elif ! $ERR01_RUNNING; then
+    fail_test "OP-ERR-01" "Not every operator pod is Running and out of CrashLoopBackOff: ${OPERATOR_STATES:-no operator pod}"
 else
     fail_test "OP-ERR-01" "ModulesResolved condition not set to False for nonexistent moduleRef"
 fi
@@ -252,21 +280,18 @@ wait_for_deleted 30 machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAME
 # both. An alert that stays is acceptable as long as the operator does not crash.
 wait_for_deleted 30 driftalert "e2e-orphan-drift-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" || true
 
-OPERATOR_STATUS=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
-    -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
-OPERATOR_RESTARTS=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
-    -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}' 2>/dev/null || echo "0")
-
-echo "  Operator pod status: ${OPERATOR_STATUS:-unknown}, restarts: ${OPERATOR_RESTARTS:-0}"
+ERR03_RUNNING=false
+if operators_running; then ERR03_RUNNING=true; fi
+echo "  Operator pods (name phase restarts waiting): $(tr '\n' ';' <<<"$OPERATOR_STATES")"
 
 # Check if DriftAlert was garbage-collected or still exists
 DA_EXISTS=$(kubectl get driftalert "e2e-orphan-drift-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" 2>/dev/null && echo "yes" || echo "no")
 echo "  DriftAlert still exists: ${DA_EXISTS}"
 
-if [ "$OPERATOR_STATUS" = "Running" ]; then
+if $ERR03_RUNNING; then
     pass_test "OP-ERR-03"
 else
-    fail_test "OP-ERR-03" "Operator pod is not Running after DriftAlert orphan scenario (status: ${OPERATOR_STATUS})"
+    fail_test "OP-ERR-03" "Not every operator pod is Running and out of CrashLoopBackOff after the DriftAlert orphan scenario: ${OPERATOR_STATES:-no operator pod}"
 fi
 
 kubectl delete driftalert "e2e-orphan-drift-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" --ignore-not-found 2>/dev/null || true
@@ -277,9 +302,10 @@ kubectl delete machineconfig "e2e-ephemeral-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE
 # =================================================================
 begin_test "OP-ERR-04: Rapid create/delete: no reconcile panic"
 
-# Record operator restart count before the test
-RESTARTS_BEFORE=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
-    -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}' 2>/dev/null || echo "0")
+# A pod read before and after the race that restarted in between crashed, and
+# one read before that is gone after was replaced, which hides its restarts.
+ERR04_BEFORE_RC=0
+ERR04_BEFORE="$(operator_pod_states)" || ERR04_BEFORE_RC=$?
 
 # Create and immediately delete a MachineConfig to race the controller
 for i in $(seq 1 5); do
@@ -310,30 +336,25 @@ for i in $(seq 1 5); do
 done
 wait_for_deleted 60 machineconfig "${ERR04_NAMES[@]}" -n "$E2E_NAMESPACE" || true
 
-OPERATOR_STATUS=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
-    -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "")
-RESTARTS_AFTER=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
-    -o jsonpath='{.items[0].status.containerStatuses[0].restartCount}' 2>/dev/null || echo "0")
+ERR04_RUNNING=false
+if operators_running; then ERR04_RUNNING=true; fi
+ERR04_RESTARTED="$(BEFORE="$ERR04_BEFORE" awk 'BEGIN { n = split(ENVIRON["BEFORE"], b, "\n"); for (i = 1; i <= n; i++) { split(b[i], f, " "); if (f[1] != "") was[f[1]] = f[3] } }
+    ($1 in was) && $3 > was[$1] { printf "%s%s %s->%s", sep, $1, was[$1], $3; sep = ", " }' <<<"$OPERATOR_STATES")"
+ERR04_MISSING="$(AFTER="$OPERATOR_STATES" awk 'BEGIN { n = split(ENVIRON["AFTER"], a, "\n"); for (i = 1; i <= n; i++) { split(a[i], f, " "); if (f[1] != "") now[f[1]] = 1 } }
+    $1 != "" && !($1 in now) { printf "%s%s", sep, $1; sep = ", " }' <<<"$ERR04_BEFORE")"
+echo "  Operator pods before (name phase restarts waiting): $(tr '\n' ';' <<<"$ERR04_BEFORE")"
+echo "  Operator pods after: $(tr '\n' ';' <<<"$OPERATOR_STATES")"
 
-echo "  Operator pod status: ${OPERATOR_STATUS:-unknown}"
-echo "  Restarts before: ${RESTARTS_BEFORE}, after: ${RESTARTS_AFTER}"
-
-if [ "$OPERATOR_STATUS" = "Running" ] && [ "${RESTARTS_AFTER:-0}" -eq "${RESTARTS_BEFORE:-0}" ]; then
-    pass_test "OP-ERR-04"
-elif [ "$OPERATOR_STATUS" = "Running" ]; then
-    # Running but with extra restarts: still acceptable if no crash loop
-    CRASH_LOOP_RC=0
-    CRASH_LOOP=$(kubectl get pods -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" \
-        -o jsonpath='{.items[0].status.containerStatuses[0].state.waiting.reason}' 2>/dev/null) || CRASH_LOOP_RC=$?
-    if [ "$CRASH_LOOP_RC" -ne 0 ]; then
-        fail_test "OP-ERR-04" "Could not read the operator pod's state (kubectl exit $CRASH_LOOP_RC)"
-    elif [ "$CRASH_LOOP" = "CrashLoopBackOff" ]; then
-        fail_test "OP-ERR-04" "Operator entered CrashLoopBackOff after rapid create/delete"
-    else
-        pass_test "OP-ERR-04"
-    fi
+if [ "$ERR04_BEFORE_RC" -ne 0 ] || [ -z "$ERR04_BEFORE" ]; then
+    fail_test "OP-ERR-04" "Could not read the operator pods before the race, so a restart during it cannot be told apart: ${ERR04_BEFORE:-no operator pod}"
+elif ! $ERR04_RUNNING; then
+    fail_test "OP-ERR-04" "Not every operator pod is Running and out of CrashLoopBackOff after rapid create/delete: ${OPERATOR_STATES:-no operator pod}"
+elif [ -n "$ERR04_MISSING" ]; then
+    fail_test "OP-ERR-04" "Operator pods listed before rapid create/delete are gone after it, so their restarts cannot be read: $ERR04_MISSING"
+elif [ -n "$ERR04_RESTARTED" ]; then
+    fail_test "OP-ERR-04" "Operator pods restarted during rapid create/delete (restarts before->after): $ERR04_RESTARTED"
 else
-    fail_test "OP-ERR-04" "Operator pod is not Running after rapid create/delete (status: ${OPERATOR_STATUS})"
+    pass_test "OP-ERR-04"
 fi
 
 # Clean up any stragglers

@@ -6,18 +6,18 @@ operator:
   enabled: true
   replicaCount: 1
   # The Deployment's update strategy, rendered as given. Left empty, the chart
-  # derives it from what a replacement pod has to wait for before it is ready:
-  #   gateway off:                               RollingUpdate, maxSurge 1, maxUnavailable 0
-  #   gateway on, leader election on:            RollingUpdate, maxSurge 1, maxUnavailable 1
-  #   gateway on, leader election off, PVC on:   Recreate
-  #   gateway on, leader election off, PVC off:  RollingUpdate, maxSurge 1, maxUnavailable 0
+  # derives it from whether a replacement pod can start beside the old one:
+  #   gateway PVC off (or gateway off):          RollingUpdate, maxSurge 1, maxUnavailable 0
+  #   gateway PVC on, leader election on:        RollingUpdate, maxSurge 1, maxUnavailable 1
+  #   gateway PVC on, leader election off:       Recreate
   # maxUnavailable 0 keeps the old pod until its replacement serves admission,
-  # so the webhook always has a backend. With leader election on, the gateway
-  # (and readiness with it) waits for the lease the old pod releases only as it
-  # terminates, so 0 would wait forever there. Without leader election every
-  # pod runs the gateway, and a second pod can never share the one SQLite
-  # ReadWriteOnce volume, so that cell stops the old pod before starting the
-  # new one and the gateway is down for the length of the roll.
+  # so the webhook always has a backend; readiness never waits for the gateway
+  # or the lease, because the gateway Service routes by label to the lease
+  # holder alone. The gateway's ReadWriteOnce volume is mounted by every pod,
+  # and a replacement scheduled on another node cannot attach it while the old
+  # pod holds it, so with the PVC on the old pod leaves first. Without leader
+  # election every pod also runs the gateway on that one SQLite file, so that
+  # cell stops the old pod before starting the new one.
   strategy: {}
   image:
     repository: ghcr.io/tj-smith47/cfgd-operator
@@ -128,7 +128,11 @@ agent:
 # Install CRDs
 installCRDs: true
 
-# Service account (shared)
+# Service account (shared). With create: false the chart renders none of the
+# operator's RBAC, so the account named here needs those grants from you,
+# including, when deviceGateway.enabled, `patch` on pods in the release
+# namespace: the operator labels its own pod for the gateway Service and does
+# not start when it cannot.
 serviceAccount:
   create: true
   name: ""
@@ -159,6 +163,9 @@ deviceGateway:
     key: "api-key"
   enrollmentMethod: token
   retentionDays: 90
+  # The database's volume. Persistence needs operator.replicaCount 1; without
+  # it the database is an emptyDir, and a new lease holder starts with an
+  # empty one.
   persistence:
     enabled: true
     size: 1Gi
