@@ -47,9 +47,17 @@ crate's `tests/`.
 
 Blocking dispatch loses the thread-local, so any closure that may resolve `~`
 goes through `cfgd_core::spawn_blocking_with_test_home`. `audit.sh` rejects a
-raw `tokio::task::spawn_blocking` anywhere in workspace production code unless
-the call line (or the line above it) carries
-`// spawn-blocking-ok: <why the closure resolves no home paths>`.
+raw `tokio::task::spawn_blocking` anywhere in the workspace, tests included,
+unless the call line (or the line above it) carries
+`// spawn-blocking-ok: <why the closure resolves no home paths>`. A test is
+held to it because `with_test_home_guard` is thread-local: only the wrapper
+carries the guard onto the worker. The guard itself is the other half: a test
+that runs a reconcile tick binds `with_test_home_guard` in its own body, or
+the tick resolves the module cache from the real `$HOME`, and a serialized
+sibling that has `HOME` unset at that moment turns the tick into an early
+return, a failure that shows only under a full-workspace threaded run.
+`every_tick_running_test_holds_a_test_home` (`daemon/tests.rs`) walks the
+tick-running tests; a helper that settles the home itself covers its callers.
 
 ## No test run reaches the real config directory
 

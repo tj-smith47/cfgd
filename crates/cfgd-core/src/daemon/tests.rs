@@ -7849,6 +7849,7 @@ fn handle_reconcile_with_no_config_file() {
     let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
 
     let tmp = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp.path());
     let state_dir = tmp.path().to_path_buf();
     let printer = test_printer();
 
@@ -7884,6 +7885,7 @@ fn handle_reconcile_with_no_profile() {
     let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
 
     let tmp = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp.path());
     let state_dir = tmp.path().to_path_buf();
 
     // Write a valid config with NO profile set
@@ -8342,6 +8344,7 @@ async fn handle_reconcile_with_valid_config_records_drift_events() {
     // Set up a tmpdir with config.yaml + profiles/default.yaml containing packages.
     // DaemonHooks that returns a PackageAction::Install so the plan has drift.
     let tmp = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp.path());
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
 
@@ -8403,7 +8406,7 @@ async fn handle_reconcile_with_valid_config_records_drift_events() {
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
         handle_reconcile(
             &cp,
@@ -8446,6 +8449,7 @@ async fn handle_reconcile_with_valid_config_records_drift_events() {
 async fn handle_reconcile_notify_only_drift_policy_does_not_apply() {
     // Verify that with NotifyOnly drift policy, drift is recorded but no apply happens.
     let tmp = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp.path());
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
 
@@ -8504,7 +8508,7 @@ async fn handle_reconcile_notify_only_drift_policy_does_not_apply() {
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
         handle_reconcile(
             &cp,
@@ -8533,6 +8537,7 @@ async fn handle_reconcile_notify_only_drift_policy_does_not_apply() {
 async fn handle_reconcile_no_drift_when_no_actions() {
     // When plan has no actions, no drift events should be recorded.
     let tmp = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp.path());
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
 
@@ -8587,7 +8592,7 @@ async fn handle_reconcile_no_drift_when_no_actions() {
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
         handle_reconcile(
             &cp,
@@ -8918,7 +8923,7 @@ async fn handle_reconcile_clean_tick_clears_outstanding_drift() {
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
         handle_reconcile(
             &cp,
@@ -9228,6 +9233,7 @@ async fn a_tick_over_a_module_whose_files_it_refused_keeps_their_rows() {
 async fn handle_reconcile_with_profile_override() {
     // Test that profile_override is used instead of config's profile field.
     let tmp = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp.path());
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
 
@@ -9255,7 +9261,7 @@ async fn handle_reconcile_with_profile_override() {
     let sd = state_dir.clone();
     let cp = config_path.clone();
     // Override profile to "default" which exists
-    tokio::task::spawn_blocking(move || {
+    crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
         handle_reconcile(
             &cp,
@@ -9285,6 +9291,7 @@ async fn handle_reconcile_with_profile_override() {
 async fn handle_reconcile_multiple_actions_records_all_drift() {
     // Verify that all drift-producing actions are recorded as separate events.
     let tmp = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp.path());
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
 
@@ -9358,7 +9365,7 @@ async fn handle_reconcile_multiple_actions_records_all_drift() {
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
         handle_reconcile(
             &cp,
@@ -9474,7 +9481,7 @@ async fn handle_reconcile_auto_policy_with_drift_invokes_apply_success() {
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
         handle_reconcile(
             &cp,
@@ -9650,7 +9657,7 @@ async fn handle_reconcile_auto_apply_honors_a_raised_abort_flag() {
     let ab = Arc::clone(&abort);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
         handle_reconcile(
             &cp,
@@ -9729,7 +9736,7 @@ async fn handle_reconcile_auto_policy_apply_failure_notifies() {
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
         handle_reconcile(
             &cp,
@@ -11321,7 +11328,7 @@ async fn handle_reconcile_auto_policy_prunes_tracked_dropped_package() {
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
         handle_reconcile(
             &cp,
@@ -11456,7 +11463,7 @@ async fn handle_reconcile_auto_policy_gcs_stale_tracking_row() {
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
         handle_reconcile(
             &cp,
@@ -11544,7 +11551,7 @@ async fn handle_reconcile_notify_only_with_notify_on_drift_sends_notification() 
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
         // notify_on_drift = true → notifier.notify() reached
         handle_reconcile(
@@ -18374,13 +18381,13 @@ spec: {}
 
     // ----- Notifier::notify_webhook with a real (mock) HTTP endpoint -----
     //
-    // notify_webhook spawns a tokio::task::spawn_blocking, so this test
+    // notify_webhook dispatches its POST through spawn_blocking, so this test
     // sleeps briefly after .notify() to let the POST land. Asserts via the
     // mockito expectation count rather than inspecting tracing output.
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn notifier_webhook_posts_payload_to_configured_url() {
-        let server = tokio::task::spawn_blocking(mockito::Server::new)
+        let server = crate::spawn_blocking_with_test_home(mockito::Server::new)
             .await
             .expect("spawn mockito server");
         let mut server = server;
@@ -19008,6 +19015,7 @@ async fn handle_reconcile_warns_when_module_resolution_fails_and_continues() {
     // substitute Vec::new() for resolved_modules; the rest of the reconcile
     // (plan generation, state update) must continue normally.
     let tmp = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp.path());
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
     let config_path = write_config_with_module_refs(tmp.path(), &["does-not-exist"]);
@@ -19020,7 +19028,7 @@ async fn handle_reconcile_warns_when_module_resolution_fails_and_continues() {
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
         handle_reconcile(
             &cp,
@@ -19046,6 +19054,7 @@ async fn handle_reconcile_resolves_non_empty_modules_when_module_dir_exists() {
     // fires, and the resulting Vec<ResolvedModule> flows into reconciler.plan
     // (covered by sibling tests; only asserts here that the reconcile completes).
     let tmp = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp.path());
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
     let config_path = write_config_with_module_refs(tmp.path(), &["empty-mod"]);
@@ -19066,7 +19075,7 @@ async fn handle_reconcile_resolves_non_empty_modules_when_module_dir_exists() {
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
         handle_reconcile(
             &cp,
@@ -19100,6 +19109,7 @@ async fn handle_reconcile_auto_apply_with_sources_processes_decisions_and_resolv
     //   - pending decisions for the removed source are flipped to
     //     "rejected" by the auto-resolve loop
     let tmp = tempfile::tempdir().unwrap();
+    let _home = crate::with_test_home_guard(tmp.path());
     let state_dir = tmp.path().join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
 
@@ -19139,7 +19149,7 @@ async fn handle_reconcile_auto_apply_with_sources_processes_decisions_and_resolv
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
         handle_reconcile(
             &cp,
@@ -19329,7 +19339,7 @@ async fn handle_reconcile_constraint_violation_skips_tick_and_preserves_source_p
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
         handle_reconcile(
             &cp,
@@ -19420,7 +19430,7 @@ async fn handle_reconcile_never_synced_source_reconciles_local_only() {
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
         handle_reconcile(
             &cp,
@@ -19552,7 +19562,7 @@ async fn handle_reconcile_required_uncached_source_skips_tick_and_preserves_pack
     let not = Arc::clone(&notifier);
     let sd = state_dir.clone();
     let cp = config_path.clone();
-    tokio::task::spawn_blocking(move || {
+    crate::spawn_blocking_with_test_home(move || {
         let printer = test_printer();
         handle_reconcile(
             &cp,
@@ -20428,9 +20438,10 @@ mod ipc_socket_security {
         });
 
         let _g = EnvVarGuard::set(crate::CFGD_DAEMON_IPC_PATH_ENV, sock_path.to_str().unwrap());
-        let result = tokio::task::spawn_blocking(|| query_daemon_status(None, crate::Scope::User))
-            .await
-            .unwrap();
+        let result =
+            crate::spawn_blocking_with_test_home(|| query_daemon_status(None, crate::Scope::User))
+                .await
+                .unwrap();
         let _ = server.join();
 
         match result {
@@ -20524,9 +20535,10 @@ mod query_daemon_status_paths {
         });
 
         let _g = EnvVarGuard::set(crate::CFGD_DAEMON_IPC_PATH_ENV, sock_path.to_str().unwrap());
-        let result = tokio::task::spawn_blocking(|| query_daemon_status(None, crate::Scope::User))
-            .await
-            .unwrap();
+        let result =
+            crate::spawn_blocking_with_test_home(|| query_daemon_status(None, crate::Scope::User))
+                .await
+                .unwrap();
         let _ = server.join();
 
         let status = result
@@ -20566,9 +20578,10 @@ mod query_daemon_status_paths {
         });
 
         let _g = EnvVarGuard::set(crate::CFGD_DAEMON_IPC_PATH_ENV, sock_path.to_str().unwrap());
-        let result = tokio::task::spawn_blocking(|| query_daemon_status(None, crate::Scope::User))
-            .await
-            .unwrap();
+        let result =
+            crate::spawn_blocking_with_test_home(|| query_daemon_status(None, crate::Scope::User))
+                .await
+                .unwrap();
         let _ = server.join();
 
         // Empty body → Ok(None).
@@ -20612,9 +20625,10 @@ mod query_daemon_status_paths {
         });
 
         let _g = EnvVarGuard::set(crate::CFGD_DAEMON_IPC_PATH_ENV, sock_path.to_str().unwrap());
-        let result = tokio::task::spawn_blocking(|| query_daemon_status(None, crate::Scope::User))
-            .await
-            .unwrap();
+        let result =
+            crate::spawn_blocking_with_test_home(|| query_daemon_status(None, crate::Scope::User))
+                .await
+                .unwrap();
         let _ = server.join();
 
         match result {
@@ -20927,6 +20941,7 @@ mod handle_reconcile_extra_branches {
         let (_tmp, config_path, state_dir) = write_min_fixture(
             "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec:\n  profile: default\n",
         );
+        let _home = crate::with_test_home_guard(_tmp.path());
 
         let state = Arc::new(Mutex::new(DaemonState::new()));
         let notifier = Arc::new(Notifier::new(NotifyMethod::Stdout, None));
@@ -20935,7 +20950,7 @@ mod handle_reconcile_extra_branches {
         let not = Arc::clone(&notifier);
         let sd = state_dir.clone();
         let cp = config_path.clone();
-        tokio::task::spawn_blocking(move || {
+        crate::spawn_blocking_with_test_home(move || {
             let printer = test_printer();
             handle_reconcile(
                 &cp,
@@ -20982,6 +20997,7 @@ mod handle_reconcile_extra_branches {
         // under a CFGD_STATE_DIR-scoped state dir, run reconcile, and assert
         // the file is removed.
         let pending_root = tempfile::tempdir().unwrap();
+        let _home = crate::with_test_home_guard(pending_root.path());
         let _g = crate::test_helpers::EnvVarGuard::set(
             crate::CFGD_STATE_DIR_ENV,
             pending_root.path().to_str().unwrap(),
@@ -21007,7 +21023,7 @@ mod handle_reconcile_extra_branches {
         let sd = state_dir.clone();
         let cp = config_path.clone();
 
-        tokio::task::spawn_blocking(move || {
+        crate::spawn_blocking_with_test_home(move || {
             let printer = test_printer();
             handle_reconcile(
                 &cp,
@@ -21032,6 +21048,7 @@ mod handle_reconcile_extra_branches {
         let (_tmp, config_path, state_dir) = write_min_fixture(
             "apiVersion: cfgd.io/v1alpha1\nkind: CfgdConfig\nmetadata:\n  name: t\nspec:\n  profile: bogus\n",
         );
+        let _home = crate::with_test_home_guard(_tmp.path());
         // bogus profile -> resolve_profile returns NotFound; reconcile logs an
         // error and bails. No state changes expected.
 
@@ -21041,7 +21058,7 @@ mod handle_reconcile_extra_branches {
         let not = Arc::clone(&notifier);
         let sd = state_dir.clone();
         let cp = config_path.clone();
-        tokio::task::spawn_blocking(move || {
+        crate::spawn_blocking_with_test_home(move || {
             let printer = test_printer();
             handle_reconcile(
                 &cp,
@@ -24793,5 +24810,95 @@ fn every_counted_clause_names_the_unit_it_counts() {
         "a completion clause names cfgd's bookkeeping rather than the machine's state — \
          word it from what the reader can see on the machine:\n{}",
         record_worded.join("\n")
+    );
+}
+
+/// A test that runs a reconcile tick holds a test home for the whole tick.
+/// The tick resolves the module cache from the home directory, and nine
+/// tick-running tests once ran against the real `HOME`: they passed alone and
+/// failed under the full threaded suite whenever a sibling held `HOME` unset
+/// through `EnvVarGuard`, because `handle_reconcile` then returned before it
+/// recorded anything. `spawn_blocking_with_test_home` carries the guard onto
+/// the worker, so the guard in the test body is the whole fix. A helper that
+/// dispatches the tick for its callers (one taking parameters) either settles
+/// the home itself, a guard or a deliberate `HOME` clear under `#[serial]`,
+/// or is judged through those callers.
+#[test]
+fn every_tick_running_test_holds_a_test_home() {
+    const THIS_WALK: &str = "every_tick_running_test_holds_a_test_home";
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/tests.rs");
+    // unfloored-slice-ok: the tests judged here are the file's whole population.
+    let body = crate::test_helpers::walked_file_body(&path);
+    let lines = crate::test_helpers::logical_source_lines(&body);
+    let mut declarations: Vec<(String, bool, String, String)> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let text = lines[i].1.as_str();
+        let bare = text.trim_start();
+        let Some(name) = crate::test_helpers::declared_fn_name(bare) else {
+            i += 1;
+            continue;
+        };
+        let close = format!("{}}}", &text[..text.len() - bare.len()]);
+        let mut end = i + 1;
+        while end < lines.len() && lines[end].1 != close {
+            end += 1;
+        }
+        let code: String = lines[i..=end.min(lines.len() - 1)]
+            .iter()
+            .map(|(_, l)| crate::test_helpers::code_line(l))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let raw: String = lines[i..=end.min(lines.len() - 1)]
+            .iter()
+            .map(|(_, l)| l.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let takes_parameters = !bare.contains(&format!("{name}()"));
+        declarations.push((name, takes_parameters, code, raw));
+        i = end + 1;
+    }
+    let dispatches = |code: &str| crate::test_helpers::calls_free_fn(code, "handle_reconcile");
+    // The home is settled by a guard, or by a test whose subject IS the
+    // missing home clearing the variable for its own duration.
+    let settles_home = |raw: &str| {
+        raw.contains("with_test_home_guard(") || raw.contains("EnvVarGuard::set(\"HOME\"")
+    };
+    // name → whether the helper settles the home for every caller.
+    let helpers: Vec<(&str, bool)> = declarations
+        .iter()
+        .filter(|(name, takes_parameters, code, _)| {
+            *takes_parameters && name != "handle_reconcile" && dispatches(code)
+        })
+        .map(|(name, _, _, raw)| (name.as_str(), settles_home(raw)))
+        .collect();
+    let mut judged = 0usize;
+    let mut offenders = Vec::new();
+    for (name, takes_parameters, code, raw) in &declarations {
+        if *takes_parameters || name == THIS_WALK {
+            continue;
+        }
+        let called: Vec<&(&str, bool)> = helpers
+            .iter()
+            .filter(|(helper, _)| crate::test_helpers::calls_free_fn(code, helper))
+            .collect();
+        if !dispatches(code) && called.is_empty() {
+            continue;
+        }
+        judged += 1;
+        let covered_by_helpers =
+            !called.is_empty() && !dispatches(code) && called.iter().all(|(_, settles)| *settles);
+        if !settles_home(raw) && !covered_by_helpers {
+            offenders.push(name.clone());
+        }
+    }
+    assert!(
+        judged >= 16,
+        "the walk read {judged} tick-running tests; the population holds at least 16"
+    );
+    assert!(
+        offenders.is_empty(),
+        "tick-running tests with no `with_test_home_guard` in their own body:\n  {}",
+        offenders.join("\n  ")
     );
 }

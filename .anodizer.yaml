@@ -29,14 +29,18 @@ git:
 
 tag:
   # Require an explicit bump signal per commit range. Autotag honours two
-  # signal kinds, both read from a commit's SUBJECT line only (the scan uses
-  # `--pretty=format:%s`, so anything in the body is invisible): Conventional
+  # signal kinds, read from a commit's subject AND body (the scan uses
+  # `--pretty=format:%s%x00%b%x00`, so a token in a body counts): Conventional
   # Commit markers (`feat:` -> minor, `fix:` / `perf:` / `revert:` -> patch,
   # `<type>!:` shorthand or a `BREAKING CHANGE` / `BREAKING-CHANGE` note ->
   # major), and explicit `#major` / `#minor` / `#patch` hashtag tokens, which
   # take precedence over the conventional marker on the same range
   # (bump_detect in the anodizer `tag` command; `anodizer bump` ignores
-  # tokens). Ranges containing only chore / docs / style / refactor
+  # tokens). Since anodizer v0.29.0 a `#none` anywhere in a crate's range
+  # vetoes every inferred bump for that range, and only an explicit
+  # `#major` / `#minor` / `#patch` outranks it, so a `#none` on a ci commit
+  # that touches crates/cfgd holds the cfgd crate back until a commit in the
+  # same range carries an explicit token. Ranges containing only chore / docs / style / refactor
   # / test / build / ci commits — including `chore(deps)` dependency bumps —
   # no-op, so autotag won't mint a spurious patch bump after a stable crate's
   # chore touch. A dep bump that should ship uses a `fix(deps):` subject.

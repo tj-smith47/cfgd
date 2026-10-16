@@ -1476,33 +1476,36 @@ log_section "Test-home-safe blocking dispatch (workspace)"
 # Raw `tokio::task::spawn_blocking` drops the test-home
 # thread-local on the worker thread, so any closure that resolves `~`/$HOME
 # (default_state_dir, default_config_dir, …) silently touches the real
-# filesystem under tests. Production code must use
-# `crate::spawn_blocking_with_test_home` instead. Escape hatch (mirrors the
-# native-ok convention): when the closure provably resolves no home paths,
-# annotate the call line or the line directly above it with
+# filesystem under tests. Every call site, production and test alike, uses
+# `crate::spawn_blocking_with_test_home` instead: a test that installs a
+# test-home guard and then dispatches through the raw call hands its tick a
+# worker that reads the real $HOME, which a serialized sibling may have unset
+# at that moment, so the tick returns early and the test fails only under a
+# full-workspace threaded run. Escape hatch (mirrors the native-ok convention):
+# when the closure provably resolves no home paths, annotate the call line or
+# the line directly above it with
 #   // spawn-blocking-ok: <why the closure resolves no home paths>
-# util/paths.rs (the wrapper's own home) and test files are excluded.
+# util/paths.rs (the wrapper's own home) is excluded.
 # Marker handling is the shared one (see AWK_LIB): in a comment, with a reason,
 # and inherited only from a comment line directly above — never from a previous
 # call that happened to carry its own marker.
 raw_spawns=$(while IFS= read -r -d '' rsfile; do
-    is_test_file "$rsfile" && continue
     case "$rsfile" in
         */util/paths.rs) continue ;;
     esac
-    strip_test_blocks_from_file "$rsfile" | awk "$AWK_LIB"'
+    awk -v filepath="$rsfile" '{ print filepath ":" NR ":" $0 }' "$rsfile" | awk "$AWK_LIB"'
         { code = code_only($0); comment = LAST_COMMENT }
         code ~ /tokio::task::spawn_blocking/ &&
         !is_comment_line($0) &&
         !marker_applies(comment, prev, prev_comment, "spawn-blocking-ok:") { print }
         { prev = $0; prev_comment = comment }
     '
-done < <(find crates/*/src -name '*.rs' -print0 2>/dev/null))
+done < <(find crates/*/src crates/*/tests -name '*.rs' -print0 2>/dev/null))
 if [[ -n "$raw_spawns" ]]; then
     log_error "Raw tokio::task::spawn_blocking (use cfgd_core::spawn_blocking_with_test_home, or annotate // spawn-blocking-ok: <why>):"
     echo "$raw_spawns" | first_lines 10
 else
-    log_ok "No raw spawn_blocking in workspace production code"
+    log_ok "No raw spawn_blocking in workspace code, tests included"
 fi
 
 log_section "Sleep-as-synchronization in test code (sleep-ok:)"
