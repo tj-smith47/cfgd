@@ -17,10 +17,10 @@ else
         2>&1 || echo "FAILED")
 
     echo "  Response (first 300 chars):"
-    echo "$GW07_RESPONSE" | head -c 300 | sed 's/^/    /'
+    head -c 300 <<<"$GW07_RESPONSE" | sed 's/^/    /'
     echo ""
 
-    if echo "$GW07_RESPONSE" | grep -q '"status"'; then
+    if grep -q '"status"' <<<"$GW07_RESPONSE"; then
         pass_test "GW-07"
     else
         fail_test "GW-07" "Checkin response missing 'status' field"
@@ -46,7 +46,7 @@ else
 
     echo "  HTTP status: $GW08_HTTP_CODE"
     echo "  Body (first 300 chars):"
-    echo "$GW08_BODY" | head -c 300 | sed 's/^/    /'
+    head -c 300 <<<"$GW08_BODY" | sed 's/^/    /'
     echo ""
 
     if [ "$GW08_HTTP_CODE" = "201" ]; then
@@ -93,7 +93,7 @@ else
 
         echo "  GET device HTTP status: $GW09_DEVICE_CODE"
         echo "  Device body (first 500 chars):"
-        echo "$GW09_DEVICE_BODY" | head -c 500 | sed 's/^/    /'
+        head -c 500 <<<"$GW09_DEVICE_BODY" | sed 's/^/    /'
         echo ""
 
         if [ "$GW09_DEVICE_CODE" = "200" ] && echo "$GW09_DEVICE_BODY" | jq -e --argjson sent "$GW09_COMPLIANCE" '.complianceSummary == $sent' >/dev/null 2>&1; then
@@ -314,8 +314,7 @@ EOF
             GW31_LOG_RC=$?
             GW31_LOG_READ=empty
             [ -n "$GW31_LOG" ] && GW31_LOG_READ="read"
-            GW31_CONFLICT_LOG=$(printf '%s\n' "$GW31_LOG" \
-                | grep -F "device-reported MachineConfig status was not written" \
+            GW31_CONFLICT_LOG=$(grep -F "device-reported MachineConfig status was not written" <<<"$GW31_LOG" \
                 | grep -F "${GW31_MC_NAME}" || true)
             echo "  Gateway log read: rc=${GW31_LOG_RC} ${GW31_LOG_READ}"
             echo "  Conflict log lines: ${GW31_CONFLICT_LOG:-none}"

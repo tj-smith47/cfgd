@@ -309,7 +309,7 @@ EOF
             # sample, so a body without this module's sample says only that
             # the driver counted no hit for it.
             if metric_sample_lines cfgd_csi_cache_hits "$CSI04_AFTER_BODY" \
-                | grep -qF "{$CSI04_LABELS}"; then
+                | grep -F "{$CSI04_LABELS}" >/dev/null; then
                 if [ "$CSI04_HITS_AFTER" -gt "$CSI04_HITS_BEFORE" ]; then
                     pass_test "FS-CSI-04"
                 else
@@ -342,7 +342,7 @@ ensure_label namespace "$CSI05_NS" cfgd.io/inject-modules=true --overwrite || CS
 csi05_skip_logged() {
     kubectl logs -n "$E2E_INSTALL_NS" -l "$E2E_OPERATOR_PODS" --since-time="$CSI05_SINCE" --tail=-1 2>/dev/null | # rc-ok: a failed read leaves grep empty, so the function answers no
         grep 'module CRD not found, skipping injection' |
-        grep -qE "module=\"?nonexistent-module-${E2E_RUN_ID}\"?([^A-Za-z0-9_-]|$)"
+        grep -E "module=\"?nonexistent-module-${E2E_RUN_ID}\"?([^A-Za-z0-9_-]|$)" >/dev/null
 }
 
 if ! $CSI05_LABELLED; then
@@ -468,7 +468,7 @@ EOF
 
         if [ "$V2_CONTENT" = "version-2-content" ]; then
             pass_test "FS-CSI-06"
-        elif [ -n "$MOD_YAML" ] && echo "$MOD_YAML" | grep -q "2.0.0"; then
+        elif [ -n "$MOD_YAML" ] && grep -q "2.0.0" <<<"$MOD_YAML"; then
             pass_test "FS-CSI-06"
         else
             fail_test "FS-CSI-06" "Updated module content not found in mount"

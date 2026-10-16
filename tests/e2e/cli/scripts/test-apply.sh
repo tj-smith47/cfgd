@@ -90,7 +90,7 @@ begin_test "A14: apply --module (nonexistent module)"
 run "${C[@]}" apply --dry-run --module nonexistent
 # A typo'd module name has to error loudly: an empty plan here would read as
 # "nonexistent is already satisfied".
-if assert_fail && echo "$OUTPUT" | grep -q "module not found: nonexistent"; then
+if assert_fail && grep -q "module not found: nonexistent" <<<"$OUTPUT"; then
     pass_test "A14"
 else fail_test "A14"; fi
 
@@ -149,7 +149,7 @@ begin_test "A20: apply --yes deploys files as symlinks to correct targets"
 # Verify the files created by A16 are symlinks pointing into the config dir
 if [ -L "$TGT/.gitconfig" ]; then
     LINK_TARGET=$(readlink "$TGT/.gitconfig" 2>/dev/null || echo "")
-    if echo "$LINK_TARGET" | grep -q "files/gitconfig"; then
+    if grep -q "files/gitconfig" <<<"$LINK_TARGET"; then
         pass_test "A20"
     else
         fail_test "A20" "Symlink points to wrong target: $LINK_TARGET"

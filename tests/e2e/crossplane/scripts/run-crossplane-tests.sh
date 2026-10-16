@@ -330,7 +330,7 @@ EOF
 echo "  Apply output: $INVALID_OUTPUT"
 
 # The XRD schema requires 'team' and 'members'; Crossplane/apiserver should reject it
-if echo "$INVALID_OUTPUT" | grep -qi "error\|invalid\|denied\|required\|validation"; then
+if grep -qi "error\|invalid\|denied\|required\|validation" <<<"$INVALID_OUTPUT"; then
     pass_test "XP-06"
 else
     fail_test "XP-06" "Expected rejection for invalid TeamConfig, got: $INVALID_OUTPUT"
@@ -509,7 +509,7 @@ EOF
 # Wait for MachineConfig to appear
 # shellcheck disable=SC2329  # wait_until invokes it by name
 xp10_mc_named() {
-    MC_NAME=$(kubectl get mc -A --no-headers 2>/dev/null | grep "profile-team" | awk '{print $2}' | head -1 || true)
+    MC_NAME=$(kubectl get mc -A --no-headers 2>/dev/null | grep "profile-team" | awk '{print $2}' | sed -n '1p' || true)
     [ -n "$MC_NAME" ]
 }
 MC_NAME=""
@@ -519,7 +519,7 @@ if [ -z "$MC_NAME" ]; then
     fail_test "XP-10" "No MachineConfig found for profile-team"
 else
     # Check the MachineConfig spec for the inherited profile
-    MC_NS=$(kubectl get mc -A --no-headers 2>/dev/null | grep "profile-team" | awk '{print $1}' | head -1)
+    MC_NS=$(kubectl get mc -A --no-headers 2>/dev/null | grep "profile-team" | awk '{print $1}' | sed -n '1p')
     MC_PROFILE=$(kubectl get mc "$MC_NAME" -n "$MC_NS" -o jsonpath='{.spec.profile}' 2>/dev/null || echo "")
     echo "  MachineConfig name: $MC_NAME"
     echo "  MachineConfig profile: $MC_PROFILE"
@@ -565,7 +565,7 @@ echo "  Apply output: $DUP_OUTPUT"
 
 # The composition function either rejects the members or composes them; a
 # Synced composite has applied whatever it composed.
-if ! echo "$DUP_OUTPUT" | grep -qi "error\|invalid\|denied\|rejected\|duplicate"; then
+if ! grep -qi "error\|invalid\|denied\|rejected\|duplicate" <<<"$DUP_OUTPUT"; then
     wait_for_k8s_field teamconfig dup-team "" \
         '{.status.conditions[?(@.type=="Synced")].status}' "True" 60 > /dev/null || true
 fi
@@ -574,7 +574,7 @@ echo "  MachineConfig count for dup-team: ${DUP_MC_COUNT:-0}"
 
 # Accept any of: (a) apply rejected, (b) dedup to 1 MC, (c) 2 MCs for 2 distinct usernames.
 # The function keys MCs by username, so one hostname for different users is valid.
-if echo "$DUP_OUTPUT" | grep -qi "error\|invalid\|denied\|rejected\|duplicate"; then
+if grep -qi "error\|invalid\|denied\|rejected\|duplicate" <<<"$DUP_OUTPUT"; then
     pass_test "XP-11"
 elif [ "${DUP_MC_COUNT:-0}" -le 2 ]; then
     echo "  ${DUP_MC_COUNT:-0} MC(s) created for 2 members with same hostname (keyed by username)"

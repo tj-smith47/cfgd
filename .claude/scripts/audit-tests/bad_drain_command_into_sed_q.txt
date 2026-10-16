@@ -1,0 +1,1 @@
+kubectl logs pod-a | sed '/ready/q'

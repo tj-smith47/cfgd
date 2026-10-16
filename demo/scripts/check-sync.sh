@@ -13,12 +13,17 @@
 # is the same: re-record the GIF, which rewrites its stamp. There is no other way
 # to clear a flag.
 #
-# The one exception is the release bump commit (`BUMP_SUBJECT`, the subject
-# prefix release.yml skips on). It rewrites version numbers and image tags only,
-# and the demo builds every binary and image from source, so a file counts as
-# changed only when a commit other than a bump touched it. Counting the bump
-# would turn master CI red after every release until all eight GIFs were
-# re-recorded.
+# Two exceptions. The release bump commit (`BUMP_SUBJECT`, the subject prefix
+# release.yml skips on) rewrites version numbers and image tags only, and the
+# demo builds every binary and image from source, so a file counts as changed
+# only when a commit other than a bump touched it. Counting the bump would turn
+# master CI red after every release until all eight GIFs were re-recorded. And a
+# Rust source whose every added or removed line is blank or a plain `//` or
+# `//!` comment compiles to the same binary, so it does not count either. A
+# `///` doc comment counts: clap renders it as help text and schemars as the
+# `cfgd explain` descriptions, both of which the takes print. The line test is
+# textual, so a `//` line inside a multi-line string literal is taken for a
+# comment; no demo prints such a string.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -47,6 +52,27 @@ EXCLUDED=(
 )
 BUMP_SUBJECT='^chore(release): bump'
 export LC_ALL=C
+
+# Print the paths on stdin except each `.rs` under crates/ whose diff from the
+# stamp to HEAD adds or removes only blank lines, `//` comments and `//!` module
+# docs (a `///` line counts). The hunk lines are judged with awk, which reads
+# its whole input, so a long diff cannot fail the pipeline through SIGPIPE
+# under pipefail.
+drop_comment_only_rust() {
+    local since="$1" path noncomment
+    while IFS= read -r path; do
+        case "$path" in
+            crates/*.rs)
+                noncomment="$(git diff -U0 "$since" HEAD -- "$path" \
+                    | awk '/^(\+\+\+|---) [ab]\// { next }
+                           /^[-+]/ && !/^[-+][[:space:]]*(\/\/([^\/].*|!.*)?)?$/ { n++ }
+                           END { print n + 0 }')"
+                [ "$noncomment" -eq 0 ] && continue
+                ;;
+        esac
+        printf '%s\n' "$path"
+    done
+}
 
 failed=0
 checked=0
@@ -88,9 +114,12 @@ while read -r gif tape sha extra || [ -n "$gif" ]; do
         <(git log --format= --name-only --invert-grep \
             --grep="$BUMP_SUBJECT" "$sha..HEAD" -- "${inputs[@]}" | sed '/^$/d' | sort -u))"
     if [ -n "$changed" ]; then
+        changed="$(drop_comment_only_rust "$sha" <<<"$changed")"
+    fi
+    if [ -n "$changed" ]; then
         count="$(grep -c '' <<<"$changed")"
         echo "demo/$gif: recorded at $sha, $count render inputs changed since:"
-        printf '%s\n' "$changed" | sed -n '1,10s/^/  /p'
+        sed -n '1,10s/^/  /p' <<<"$changed"
         failed=1
     fi
 done < "$FILE"

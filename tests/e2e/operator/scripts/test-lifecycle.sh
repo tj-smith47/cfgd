@@ -416,7 +416,7 @@ else
     echo "  --- OP-LC-06 diagnostics ---"
     echo "  DriftAlert object:"
     kubectl get driftalert "e2e-lc-drift-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
-        -o yaml 2>&1 | sed 's/^/    /' | head -60 || true
+        -o yaml 2>&1 | sed -n '1,60s/^/    /p' || true
     echo "  MachineConfig status:"
     kubectl get machineconfig "e2e-lc-mc-${E2E_RUN_ID}" -n "$E2E_NAMESPACE" \
         -o jsonpath='{.status}' 2>&1 | sed 's/^/    /' || true
@@ -453,7 +453,7 @@ EOF
 
 if [ "$LC07_CREATE_RC" -ne 0 ]; then
     # Webhook rejects unsigned modules, which is correct behavior
-    if echo "$LC07_CREATE_OUTPUT" | grep -q "unsigned modules"; then
+    if grep -q "unsigned modules" <<<"$LC07_CREATE_OUTPUT"; then
         echo "  Webhook correctly rejects unsigned modules (expected behavior)"
         pass_test "OP-LC-07"
     else

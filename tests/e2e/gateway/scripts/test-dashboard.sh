@@ -27,12 +27,12 @@ echo "  GET /: HTTP $GW22_CODE"
 
 case "$GW22_CODE" in
     200)
-        if echo "$GW22_BODY" | grep -qi '<html\|<!doctype'; then
+        if grep -qi '<html\|<!doctype' <<<"$GW22_BODY"; then
             echo "  Response contains HTML"
             pass_test "GW-22"
         else
             echo "  Response (first 200 chars):"
-            echo "$GW22_BODY" | head -c 200 | sed 's/^/    /'
+            head -c 200 <<<"$GW22_BODY" | sed 's/^/    /'
             echo ""
             fail_test "GW-22" "Response is not HTML"
         fi

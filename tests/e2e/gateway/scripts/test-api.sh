@@ -33,7 +33,7 @@ else
     rm -f "$GW_SCRATCH/gw11-body.json"
 
     echo "  HTTP status: $GW11_HTTP_CODE"
-    echo "  Body (first 300 chars): $(echo "$GW11_BODY" | head -c 300)"
+    echo "  Body (first 300 chars): $(head -c 300 <<<"$GW11_BODY")"
 
     if [ "$GW11_HTTP_CODE" != "200" ]; then
         fail_test "GW-11" "Expected HTTP 200, got $GW11_HTTP_CODE"
@@ -76,7 +76,7 @@ else
     rm -f "$GW_SCRATCH/gw12-body.json"
 
     echo "  HTTP status: $GW12_HTTP_CODE"
-    echo "  Body (first 300 chars): $(echo "$GW12_BODY" | head -c 300)"
+    echo "  Body (first 300 chars): $(head -c 300 <<<"$GW12_BODY")"
 
     if [ "$GW12_HTTP_CODE" != "200" ]; then
         fail_test "GW-12" "Expected HTTP 200, got $GW12_HTTP_CODE"
@@ -116,7 +116,7 @@ else
     rm -f "$GW_SCRATCH/gw13-body.json"
 
     echo "  HTTP status: $GW13_HTTP_CODE"
-    echo "  Body (first 300 chars): $(echo "$GW13_BODY" | head -c 300)"
+    echo "  Body (first 300 chars): $(head -c 300 <<<"$GW13_BODY")"
 
     if [ "$GW13_HTTP_CODE" != "200" ]; then
         fail_test "GW-13" "Expected HTTP 200, got $GW13_HTTP_CODE"
@@ -154,7 +154,7 @@ else
     rm -f "$GW_SCRATCH/gw14-body.json"
 
     echo "  HTTP status: $GW14_HTTP_CODE"
-    echo "  Body (first 300 chars): $(echo "$GW14_BODY" | head -c 300)"
+    echo "  Body (first 300 chars): $(head -c 300 <<<"$GW14_BODY")"
 
     if [ "$GW14_HTTP_CODE" != "200" ]; then
         fail_test "GW-14" "Expected HTTP 200, got $GW14_HTTP_CODE"
@@ -191,7 +191,7 @@ else
 
     echo "  HTTP status: $GW19_HTTP_CODE"
     if [ -n "$GW19_BODY" ]; then
-        echo "  Body: $(echo "$GW19_BODY" | head -c 200)"
+        echo "  Body: $(head -c 200 <<<"$GW19_BODY")"
     fi
 
     case "$GW19_HTTP_CODE" in
@@ -223,7 +223,7 @@ else
 
     echo "  HTTP status: $GW20_HTTP_CODE"
     if [ -n "$GW20_BODY" ]; then
-        echo "  Body: $(echo "$GW20_BODY" | head -c 200)"
+        echo "  Body: $(head -c 200 <<<"$GW20_BODY")"
     fi
 
     case "$GW20_HTTP_CODE" in

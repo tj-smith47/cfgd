@@ -1,0 +1,1 @@
+echo "$output" | head -1 # drain-ok:

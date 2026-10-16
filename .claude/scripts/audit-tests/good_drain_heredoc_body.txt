@@ -1,0 +1,5 @@
+cat > "$scratch/probe.sh" <<'PROBE'
+echo "$output" | grep -q a
+kubectl get pods | head -1
+PROBE
+printf '%s\n' "$x" | sed 's/^/    /'

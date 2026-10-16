@@ -280,7 +280,7 @@ expect_gate "FUNCTION_IMAGE_TAG=v0.0.1 (no chart pin)" "$chart" pass "" FUNCTION
 # The override under test stays at the chart's own operator pin, so every
 # refusal below is the chart's and never the override's; the pin moves with
 # each operator release.
-operator_pin="$(grep -o '/cfgd-operator:[^[:space:]]*' <<<"$pins" | head -1)"
+operator_pin="$(grep -o '/cfgd-operator:[^[:space:]]*' <<<"$pins" | sed -n '1p')"
 operator_pin="${operator_pin##*:}"
 if [ -z "$operator_pin" ]; then
     echo "FAIL  the chart pin reader gave no cfgd-operator pin to run the chart refusals at"

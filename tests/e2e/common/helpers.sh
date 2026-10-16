@@ -79,7 +79,7 @@ semver_below() {
         if ((10#${a[i]} > 10#${b[i]})); then return 1; fi
     done
     [ -n "${a[3]}" ] && [ "${a[3]}" != "${b[3]}" ] || return 1
-    [ -z "${b[3]}" ] || [ "$(printf '%s\n%s\n' "${a[3]}" "${b[3]}" | sort -V | head -n 1)" = "${a[3]}" ]
+    [ -z "${b[3]}" ] || [ "$(sort -V < <(printf '%s\n%s\n' "${a[3]}" "${b[3]}") | sed -n '1p')" = "${a[3]}" ]
 }
 
 # The chart's templates and the PR install's values assume what the images it
@@ -1184,7 +1184,7 @@ check_pr_crds() {
         fi
         if [ "$want" != "$live" ]; then
             echo "ERROR: this PR changes the spec of $name (descriptions aside). $fix" >&2
-            diff <(printf '%s\n' "$live") <(printf '%s\n' "$want") | head -40 >&2 || true # rc-ok: diff exits 1 on the difference being shown
+            diff <(printf '%s\n' "$live") <(printf '%s\n' "$want") | sed -n '1,40p' >&2 || true # rc-ok: diff exits 1 on the difference being shown
             status=1
         fi
         if [ -n "$why" ]; then
@@ -1234,7 +1234,7 @@ check_pr_xrd() {
     fi
     if [ "$want" != "$live" ]; then
         echo "ERROR: this PR changes the TeamConfig XRD. $fix" >&2
-        diff <(printf '%s\n' "$live") <(printf '%s\n' "$want") | head -40 >&2 || true # rc-ok: diff exits 1 on the difference being shown
+        diff <(printf '%s\n' "$live") <(printf '%s\n' "$want") | sed -n '1,40p' >&2 || true # rc-ok: diff exits 1 on the difference being shown
         status=1
     fi
     if [ -n "$why" ]; then
@@ -1467,7 +1467,7 @@ module_mount_holds() {
     yaml=$(kubectl exec "$1" -n "$2" -- cat "$dir/module.yaml" 2>/dev/null || echo "")
     hello=$(kubectl exec "$1" -n "$2" -- cat "$dir/bin/hello.sh" 2>/dev/null || echo "")
     # shellcheck disable=SC2034  # read by the caller for its verdict
-    MOUNT_SEEN="module.yaml name: $(sed -n 's/^  name: //p' <<<"$yaml" | head -1), bin/hello.sh: $(tail -1 <<<"$hello")"
+    MOUNT_SEEN="module.yaml name: $(sed -n 's/^  name: //p' <<<"$yaml" | sed -n '1p'), bin/hello.sh: $(tail -1 <<<"$hello")"
     grep -qxF "  name: $3" <<<"$yaml" && grep -qxF 'echo "hello from test module"' <<<"$hello"
 }
 
@@ -1543,7 +1543,7 @@ wait_for_service_endpoints() {
     done
     {
         echo "  ERROR: Service $namespace/$service has no ready endpoints after ${timeout}s"
-        kubectl get endpoints "$service" -n "$namespace" -o yaml 2>&1 | head -20 || true
+        kubectl get endpoints "$service" -n "$namespace" -o yaml 2>&1 | sed -n '1,20p' || true
     } >&2
     return 1
 }
@@ -1622,12 +1622,12 @@ assert_contains() {
     local output
     output=$(printf '%s' "$1" | strip_sgr)
     local expected="$2"
-    if echo "$output" | grep -qF "$expected"; then
+    if grep -qF "$expected" <<<"$output"; then
         return 0
     fi
     echo "  ASSERT FAILED: output does not contain '$expected'"
     echo "  First 10 lines of output:"
-    echo "$output" | head -10 | sed 's/^/    /'
+    head -10 <<<"$output" | sed 's/^/    /'
     return 1
 }
 
@@ -1635,7 +1635,7 @@ assert_not_contains() {
     local output
     output=$(printf '%s' "$1" | strip_sgr)
     local unexpected="$2"
-    if echo "$output" | grep -qF "$unexpected"; then
+    if grep -qF "$unexpected" <<<"$output"; then
         echo "  ASSERT FAILED: output contains unexpected '$unexpected'"
         return 1
     fi
@@ -1658,7 +1658,7 @@ assert_equals() {
 # behind would judge a release that never came up.
 helm_ok() {
     [ "$2" -eq 0 ] && return 0
-    fail_test "$1" "helm exited $2: $(echo "$3" | head -20)"
+    fail_test "$1" "helm exited $2: $(head -20 <<<"$3")"
     return 1
 }
 
@@ -1755,7 +1755,7 @@ sysctl_drift_case() {
 assert_rejected() {
     local output="$1"
     local description="$2"
-    if echo "$output" | grep -qi "denied\|error\|invalid\|rejected"; then
+    if grep -qi "denied\|error\|invalid\|rejected" <<<"$output"; then
         return 0
     fi
     echo "  ASSERT FAILED: '$description' was not rejected by webhook"

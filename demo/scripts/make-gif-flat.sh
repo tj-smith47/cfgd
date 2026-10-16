@@ -57,8 +57,8 @@ dur=$(demo/scripts/frame-lists.sh "$FRAMES" "$LISTS")
 # tape asks for, so the canvas has to be rebuilt here. Both numbers are read
 # out of the tape rather than restated, because a hand-kept copy drifts from
 # the `Set Width`/`Set Height` VHS actually recorded at.
-W="$(sed -n 's/^Set Width \([0-9]*\)$/\1/p' "$TAPE" | head -1)"
-H="$(sed -n 's/^Set Height \([0-9]*\)$/\1/p' "$TAPE" | head -1)"
+W="$(sed -n 's/^Set Width \([0-9]*\)$/\1/p' "$TAPE" | sed -n '1p')"
+H="$(sed -n 's/^Set Height \([0-9]*\)$/\1/p' "$TAPE" | sed -n '1p')"
 if [ -z "$W" ] || [ -z "$H" ]; then
     echo "$TAPE declares no parseable \`Set Width\`/\`Set Height\` — cannot know what canvas to pad to." >&2
     exit 1

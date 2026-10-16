@@ -234,7 +234,7 @@ spec:
   mountPolicy: Always
 EOF
 )
-    echo "  Webhook response: $(echo "$REJECT_OUTPUT" | head -3)"
+    echo "  Webhook response: $(head -3 <<<"$REJECT_OUTPUT")"
 
     # Any failed apply prints "error", so the verdict needs the webhook's own
     # refusal, and a refused module was never stored.
@@ -338,10 +338,10 @@ PUSH_OK=true
 PUSH_OUTPUT=$("$CFGD_BIN" module push "$OCI05_DIR" --artifact "$OCI05_TAG_REF" --no-color 2>&1) || PUSH_OK=false
 rm -rf "$OCI05_DIR"
 
-echo "  Push output: $(echo "$PUSH_OUTPUT" | head -5)"
+echo "  Push output: $(head -5 <<<"$PUSH_OUTPUT")"
 
 # Extract digest (sha256:...) from push output
-DIGEST=$(echo "$PUSH_OUTPUT" | grep -oE 'sha256:[a-f0-9]{64}' | head -1 || echo "")
+DIGEST=$(grep -oE 'sha256:[a-f0-9]{64}' <<<"$PUSH_OUTPUT" | sed -n '1p' || echo "")
 
 if [ "$PUSH_OK" = "false" ]; then
     fail_test "OCI-E2E-05" "Failed to push module to registry"
@@ -482,7 +482,7 @@ EOF
 
         if ! module_mount_holds oci06-pod "$OCI06_NS" "$OCI06_MOD"; then
             fail_test "OCI-E2E-06" "Module content at the mount path is not what was pushed ($MOUNT_SEEN)"
-        elif ! echo "$PULL_SECRETS" | grep -qwF "registry-credentials"; then
+        elif ! grep -qwF "registry-credentials" <<<"$PULL_SECRETS"; then
             fail_test "OCI-E2E-06" "Pod carries no registry-credentials pull secret: ${PULL_SECRETS:-none}"
         else
             pass_test "OCI-E2E-06"

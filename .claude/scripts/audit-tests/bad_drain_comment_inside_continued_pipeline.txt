@@ -1,0 +1,3 @@
+echo "$output" |
+    # the reader below
+    grep -q a

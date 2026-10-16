@@ -20,7 +20,7 @@ if [ ! -f "$TAPE" ]; then
     exit 1
 fi
 
-RAW="$(sed -n 's/^Output "\(.*\)"$/\1/p' "$TAPE" | head -1)"
+RAW="$(sed -n 's/^Output "\(.*\)"$/\1/p' "$TAPE" | sed -n '1p')"
 if [ -z "$RAW" ]; then
     echo "$TAPE declares no parseable \`Output \"...\"\` line — cannot know what it writes." >&2
     exit 1
@@ -41,7 +41,7 @@ rm -rf "$RAW"
 # same reason the Output line is. A container left by a killed take would
 # refuse the name, so it is removed before the tape runs; the log is removed
 # with the frames so a failed take cannot pair a stale log with new frames.
-CONTAINER="$(sed -n 's/.*docker run .*--name \([^ ]*\).*/\1/p' "$TAPE" | head -1)"
+CONTAINER="$(sed -n 's/.*docker run .*--name \([^ ]*\).*/\1/p' "$TAPE" | sed -n '1p')"
 LOG="demo/.out/${NAME}.log"
 rm -f "$LOG"
 if [ -n "$CONTAINER" ]; then
@@ -116,7 +116,7 @@ fi
 # and its timing is still exact. The floor is about legibility instead — below
 # it the frames are too sparse for a scrolling install log to read as motion.
 rate=$(bash "$(dirname "$0")/capture-rate.sh" "$RAW")
-declared=$(sed -n 's/^Set Framerate \([0-9]*\)$/\1/p' "$TAPE" | head -1)
+declared=$(sed -n 's/^Set Framerate \([0-9]*\)$/\1/p' "$TAPE" | sed -n '1p')
 if awk -v r="$rate" 'BEGIN { exit !(r < 20) }'; then
     echo "$RAW captured ${rate} fps — too sparse to read as motion. Re-record on an idle host." >&2
     exit 1

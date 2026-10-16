@@ -36,7 +36,7 @@ echo "  DaemonSets: $DS_STATUS"
 
 if ! helm_ok "T20" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
     kubectl get all -n "$E2E_NAMESPACE" 2>/dev/null || true
-elif echo "$DS_STATUS" | grep -q "cfgd"; then
+elif grep -q "cfgd" <<<"$DS_STATUS"; then
     pass_test "T20"
 else
     fail_test "T20" "DaemonSet not found after helm install"
@@ -122,12 +122,12 @@ OUTPUT=$(helm upgrade cfgd "$CHART_DIR" \
     --wait --timeout 120s 2>&1) || UPGRADE_RC=$?
 
 if helm_ok "T24" "$UPGRADE_RC" "$OUTPUT"; then
-    if echo "$OUTPUT" | grep -qi "has been upgraded\|STATUS: deployed"; then
+    if grep -qi "has been upgraded\|STATUS: deployed" <<<"$OUTPUT"; then
         pass_test "T24"
     else
         # Helm may not print "upgraded" in all versions; check status instead
         STATUS=$(helm status cfgd -n "$E2E_NAMESPACE" 2>/dev/null | grep STATUS || echo "")
-        if echo "$STATUS" | grep -qi "deployed"; then
+        if grep -qi "deployed" <<<"$STATUS"; then
             pass_test "T24"
         else
             fail_test "T24" "Helm upgrade did not succeed"

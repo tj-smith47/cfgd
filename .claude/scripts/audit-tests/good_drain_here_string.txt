@@ -1,0 +1,11 @@
+assert_contains() {
+    local output="$1" expected="$2"
+    # echo "$output" | grep -q, written in a comment, is not code.
+    if grep -qF "$expected" <<<"$output"; then
+        return 0
+    fi
+    head -10 <<<"$output" | sed 's/^/    /'
+    echo "$output" | head -1 # drain-ok: the caller passes a one-line status word
+    echo "  Result: $(tail -1 <<<"$output")"
+    grep -qxF -- "$f" <<<'{{.STAGED_LIST}}' && continue
+}

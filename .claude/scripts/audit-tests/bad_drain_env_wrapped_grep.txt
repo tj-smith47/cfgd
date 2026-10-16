@@ -1,0 +1,1 @@
+kubectl logs p | env LC_ALL=C grep -q x

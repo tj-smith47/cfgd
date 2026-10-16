@@ -33,6 +33,14 @@ fail() {
     exit "$code"
 }
 
+# contains TEXT WORDS: TEXT holds WORDS as a literal substring. A `case` match
+# reads the captured text in the shell itself, with no pipe into a reader that
+# may exit before its producer finishes writing.
+contains() {
+    case $1 in *"$2"*) return 0 ;; esac
+    return 1
+}
+
 [ -n "$BIN" ] || fail 1 "usage: $0 <path-to-cfgd-binary>"
 [ -x "$BIN" ] || fail 1 "not an executable cfgd binary: $BIN"
 [ "$(id -u)" = "0" ] || fail 1 "must run as root (creates a user and installs npm)"
@@ -191,17 +199,17 @@ echo "$RAN"
 # `cfgd` is the word handed in, so finding it proves nothing about WHAT ran.
 # The cow itself is cowsay's own output, and the bubble must carry the argument.
 # The horns are the one part every mode draws: `-t` tires the eyes to `(--)`.
-echo "$RAN" | grep -qF '^__^' ||
+contains "$RAN" '^__^' ||
     fail 12 "$FALLBACK_BIN ran but drew no cow, so it is not the cowsay npm installed"
-echo "$RAN" | grep -qF 'cfgd' ||
+contains "$RAN" 'cfgd' ||
     fail 12 "$FALLBACK_BIN drew a cow but not the text it was given"
 echo "PASS (b): $FALLBACK_BIN exists and runs"
 
 echo
 echo "===== (c) the apply's row is Ok and the env surface exports the bin dir ====="
-echo "$APPLY_OUT" | grep -q "✓ npm install $PKG_NAME" ||
+contains "$APPLY_OUT" "✓ npm install $PKG_NAME" ||
     fail 13 "the apply did not render an Ok row for 'npm install $PKG_NAME'"
-echo "$STATUS_OUT" | grep -q "npm: $PKG_NAME" ||
+contains "$STATUS_OUT" "npm: $PKG_NAME" ||
     fail 13 "cfgd status does not list the package under its manager as 'npm: $PKG_NAME'"
 ENV_FILE=$HOME_DIR/.cfgd.env
 [ -f "$ENV_FILE" ] || fail 13 "no generated env file at $ENV_FILE"
@@ -217,10 +225,10 @@ echo "$APPLY2_OUT"
 
 echo
 echo "===== (d) the second apply is a no-op for the package ====="
-if echo "$APPLY2_OUT" | grep -q "npm install $PKG_NAME"; then
+if contains "$APPLY2_OUT" "npm install $PKG_NAME"; then
     fail 14 "the second apply planned 'npm install $PKG_NAME' again, so the resolved prefix did not survive the run"
 fi
-echo "$APPLY2_OUT" | grep -q "Nothing to do" ||
+contains "$APPLY2_OUT" "Nothing to do" ||
     fail 14 "the second apply reported work to do rather than converged state"
 echo "PASS (d): the second apply is a no-op"
 
@@ -228,11 +236,11 @@ echo
 echo "===== (e) the package was resolved through the module that named npm ====="
 # Both JSON keys are spellings only a module-owned row produces: the profile
 # is also named npmtest, so a bare "npmtest" would match its lastApply entry.
-echo "$JSON_OUT" | grep -q "\"resourceId\": \"npmtest:packages:$PKG_NAME\"" ||
+contains "$JSON_OUT" "\"resourceId\": \"npmtest:packages:$PKG_NAME\"" ||
     fail 15 "-o json status has no npmtest:packages:$PKG_NAME resource, so the module arm did not record the package"
-echo "$JSON_OUT" | grep -q '"owner": "module:npmtest"' ||
+contains "$JSON_OUT" '"owner": "module:npmtest"' ||
     fail 15 "-o json status has no resource owned by module:npmtest"
-echo "$PLAN_OUT" | grep -q "module:npmtest" ||
+contains "$PLAN_OUT" "module:npmtest" ||
     fail 15 "the plan did not attribute the package to module:npmtest"
 echo "PASS (e): the npm package resolved under module:npmtest"
 

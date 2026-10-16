@@ -16,7 +16,7 @@ else
         -d "{\"token\":\"${BOOTSTRAP_TOKEN}\",\"deviceId\":\"${GW_DEVICE_ID}\",\"hostname\":\"e2e-host-${E2E_RUN_ID}\",\"os\":\"linux\",\"arch\":\"x86_64\"}" 2>/dev/null || echo "")
 
     echo "  Response (first 300 chars):"
-    echo "$GW02_RESPONSE" | head -c 300 | sed 's/^/    /'
+    head -c 300 <<<"$GW02_RESPONSE" | sed 's/^/    /'
     echo ""
 
     # Extract apiKey from response
@@ -24,7 +24,7 @@ else
 
     if [ -z "$DEVICE_API_KEY" ]; then
         # Fallback: grep-based extraction
-        DEVICE_API_KEY=$(echo "$GW02_RESPONSE" | grep -oP '"apiKey"\s*:\s*"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/' || echo "")
+        DEVICE_API_KEY=$(grep -oP '"apiKey"\s*:\s*"[^"]*"' <<<"$GW02_RESPONSE" | sed 's/.*"\([^"]*\)"$/\1/' || echo "")
     fi
 
     if [ -n "$DEVICE_API_KEY" ] && assert_contains "$GW02_RESPONSE" "apiKey"; then
@@ -194,7 +194,7 @@ else
         "$GW05_USERNAME <${GW05_USERNAME}@e2e.test>" ed25519 sign 1y 2>/dev/null
 
     GW05_FINGERPRINT=$(gpg --homedir "$GW05_GPGHOME" --list-keys --with-colons 2>/dev/null \
-        | grep '^fpr' | head -1 | cut -d: -f10)
+        | grep '^fpr' | sed -n '1p' | cut -d: -f10)
     GW05_PUBKEY=$(gpg --homedir "$GW05_GPGHOME" --armor --export "$GW05_FINGERPRINT" 2>/dev/null)
 
     echo "  Generated GPG key: ${GW05_FINGERPRINT:0:16}..."
@@ -327,7 +327,7 @@ else
                 rm -f "$GW_SCRATCH/gw06-fresh.txt"
 
                 echo "  Fresh-token same-device re-enrollment: HTTP $GW06_FRESH_CODE"
-                echo "  Body (first 200 chars): $(echo "$GW06_FRESH_BODY" | head -c 200)"
+                echo "  Body (first 200 chars): $(head -c 200 <<<"$GW06_FRESH_BODY")"
 
                 case "$GW06_FRESH_CODE" in
                     400|401|403|409|422)

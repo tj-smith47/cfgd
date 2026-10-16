@@ -15,7 +15,7 @@ exec_in_pod sysctl -w net.ipv4.ip_forward=0 > /dev/null 2>&1 || true
 
 OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --dry-run --no-color 2>&1) || true
 echo "  After changing net.ipv4.ip_forward to 0:"
-echo "$OUTPUT" | head -15 | sed 's/^/    /'
+head -15 <<<"$OUTPUT" | sed 's/^/    /'
 
 if assert_contains "$OUTPUT" "net.ipv4.ip_forward"; then
     pass_test "SYSCTL-01"
@@ -68,7 +68,7 @@ begin_test "SYSCTL-03: Sysctl persistence file"
 if exec_in_pod test -f /etc/sysctl.d/99-cfgd.conf; then
     CONTENT=$(exec_in_pod cat /etc/sysctl.d/99-cfgd.conf)
     echo "  /etc/sysctl.d/99-cfgd.conf:"
-    echo "$CONTENT" | head -5 | sed 's/^/    /'
+    head -5 <<<"$CONTENT" | sed 's/^/    /'
     if assert_contains "$CONTENT" "vm.max_map_count"; then
         pass_test "SYSCTL-03"
     else

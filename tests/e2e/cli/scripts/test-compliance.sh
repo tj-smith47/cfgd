@@ -146,7 +146,7 @@ spec:
 YAML
 run --config "$CO10_CONF" --state-dir "$CO10_STATE" --no-color compliance export
 if assert_ok; then
-    EXPORT_FILE=$(find "$CO10_EXPORT" -maxdepth 1 -name 'compliance-*.json' 2>/dev/null | LC_ALL=C sort | head -1)
+    EXPORT_FILE=$(find "$CO10_EXPORT" -maxdepth 1 -name 'compliance-*.json' 2>/dev/null | LC_ALL=C sort | sed -n '1p')
     if [ -n "$EXPORT_FILE" ] && python3 -c "import json; json.load(open('$EXPORT_FILE'))" 2>/dev/null; then
         pass_test "CO10"
     else fail_test "CO10" "Export file missing or not valid JSON"; fi

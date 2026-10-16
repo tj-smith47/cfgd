@@ -69,7 +69,7 @@ INNEREOF'
 
     OUTPUT=$(exec_in_pod cfgd --config /tmp/bin03/cfgd.yaml apply --dry-run --no-color 2>&1) || true
     echo "  Plan output (first 20 lines):"
-    echo "$OUTPUT" | head -20 | sed 's/^/    /'
+    head -20 <<<"$OUTPUT" | sed 's/^/    /'
 
     # The drift profile above always differs from the node's live value, so the
     # plan is guaranteed non-empty and must show a phase header.
@@ -90,7 +90,7 @@ RC=0
 OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color 2>&1) || RC=$?
 echo "  Apply exit code: $RC"
 echo "  Apply output (first 20 lines):"
-echo "$OUTPUT" | head -20 | sed 's/^/    /'
+head -20 <<<"$OUTPUT" | sed 's/^/    /'
 
 if [ "$RC" -eq 0 ]; then
     pass_test "BIN-04"
@@ -116,7 +116,7 @@ fi
 begin_test "BIN-06: cfgd status after apply"
 OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml status --no-color 2>&1) || true
 echo "  Status output (first 20 lines):"
-echo "$OUTPUT" | head -20 | sed 's/^/    /'
+head -20 <<<"$OUTPUT" | sed 's/^/    /'
 
 # Status prints "No drift detected" when in sync, or drift details if drifted.
 # Either way the output contains "Drift" (the subheader) or "Status" (the header).
@@ -173,10 +173,10 @@ RC=0
 OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-err01-cfgd.yaml apply --yes --no-color 2>&1) || RC=$?
 echo "  Exit code: $RC"
 echo "  Output (first 20 lines):"
-echo "$OUTPUT" | head -20 | sed 's/^/    /'
+head -20 <<<"$OUTPUT" | sed 's/^/    /'
 
 # Must produce an error mentioning the sysctl key, and must not crash (segfault = 139)
-if echo "$OUTPUT" | grep -qi "fail\|error\|read.only\|kernel.ostype"; then
+if grep -qi "fail\|error\|read.only\|kernel.ostype" <<<"$OUTPUT"; then
     if [ "$RC" -ne 139 ] && [ "$RC" -ne 134 ]; then
         pass_test "BIN-ERR-01"
     else
@@ -215,11 +215,11 @@ RC=0
 OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-err02-cfgd.yaml apply --yes --no-color 2>&1) || RC=$?
 echo "  Exit code: $RC"
 echo "  Output (first 20 lines):"
-echo "$OUTPUT" | head -20 | sed 's/^/    /'
+head -20 <<<"$OUTPUT" | sed 's/^/    /'
 
 # Must mention the module name in the error output
 if assert_contains "$OUTPUT" "nonexistent_module_xyz"; then
-    if echo "$OUTPUT" | grep -qi "fail\|error\|not found"; then
+    if grep -qi "fail\|error\|not found" <<<"$OUTPUT"; then
         pass_test "BIN-ERR-02"
     else
         fail_test "BIN-ERR-02" "Module name present but no error indicator"
@@ -274,11 +274,11 @@ RC=0
 OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-err03-cfgd.yaml apply --yes --no-color 2>&1) || RC=$?
 echo "  Exit code: $RC"
 echo "  Output (first 20 lines):"
-echo "$OUTPUT" | head -20 | sed 's/^/    /'
+head -20 <<<"$OUTPUT" | sed 's/^/    /'
 
 # Expect a warning about the missing cert file
 MISSING_WARN=false
-if echo "$OUTPUT" | grep -qi "missing\|nonexistent\|not found\|warning"; then
+if grep -qi "missing\|nonexistent\|not found\|warning" <<<"$OUTPUT"; then
     MISSING_WARN=true
 fi
 
@@ -306,17 +306,17 @@ ERR04_RC=0
 ERR04_OUTPUT=$(exec_in_pod su -s /bin/sh nobody -c \
     "cfgd --config /etc/cfgd/cfgd.yaml apply --yes --no-color 2>&1") || ERR04_RC=$?
 echo "  Non-root apply exit: $ERR04_RC, output (first 10 lines):"
-echo "$ERR04_OUTPUT" | head -10 | sed 's/^/    /'
+head -10 <<<"$ERR04_OUTPUT" | sed 's/^/    /'
 # A non-root apply either has nothing it lacks permission for and exits 0, or
 # exits non-zero through cfgd's one error sink, which prints a line opening
 # with the fail icon (render_cli_error in crates/cfgd/src/cli/error.rs, icon
 # ICON_FAIL "✗" in crates/cfgd-core/src/output/theme.rs). An su or kubectl exec
 # failure prints its own words with no such line, so cfgd never ran.
-if echo "$ERR04_OUTPUT" | grep -q "panicked"; then
+if grep -q "panicked" <<<"$ERR04_OUTPUT"; then
     fail_test "BIN-ERR-04" "cfgd panicked when run as a non-root user"
 elif [ "$ERR04_RC" -eq 126 ] || [ "$ERR04_RC" -eq 127 ]; then
     fail_test "BIN-ERR-04" "su or kubectl exec could not run cfgd as nobody (exit $ERR04_RC)"
-elif [ "$ERR04_RC" -eq 0 ] || echo "$ERR04_OUTPUT" | grep -q '^✗ '; then
+elif [ "$ERR04_RC" -eq 0 ] || grep -q '^✗ ' <<<"$ERR04_OUTPUT"; then
     pass_test "BIN-ERR-04"
 else
     fail_test "BIN-ERR-04" "non-root apply exited $ERR04_RC with no cfgd error line; su or kubectl exec may have failed before cfgd ran"

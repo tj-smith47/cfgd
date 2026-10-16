@@ -390,7 +390,7 @@ if assert_ok; then
     pass_test "SRC-MERGE-09"
 else
     # May fail if no profile is set; accept that as valid behavior
-    if echo "$OUTPUT" | grep -qiE "no.*profile\|not configured"; then
+    if grep -qiE "no.*profile\|not configured" <<<"$OUTPUT"; then
         pass_test "SRC-MERGE-09"
     else
         fail_test "SRC-MERGE-09" "dry-run with sources failed unexpectedly"

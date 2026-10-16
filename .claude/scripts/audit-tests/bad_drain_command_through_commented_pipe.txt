@@ -1,0 +1,3 @@
+kubectl logs pod-a | # rc-ok: a failed read leaves grep empty
+    grep ready |
+    grep -q pod-a

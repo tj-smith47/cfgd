@@ -91,8 +91,7 @@ if [ -n "$FILE" ] && [ -f "$FILE" ]; then
             else
                 ADDED=$(cat "$FILE")
             fi
-            EMDASH=$(printf '%s\n' "$ADDED" \
-                       | awk '/\/\// { c = substr($0, index($0, "//")); if (c ~ /—/) print }' \
+            EMDASH=$(awk '/\/\// { c = substr($0, index($0, "//")); if (c ~ /—/) print }' <<<"$ADDED" \
                        || true)
             if [ -n "$EMDASH" ]; then
                 echo

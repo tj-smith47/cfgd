@@ -77,7 +77,7 @@ if [ "$DEBUG_CSI" = "$CSI_DRIVER_NAME" ]; then
     # Volume exists: check that it's NOT mounted on the app container
     if [ "$APP_VMOUNTS_RC" -ne 0 ]; then
         fail_test "FS-DEBUG-01" "Could not read the app container's volumeMounts (kubectl exit $APP_VMOUNTS_RC)"
-    elif ! echo "$APP_VMOUNTS" | grep -q "debug-tools-${E2E_RUN_ID}"; then
+    elif ! grep -q "debug-tools-${E2E_RUN_ID}" <<<"$APP_VMOUNTS"; then
         pass_test "FS-DEBUG-01"
     else
         fail_test "FS-DEBUG-01" "Debug module volumeMount present on app container (should be omitted)"
@@ -97,7 +97,7 @@ if [ "$PHASE" = "Running" ]; then
     DEBUG_OUTPUT=$(NO_COLOR=1 "$KUBECTL_CFGD" debug debug-target \
         --namespace "e2e-debug-flow-${E2E_RUN_ID}" \
         --module "debug-tools-${E2E_RUN_ID}:latest" 2>&1) || true
-    echo "  Debug output: $(echo "$DEBUG_OUTPUT" | head -3)"
+    echo "  Debug output: $(head -3 <<<"$DEBUG_OUTPUT")"
 
     # Verify ephemeral container was created
     EPHEMERAL=$(kubectl get pod debug-target -n "e2e-debug-flow-${E2E_RUN_ID}" \

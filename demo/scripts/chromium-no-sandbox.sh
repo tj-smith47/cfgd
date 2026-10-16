@@ -16,7 +16,7 @@ for chrome in "$HOME"/.cache/rod/browser/*/chrome; do
     [ -f "$chrome" ] || continue
     found=1
     # Re-wrapping an already-wrapped binary would make it exec itself.
-    if head -c 2 "$chrome" | grep -q '#!'; then
+    if head -c 2 "$chrome" | grep '#!' >/dev/null; then
         continue
     fi
     mv "$chrome" "$chrome.orig"

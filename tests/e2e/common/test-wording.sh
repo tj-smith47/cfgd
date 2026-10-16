@@ -201,7 +201,7 @@ probe dash-hatched pass "a line carrying a wording-ok hatch with its why passes"
 rm -rf "${scratch:?}/tree"
 mkdir -p "$scratch/tree"
 cp -R "$fixtures/dash-hatched/." "$scratch/tree/"
-if scan_wording "$scratch/tree" | grep -q '^HATCH .*/suite\.sh:2 cfgd status prints this em dash and the case greps it verbatim$'; then
+if scan_wording "$scratch/tree" | grep '^HATCH .*/suite\.sh:2 cfgd status prints this em dash and the case greps it verbatim$' >/dev/null; then
     pass "the scan prints each hatch with its why"
 else
     fail "the scan did not print the hatch's why"

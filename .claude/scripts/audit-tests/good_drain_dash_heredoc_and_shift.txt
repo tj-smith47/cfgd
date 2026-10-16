@@ -1,0 +1,5 @@
+cat <<-"EOF"
+	echo "$output" | grep -q a
+	EOF
+width=$((1 << 2))
+kubectl logs p | while read -r line; do echo "$line"; done

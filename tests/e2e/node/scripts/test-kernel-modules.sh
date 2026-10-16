@@ -32,7 +32,7 @@ begin_test "KMOD-02: Kernel module persistence"
 if exec_in_pod test -f /etc/modules-load.d/cfgd.conf; then
     CONTENT=$(exec_in_pod cat /etc/modules-load.d/cfgd.conf)
     echo "  /etc/modules-load.d/cfgd.conf:"
-    echo "$CONTENT" | head -5 | sed 's/^/    /'
+    head -5 <<<"$CONTENT" | sed 's/^/    /'
     if assert_contains "$CONTENT" "ip_vs"; then
         pass_test "KMOD-02"
     else

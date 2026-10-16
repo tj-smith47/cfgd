@@ -147,11 +147,11 @@ echo "  Container env vars: $POD_ENV"
 echo "  CSI driver: $CSI_DRIVER"
 
 PASS=true
-if ! echo "$CSI_DRIVER" | grep -qF "$CSI_DRIVER_NAME"; then
+if ! grep -qF "$CSI_DRIVER_NAME" <<<"$CSI_DRIVER"; then
     echo "  WARN: CSI volume not injected (expected driver=$CSI_DRIVER_NAME)"
     PASS=false
 fi
-if ! echo "$POD_VMOUNTS" | grep -q "cfgd-module"; then
+if ! grep -q "cfgd-module" <<<"$POD_VMOUNTS"; then
     echo "  WARN: volumeMount not injected on container"
     PASS=false
 fi
@@ -224,10 +224,10 @@ echo "  Container volumeMounts: $DEBUG_VMOUNTS"
 echo "  CSI driver: $DEBUG_CSI"
 
 # Under the Debug policy the CSI volume is on the pod and absent from every container's volumeMounts
-if echo "$DEBUG_CSI" | grep -qF "$CSI_DRIVER_NAME"; then
+if grep -qF "$CSI_DRIVER_NAME" <<<"$DEBUG_CSI"; then
     if [ "$DEBUG_VMOUNTS_RC" -ne 0 ]; then
         fail_test "OP-WH-03" "Could not read the container's volumeMounts (kubectl exit $DEBUG_VMOUNTS_RC)"
-    elif ! echo "$DEBUG_VMOUNTS" | grep -q "debug-mod"; then
+    elif ! grep -q "debug-mod" <<<"$DEBUG_VMOUNTS"; then
         pass_test "OP-WH-03"
     else
         fail_test "OP-WH-03" "Debug module volumeMount was injected on container (should be skipped)"
@@ -325,7 +325,7 @@ spec:
 EOF
 )
 echo "  Result: $(echo "$RESULT" | tail -1)"
-if echo "$RESULT" | grep -qE "created|configured|unchanged"; then
+if grep -qE "created|configured|unchanged" <<<"$RESULT"; then
     pass_test "OP-WH-06"
 else
     fail_test "OP-WH-06" "Valid MachineConfig was not accepted: $RESULT"
@@ -355,7 +355,7 @@ spec:
 EOF
 )
 echo "  Result: $(echo "$RESULT" | tail -1)"
-if echo "$RESULT" | grep -qE "created|configured|unchanged"; then
+if grep -qE "created|configured|unchanged" <<<"$RESULT"; then
     pass_test "OP-WH-07"
 else
     fail_test "OP-WH-07" "Empty targetSelector was not accepted: $RESULT"
@@ -388,7 +388,7 @@ spec:
 EOF
 )
 echo "  Result: $(echo "$RESULT" | tail -1)"
-if echo "$RESULT" | grep -qE "created|configured|unchanged"; then
+if grep -qE "created|configured|unchanged" <<<"$RESULT"; then
     pass_test "OP-WH-08"
 else
     fail_test "OP-WH-08" "Valid ConfigPolicy was not accepted: $RESULT"
@@ -454,7 +454,7 @@ spec:
 EOF
 )
 echo "  Result: $(echo "$RESULT" | tail -1)"
-if echo "$RESULT" | grep -qE "created|configured|unchanged"; then
+if grep -qE "created|configured|unchanged" <<<"$RESULT"; then
     pass_test "OP-WH-10"
 else
     fail_test "OP-WH-10" "Valid DriftAlert was not accepted: $RESULT"
@@ -519,7 +519,7 @@ spec:
 EOF
 )
 echo "  Result: $(echo "$RESULT" | tail -1)"
-if echo "$RESULT" | grep -qE "created|configured|unchanged"; then
+if grep -qE "created|configured|unchanged" <<<"$RESULT"; then
     pass_test "OP-WH-12"
 else
     fail_test "OP-WH-12" "Valid ClusterConfigPolicy was not accepted: $RESULT"
@@ -577,7 +577,7 @@ spec:
 EOF
 )
 echo "  Result: $(echo "$RESULT" | tail -1)"
-if echo "$RESULT" | grep -qE "created|configured|unchanged"; then
+if grep -qE "created|configured|unchanged" <<<"$RESULT"; then
     pass_test "OP-WH-14"
 else
     fail_test "OP-WH-14" "Valid Module was not accepted: $RESULT"

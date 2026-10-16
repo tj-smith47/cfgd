@@ -13,10 +13,10 @@ COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
 # the gitignored SDD plan workspaces under .superpowers/sdd/. Every argument
 # must sit at least one component below one of those roots, so `rm -rf ..`,
 # `rm -rf /`, `rm -rf $HOME`, `rm -rf ~/.cache` and `rm -rf .superpowers` fail.
-if echo "$COMMAND" | grep -qE '^rm -rf'; then
+if grep -qE '^rm -rf' <<<"$COMMAND"; then
     # shellcheck disable=SC2016  # a regex; the $HOME spelling is matched literally
     owned='(target/|/opt/repos/cfgd/target/|~/\.cache/cfgd-debug/|\$HOME/\.cache/cfgd-debug/|/root/\.cache/cfgd-debug/|\.superpowers/sdd/|/opt/repos/cfgd/\.superpowers/sdd/)[^[:space:]]+'
-    if echo "$COMMAND" | grep -qE "^rm -rf( ${owned})+[[:space:]]*\$"; then
+    if grep -qE "^rm -rf( ${owned})+[[:space:]]*\$" <<<"$COMMAND"; then
         exit 0
     fi
     echo "Blocked: destructive operation. Use targeted deletes instead." >&2
@@ -25,19 +25,19 @@ if echo "$COMMAND" | grep -qE '^rm -rf'; then
 fi
 
 # Block force git operations that can destroy history or working state
-if echo "$COMMAND" | grep -qE 'git push.*--force|git reset --hard'; then
+if grep -qE 'git push.*--force|git reset --hard' <<<"$COMMAND"; then
     echo "Blocked: force operation requires explicit user approval." >&2
     exit 2
 fi
 
 # Block git stash — commit or build on existing changes instead
-if echo "$COMMAND" | grep -qE 'git stash'; then
+if grep -qE 'git stash' <<<"$COMMAND"; then
     echo "Blocked: git stash is prohibited. Commit your changes or continue building on them." >&2
     exit 2
 fi
 
 # Block commands that silently discard all working-tree changes
-if echo "$COMMAND" | grep -qE 'git checkout -- \.|git restore \.( |$)'; then
+if grep -qE 'git checkout -- \.|git restore \.( |$)' <<<"$COMMAND"; then
     echo "Blocked: discarding all working-tree changes requires explicit user approval." >&2
     exit 2
 fi

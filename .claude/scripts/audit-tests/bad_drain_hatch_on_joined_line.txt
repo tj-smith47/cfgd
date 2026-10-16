@@ -1,0 +1,2 @@
+kubectl get pods | head -1 && # drain-ok: bounded one-liner
+    kubectl logs p | grep -q x

@@ -91,7 +91,7 @@ else
     DAEMON_LOG=$(exec_in_pod cat /tmp/daemon.log 2>/dev/null || echo "")
     if $FIXED; then
         pass_test "DAEMON-01"
-    elif echo "$DAEMON_LOG" | grep -q "reconcile: drift detected in"; then
+    elif grep -q "reconcile: drift detected in" <<<"$DAEMON_LOG"; then
         pass_test "DAEMON-01"  # daemon detected drift and attempted reconciliation
     else
         FINAL=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "error")
@@ -163,7 +163,7 @@ else
         else
             fail_test "DAEMON-02" "Snapshot file missing expected keys"
             echo "  Content (first 5 lines):"
-            echo "$CONTENT" | head -5 | sed 's/^/    /'
+            head -5 <<<"$CONTENT" | sed 's/^/    /'
         fi
     else
         fail_test "DAEMON-02" "No compliance snapshot file after 20s"
@@ -210,7 +210,7 @@ fi
 begin_test "DAEMON-05: compliance history shows entries after snapshots"
 exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance --no-color > /dev/null 2>&1 || true
 OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance history --no-color 2>&1) && HIST_RC=0 || HIST_RC=$?
-echo "  History output: $(echo "$OUTPUT" | head -5 | sed 's/^/    /')"
+echo "  History output: $(head -5 <<<"$OUTPUT" | sed 's/^/    /')"
 if [ "$HIST_RC" -eq 0 ]; then
     pass_test "DAEMON-05"
 else
@@ -252,7 +252,7 @@ else
         pass_test "DAEMON-07"
     else
         DAEMON_LOG=$(exec_in_pod cat /tmp/compliance-daemon-t56.log 2>/dev/null || echo "")
-        if echo "$DAEMON_LOG" | grep -q "compliance"; then
+        if grep -q "compliance" <<<"$DAEMON_LOG"; then
             pass_test "DAEMON-07"
         else
             fail_test "DAEMON-07" "No compliance snapshot exported within 20s"
@@ -290,7 +290,7 @@ exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance --no-col
 exec_in_pod sysctl -w net.ipv4.ip_forward=1 > /dev/null 2>&1 || true
 
 OUTPUT=$(exec_in_pod cfgd --config /etc/cfgd/e2e-compliance-cfgd.yaml compliance diff 1 2 --no-color 2>&1) && DIFF_RC=0 || DIFF_RC=$?
-echo "  Diff output: $(echo "$OUTPUT" | head -5 | sed 's/^/    /')"
+echo "  Diff output: $(head -5 <<<"$OUTPUT" | sed 's/^/    /')"
 if [ "$DIFF_RC" -eq 0 ] || assert_contains "$OUTPUT" "diff" || assert_contains "$OUTPUT" "changed" || \
    assert_contains "$OUTPUT" "added" || assert_contains "$OUTPUT" "removed"; then
     pass_test "DAEMON-09"
@@ -457,7 +457,7 @@ else
 
     if $RESTORED; then
         pass_test "DAEMON-11"
-    elif echo "$DAEMON_LOG" | grep -q "reconcile: drift detected in"; then
+    elif grep -q "reconcile: drift detected in" <<<"$DAEMON_LOG"; then
         pass_test "DAEMON-11"  # daemon detected drift and attempted auto-apply
     else
         FINAL=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "error")
@@ -521,9 +521,9 @@ else
     FINAL_VAL=$(exec_in_pod cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo "error")
     echo "  Final net.ipv4.ip_forward: $FINAL_VAL"
 
-    if echo "$DAEMON_LOG" | grep -q "policy is notify-only, nothing applied" && [ "$FINAL_VAL" = "0" ]; then
+    if grep -q "policy is notify-only, nothing applied" <<<"$DAEMON_LOG" && [ "$FINAL_VAL" = "0" ]; then
         pass_test "DAEMON-12"
-    elif echo "$DAEMON_LOG" | grep -q "drifted" && echo "$DAEMON_LOG" | grep -q "none applied" && [ "$FINAL_VAL" = "0" ]; then
+    elif grep -q "drifted" <<<"$DAEMON_LOG" && grep -q "none applied" <<<"$DAEMON_LOG" && [ "$FINAL_VAL" = "0" ]; then
         pass_test "DAEMON-12"  # drift detected and left unapplied
     else
         fail_test "DAEMON-12" "Expected drift logged + value unchanged (final: $FINAL_VAL)"
@@ -644,7 +644,7 @@ else
     echo "$DAEMON_LOG" | tail -20 | sed 's/^/    /'
 
     # Count reconciliation entries in log
-    RECONCILE_COUNT=$(echo "$DAEMON_LOG" | { grep -c "reconcile: complete" || true; })
+    RECONCILE_COUNT=$(grep -c "reconcile: complete" <<<"$DAEMON_LOG" || true)
     echo "  Reconciliation checks: $RECONCILE_COUNT"
 
     if [ "$RECONCILE_COUNT" -ge 2 ]; then
@@ -731,7 +731,7 @@ else
         pass_test "DAEMON-15"
     else
         DAEMON_LOG=$(exec_in_pod cat /tmp/daemon15.log 2>/dev/null || echo "")
-        if echo "$DAEMON_LOG" | grep -q "reconcile: drift detected in"; then
+        if grep -q "reconcile: drift detected in" <<<"$DAEMON_LOG"; then
             pass_test "DAEMON-15"  # reconciliation ran; hooks may have executed in subprocess
         else
             fail_test "DAEMON-15" "Pre/post-reconcile hook artifacts not found"
@@ -812,7 +812,7 @@ else
 
     if $ONDRIFT_FIRED; then
         pass_test "DAEMON-16"
-    elif echo "$DAEMON_LOG" | grep -q "onDrift:"; then
+    elif grep -q "onDrift:" <<<"$DAEMON_LOG"; then
         pass_test "DAEMON-16"  # hook ran even if artifact check failed
     else
         fail_test "DAEMON-16" "onDrift hook artifact not found"
@@ -857,7 +857,7 @@ else
     DAEMON17_ENROLL=$(exec_in_pod unshare --uts sh -c 'hostname "$1" && exec cfgd enroll --server-url "$2" --token "$3" --no-color' _ "$DAEMON17_DEVICE_ID" "$SERVER_URL" "$DAEMON17_TOKEN" 2>&1) || DAEMON17_ENROLL_RC=$? # device-id-ok: the enroll's hostname is DAEMON17_DEVICE_ID, which gateway_device set
     echo "  Enroll output:"
     printf '%s\n' "$DAEMON17_ENROLL" | sed 's/^/    /'
-    DAEMON17_CRED=$(sed -n 's/.*Saved credential to //p' <<<"$DAEMON17_ENROLL" | head -1)
+    DAEMON17_CRED=$(sed -n 's/.*Saved credential to //p' <<<"$DAEMON17_ENROLL" | sed -n '1p')
 
     if [ "$DAEMON17_ENROLL_RC" -ne 0 ] || [ -z "$DAEMON17_CRED" ]; then
         fail_test "DAEMON-17" "cfgd enroll against $SERVER_URL as $DAEMON17_DEVICE_ID exited $DAEMON17_ENROLL_RC and saved no credential"
@@ -979,7 +979,7 @@ else
             # The daemon should not have crashed (no panic/SIGSEGV).
             if [ "$DAEMON_LOG_RC" -ne 0 ]; then
                 fail_test "DAEMON-18" "Could not read /tmp/daemon18.log (exit $DAEMON_LOG_RC)"
-            elif echo "$DAEMON_LOG" | grep -q "panic\|SIGSEGV\|signal: 11"; then
+            elif grep -q "panic\|SIGSEGV\|signal: 11" <<<"$DAEMON_LOG"; then
                 fail_test "DAEMON-18" "Daemon crashed during what should have been a graceful shutdown"
             else
                 pass_test "DAEMON-18"

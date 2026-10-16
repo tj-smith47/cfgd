@@ -182,7 +182,7 @@ else
     GW32_OUT=$(dp_cfgd -o json enroll --server-url "$GW_URL" --token "$DP_TOKEN" 2> "$GW32_ERR") # device-id-ok: GW-32 asserts the id the binary derives; enroll sends no drift report
     GW32_RC=$?
     echo "  enroll rc=$GW32_RC"
-    echo "$GW32_OUT" | head -c 400 | sed 's/^/    /'
+    head -c 400 <<<"$GW32_OUT" | sed 's/^/    /'
     echo ""
     print_stderr_head "$GW32_ERR"
 
@@ -280,7 +280,7 @@ EOF
     GW33_CHECKIN=$(dp_cfgd checkin --server-url "$GW_URL" 2>&1) # device-id-ok: the dp_write_profile profile declares only backups, so the checkin has no system setting drift to report
     GW33_CHECKIN_RC=$?
     echo "  checkin rc=$GW33_CHECKIN_RC"
-    printf '%s\n' "$GW33_CHECKIN" | strip_sgr | head -12 | sed 's/^/    /'
+    strip_sgr <<<"$GW33_CHECKIN" | sed -n '1,12s/^/    /p'
 
     GW33_OWNER=$(dp_field scheduleOwner)
     GW33_EFF_SCHEDULE=$(dp_field effectiveSchedule)
@@ -383,7 +383,7 @@ else
     # The two cadences fire on single, different minutes of the hour, so the
     # re-armed stamp is a fact at every wall clock: its minute is the new
     # cadence's own, and it is not the stamp the old cadence produced.
-    GW35_NEXT_MINUTE=$(printf '%s' "$GW35_NEXT_AFTER" | sed -n 's/^.*T[0-9][0-9]:\([0-9][0-9]\):.*$/\1/p')
+    GW35_NEXT_MINUTE=$(sed -n 's/^.*T[0-9][0-9]:\([0-9][0-9]\):.*$/\1/p' <<<"$GW35_NEXT_AFTER")
     GW35_NEXT_MOVED=no
     [ -n "$GW35_NEXT_AFTER" ] && [ "$GW35_NEXT_AFTER" != "$GW35_NEXT_BEFORE" ] && GW35_NEXT_MOVED=yes
     echo "  nextRunAt before=${GW35_NEXT_BEFORE} after=${GW35_NEXT_AFTER} (minute ${GW35_NEXT_MINUTE:-none}, moved ${GW35_NEXT_MOVED})"
@@ -465,7 +465,7 @@ echo "  delete machineconfig rc=${GW36_MC_DEL_RC} ${GW36_MC_DEL}"
 # `kubectl get` that never ran, which is the one failure this case exists to see.
 GW36_OBJECTS=$(kubectl get backuppolicy,machineconfig -n "$E2E_NAMESPACE" -o name 2>&1)
 GW36_GET_RC=$?
-GW36_LEFT=$(printf '%s\n' "$GW36_OBJECTS" | grep -F "projection-${E2E_RUN_ID}")
+GW36_LEFT=$(grep -F "projection-${E2E_RUN_ID}" <<<"$GW36_OBJECTS")
 GW36_DAEMON=gone
 dp_daemon_alive
 case $? in

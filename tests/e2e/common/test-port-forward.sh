@@ -236,11 +236,11 @@ fi
 # run-all.sh that sources it must already have the EXIT trap that stops it.
 judged=0
 for runner in "$e2e_root"/*/scripts/run-all.sh; do
-    setup_line="$(grep -nE '^source .*/setup-[a-z-]+-env\.sh"$' "$runner" | head -n 1)" || continue
+    setup_line="$(grep -m1 -nE '^source .*/setup-[a-z-]+-env\.sh"$' "$runner")" || continue
     judged=$((judged + 1))
     setup="$(dirname "$runner")/$(basename "$(sed -E 's/.*\/(setup-[a-z-]+-env\.sh)"$/\1/' <<<"$setup_line")")"
     grep -q 'port_forward ' "$setup" || continue
-    trap_at="$(grep -nE '^trap .* EXIT$' "$runner" | head -n 1 | cut -d: -f1)"
+    trap_at="$(grep -m1 -nE '^trap .* EXIT$' "$runner" | cut -d: -f1)"
     if [ -n "$trap_at" ] && [ "$trap_at" -lt "${setup_line%%:*}" ]; then
         pass "${runner#"$e2e_root"/} installs its EXIT trap before sourcing $(basename "$setup")"
     else

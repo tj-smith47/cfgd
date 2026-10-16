@@ -47,14 +47,14 @@ else
     GW21_OUTPUT=$(cat "$GW21_TMPFILE" 2>/dev/null || echo "")
     rm -f "$GW21_TMPFILE" "$GW21_HEADERS"
     echo "  SSE output (first 500 chars):"
-    echo "$GW21_OUTPUT" | head -c 500 | sed 's/^/    /'
+    head -c 500 <<<"$GW21_OUTPUT" | sed 's/^/    /'
     echo ""
 
     if [ "$GW21_TRIGGER_CODE" != "201" ]; then
         fail_test "GW-21" "Drift report returned HTTP $GW21_TRIGGER_CODE, expected 201, so no event was raised"
-    elif ! grep -E '^data:' <<<"$GW21_OUTPUT" | grep -qF "\"deviceId\":\"${GW_DEVICE_ID}\""; then
+    elif ! grep -E '^data:' <<<"$GW21_OUTPUT" | grep -F "\"deviceId\":\"${GW_DEVICE_ID}\"" >/dev/null; then
         fail_test "GW-21" "No event for device ${GW_DEVICE_ID} arrived on the stream within 10s of its drift report"
-    elif ! grep -B1 -F "\"deviceId\":\"${GW_DEVICE_ID}\"" <<<"$GW21_OUTPUT" | grep -qx 'event: drift'; then
+    elif ! grep -B1 -F "\"deviceId\":\"${GW_DEVICE_ID}\"" <<<"$GW21_OUTPUT" | grep -x 'event: drift' >/dev/null; then
         fail_test "GW-21" "The event for device ${GW_DEVICE_ID} is not an 'event: drift'"
     else
         pass_test "GW-21"

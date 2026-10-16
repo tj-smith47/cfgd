@@ -21,13 +21,13 @@ ensure_cfgd_binary
 # Push module to local registry
 echo "  Pushing module to ${OCI_REF}..."
 PUSH_OUTPUT=$("$CFGD_BIN" module push "$TEST_MODULE_DIR" --artifact "$OCI_REF" --no-color 2>&1) || true
-echo "  Push output: $(echo "$PUSH_OUTPUT" | head -3)"
+echo "  Push output: $(head -3 <<<"$PUSH_OUTPUT")"
 
 # Pull module back
 PULL_DIR=$(mktemp -d)
 echo "  Pulling module from ${OCI_REF}..."
 PULL_OUTPUT=$("$CFGD_BIN" module pull "$OCI_REF" --dir "$PULL_DIR" --no-color 2>&1) || true
-echo "  Pull output: $(echo "$PULL_OUTPUT" | head -3)"
+echo "  Pull output: $(head -3 <<<"$PULL_OUTPUT")"
 
 # Verify content integrity
 PASS=true

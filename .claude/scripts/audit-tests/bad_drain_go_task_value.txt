@@ -1,0 +1,1 @@
+printf '%s\n' '{{.STAGED_LIST}}' | grep -qxF -- "$f" && continue

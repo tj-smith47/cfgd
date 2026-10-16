@@ -1,0 +1,1 @@
+echo "$output" | command grep -q a

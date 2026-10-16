@@ -2551,7 +2551,7 @@ tree_verdict_of() {
 tree="$scratch/tree"
 copy_tree "$tree"
 probe="$tree/operator/scripts/test-configpolicy.sh"
-label_line="$(grep -nxF "    \${E2E_RUN_LABEL_YAML}" "$probe" | head -n1 | cut -d: -f1)"
+label_line="$(grep -m1 -nxF "    \${E2E_RUN_LABEL_YAML}" "$probe" | cut -d: -f1)"
 sed -i "${label_line}d" "$probe"
 probe_verdict="$(tree_verdict_of "$tree")"
 if [ "$(wc -l <<<"$probe_verdict")" -eq 1 ] && grep -q "^UNLABELLED $probe:" <<<"$probe_verdict"; then
@@ -3289,10 +3289,10 @@ scan_teamconfig_refs() {
             echo "UNREADABLE $file:$line: $(head -n1 "$dir/yq.err")"
             continue
         fi
-        if cut -f1 <<<"$refs" | grep -qvxF -- "$composition_sentinel"; then
+        if cut -f1 <<<"$refs" | grep -vxF -- "$composition_sentinel" >/dev/null; then
             echo "NOREF $file:$line"
         fi
-        if cut -f2 <<<"$refs" | grep -qvxF -- "$label_sentinel"; then
+        if cut -f2 <<<"$refs" | grep -vxF -- "$label_sentinel" >/dev/null; then
             echo "NOLABEL $file:$line"
         fi
     done < "$dir/index"
@@ -4210,7 +4210,7 @@ job_order_problems() {
                 echo "UNREADABLE $script (run by $job)"
                 continue
             fi
-            hit="$(grep -nE '^[^#]*(kubectl|\$\{?KUBECTL\}?)[^|;&#]*(delete[[:space:]]+pods?|rollout[[:space:]]+restart)[^|;&#]*\$\{?E2E_(INSTALL_NS|OPERATOR_DEPLOY)' "$root/$script" | head -n1 | cut -d: -f1)" || true
+            hit="$(grep -m1 -nE '^[^#]*(kubectl|\$\{?KUBECTL\}?)[^|;&#]*(delete[[:space:]]+pods?|rollout[[:space:]]+restart)[^|;&#]*\$\{?E2E_(INSTALL_NS|OPERATOR_DEPLOY)' "$root/$script" | cut -d: -f1)" || true
             [ -n "$hit" ] && deleters+=("$job $script:$hit")
             grep -qE '^[^#]*E2E_GATEWAY_' "$root/$script" && talkers+=("$job")
         done

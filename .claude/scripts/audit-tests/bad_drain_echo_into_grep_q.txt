@@ -1,0 +1,1 @@
+if echo "$output" | grep -qF "$expected"; then return 0; fi

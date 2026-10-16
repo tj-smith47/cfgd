@@ -176,7 +176,7 @@ resolve_version() {
         }
         VERSION=$(printf '%s\n' "$releases" \
             | tr ',' '\n' | grep '"tag_name"' | sed 's/.*"tag_name": *"//;s/".*//' \
-            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed -n '1p') # drain-ok: POSIX sh has no here-string, and every reader in this chain reads to the end
 
         if [ -z "$VERSION" ]; then
             error "Could not find a cfgd release in the releases of ${REPO}"

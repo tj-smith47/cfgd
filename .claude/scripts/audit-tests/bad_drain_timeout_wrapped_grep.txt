@@ -1,0 +1,1 @@
+kubectl logs p | timeout 5 grep -q x

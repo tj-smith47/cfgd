@@ -1,0 +1,1 @@
+printf %s "$output" | sed -En '1p'

@@ -72,7 +72,7 @@ exec_in_pod bash -c 'echo "corrupted" > /tmp/cfgd-e2e-seccomp/audit.json'
 
 PLAN=$(exec_in_pod cfgd --config /etc/cfgd/e2e-seccomp-cfgd.yaml apply --dry-run --no-color 2>&1) || true
 echo "  Plan after seccomp corruption:"
-echo "$PLAN" | head -10 | sed 's/^/    /'
+head -10 <<<"$PLAN" | sed 's/^/    /'
 
 if assert_contains "$PLAN" "seccomp"; then
     pass_test "SECCOMP-03"

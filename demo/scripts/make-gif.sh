@@ -119,7 +119,7 @@ mid_end=$(awk -v d="$dur" -v t="$TAIL" 'BEGIN { printf "%.3f", d - t }')
 # first because the heading paints in two theme slots. `LC_ALL=C` because the
 # final-byte range `[@-~]` is a BYTE range only in the C locale — under a
 # UTF-8 locale it collates, matches nothing, and the heading is never found.
-heading_stamp=$(LC_ALL=C sed 's/\x1b\[[0-9;?]*[ -\/]*[@-~]//g' "$LOG" | grep -a -F -m1 'Phase: Post-Scripts' | cut -d' ' -f1 || true)
+heading_stamp=$(LC_ALL=C sed 's/\x1b\[[0-9;?]*[ -\/]*[@-~]//g' "$LOG" | grep -a -F 'Phase: Post-Scripts' | sed -n '1p' | cut -d' ' -f1 || true)
 if [ -z "$heading_stamp" ]; then
     echo "$LOG never shows \`Phase: Post-Scripts\` — the take did not reach the module's scripts." >&2
     exit 1
@@ -157,8 +157,8 @@ fi
 # tape asks for, so the canvas has to be rebuilt here. Both numbers are read
 # out of the tape rather than restated, because a hand-kept copy drifts from
 # the `Set Width`/`Set Height` VHS actually recorded at.
-W="$(sed -n 's/^Set Width \([0-9]*\)$/\1/p' "$TAPE" | head -1)"
-H="$(sed -n 's/^Set Height \([0-9]*\)$/\1/p' "$TAPE" | head -1)"
+W="$(sed -n 's/^Set Width \([0-9]*\)$/\1/p' "$TAPE" | sed -n '1p')"
+H="$(sed -n 's/^Set Height \([0-9]*\)$/\1/p' "$TAPE" | sed -n '1p')"
 if [ -z "$W" ] || [ -z "$H" ]; then
     echo "$TAPE declares no parseable \`Set Width\`/\`Set Height\` — cannot know what canvas to pad to." >&2
     exit 1

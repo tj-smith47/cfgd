@@ -136,7 +136,7 @@ fi
 
 begin_test "DRIFT02: diff shows changes"
 run "${C[@]}" diff
-if echo "$OUTPUT" | grep -qiE "drift|differ|changed|MODIFIED|zshrc"; then
+if grep -qiE "drift|differ|changed|MODIFIED|zshrc" <<<"$OUTPUT"; then
     pass_test "DRIFT02"
 else fail_test "DRIFT02" "Diff did not show changes"; fi
 
@@ -179,7 +179,7 @@ spec:
   profile: conflicting
 YAML
 run --config "$CONF_DIR/cfgd.yaml" apply --dry-run --no-color
-if [ "$RC" -ne 0 ] || echo "$OUTPUT" | grep -qiE "conflict|duplicate|same target"; then
+if [ "$RC" -ne 0 ] || grep -qiE "conflict|duplicate|same target" <<<"$OUTPUT"; then
     pass_test "CONF01"
 else fail_test "CONF01" "Duplicate targets not detected"; fi
 
@@ -553,7 +553,7 @@ spec:
   profile: base
 YAML
 run --config "$ERR07_CFG/cfgd.yaml" --state-dir "$ERR07_STATE" --no-color apply --dry-run
-if assert_fail && echo "$OUTPUT" | grep -qiE "cycle|circular"; then
+if assert_fail && grep -qiE "cycle|circular" <<<"$OUTPUT"; then
     pass_test "ERR07"
 else fail_test "ERR07" "Expected cycle/circular error"; fi
 
@@ -583,13 +583,13 @@ spec:
   profile: base
 YAML
 run --config "$ERR08_CFG/cfgd.yaml" --state-dir "$ERR08_STATE" --no-color apply --dry-run
-if assert_fail || echo "$OUTPUT" | grep -qiE "not found|no such file|does not exist|missing"; then
+if assert_fail || grep -qiE "not found|no such file|does not exist|missing" <<<"$OUTPUT"; then
     pass_test "ERR08"
 else fail_test "ERR08" "Expected clear missing-file error"; fi
 
 begin_test "ERR09: empty profile name rejected"
 run "${C[@]}" profile create ""
-if assert_fail && echo "$OUTPUT" | grep -qiE "empty|invalid|cannot"; then
+if assert_fail && grep -qiE "empty|invalid|cannot" <<<"$OUTPUT"; then
     pass_test "ERR09"
 else
     # clap may reject before cfgd's own validation; any failure is acceptable

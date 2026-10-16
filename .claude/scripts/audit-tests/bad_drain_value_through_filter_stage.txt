@@ -1,0 +1,1 @@
+echo "$output" | tr a b | grep -q a

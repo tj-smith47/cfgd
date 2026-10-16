@@ -24,7 +24,7 @@ OUTPUT=$(exec_in_pod cfgd \
     --api-key "$GW_API_KEY" \
     --device-id "$DEVICE_1" \
     --no-color 2>&1) || true
-echo "  Checkin with drift: $OUTPUT" | head -5
+head -5 <<<"  Checkin with drift: $OUTPUT"
 
 DRIFT01_AFTER=$(gateway_drift_count "$DEVICE_1" net.ipv4.ip_forward)
 echo "  Gateway drift events naming net.ipv4.ip_forward: ${DRIFT01_BEFORE:-unreadable} before, ${DRIFT01_AFTER:-unreadable} after"
@@ -152,7 +152,7 @@ exec_in_pod cfgd \
 
 DEVICE_INFO=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_1}" 2>/dev/null || echo "{}")
 echo "  Device info (first 200 chars):"
-echo "$DEVICE_INFO" | head -c 200 | sed 's/^/    /'
+head -c 200 <<<"$DEVICE_INFO" | sed 's/^/    /'
 echo ""
 
 if assert_contains "$DEVICE_INFO" "status"; then

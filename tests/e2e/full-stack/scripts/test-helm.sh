@@ -218,7 +218,7 @@ if helm_ok "FS-HELM-03" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
 
     if [ "$GATEWAY_SVC_RC" -ne 0 ]; then
         fail_test "FS-HELM-03" "Could not list the services in $HELM_NS (kubectl exit $GATEWAY_SVC_RC)"
-    elif echo "$GATEWAY_SVC" | grep -q "gateway"; then
+    elif grep -q "gateway" <<<"$GATEWAY_SVC"; then
         fail_test "FS-HELM-03" "Gateway service found when deviceGateway.enabled=false"
     else
         # Confirm operator deployment does NOT have gateway env.
@@ -371,7 +371,7 @@ EOF
     CRDS_REPORT=$(check_pr_crds schemas/crds.yaml "rerun the full-stack suite" < "$REPO_ROOT/schemas/crds.yaml" 2>&1) || CRDS_RC=$?
 
     if [ "$UPGRADE_RC" -ne 0 ]; then
-        fail_test "FS-HELM-05" "helm upgrade exited $UPGRADE_RC: $(echo "$UPGRADE_OUTPUT" | head -20)"
+        fail_test "FS-HELM-05" "helm upgrade exited $UPGRADE_RC: $(head -20 <<<"$UPGRADE_OUTPUT")"
     elif [ "$MC_BEFORE" != "helm-upgrade-test-${E2E_RUN_ID}" ] || \
        [ "$MC_AFTER" != "helm-upgrade-test-${E2E_RUN_ID}" ]; then
         fail_test "FS-HELM-05" "MachineConfig did not survive Helm upgrade"
@@ -444,7 +444,7 @@ TEMPLATE_OUTPUT=$(helm template cfgd-test "$CHART_DIR" \
 
 if [ $TEMPLATE_RC -ne 0 ]; then
     fail_test "FS-HELM-07" "helm template failed with exit code $TEMPLATE_RC"
-    echo "  Output: $(echo "$TEMPLATE_OUTPUT" | head -10)"
+    echo "  Output: $(head -10 <<<"$TEMPLATE_OUTPUT")"
 else
     # Validate via dry-run (no cluster mutation)
     DRYRUN_RC=0
@@ -456,7 +456,7 @@ else
         pass_test "FS-HELM-07"
     else
         fail_test "FS-HELM-07" "Templated YAML failed kubectl dry-run validation"
-        echo "  Errors: $(echo "$DRYRUN_OUTPUT" | head -10)"
+        echo "  Errors: $(head -10 <<<"$DRYRUN_OUTPUT")"
     fi
 fi
 
@@ -509,7 +509,7 @@ if helm_ok "FS-HELM-08" "$INSTALL_RC" "$INSTALL_OUTPUT"; then
         pass_test "FS-HELM-08"
     else
         if [ "$UNINSTALL_RC" -ne 0 ]; then
-            fail_test "FS-HELM-08" "helm uninstall exited $UNINSTALL_RC: $(echo "$UNINSTALL_OUTPUT" | head -20)"
+            fail_test "FS-HELM-08" "helm uninstall exited $UNINSTALL_RC: $(head -20 <<<"$UNINSTALL_OUTPUT")"
         elif [ -z "$DEPLOY_BEFORE" ]; then
             fail_test "FS-HELM-08" "Deployment was not created during install"
         elif [ "$DEPLOY_AFTER_RC" -ne 0 ]; then

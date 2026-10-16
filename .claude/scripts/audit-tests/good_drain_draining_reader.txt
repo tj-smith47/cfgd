@@ -1,0 +1,6 @@
+kubectl get pods -o json | grep Running >/dev/null
+first=$(kubectl logs pod-a | sed -n '1p')
+top=$(kubectl logs pod-a | sed -n '1,20s/^/    /p')
+label=$(grep -m1 -n label "$file" | cut -d: -f1)
+n=$(kubectl logs pod-a | grep -c ready || true)
+cut -f1 <<<"$refs" | grep -vxF -- "$sentinel" >/dev/null

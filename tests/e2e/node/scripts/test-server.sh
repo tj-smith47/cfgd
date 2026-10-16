@@ -65,7 +65,7 @@ fi
 begin_test "T31: Device registered on device gateway"
 DEVICES=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices" 2>/dev/null || echo "[]")
 echo "  Device gateway response (first 200 chars):"
-echo "$DEVICES" | head -c 200 | sed 's/^/    /'
+head -c 200 <<<"$DEVICES" | sed 's/^/    /'
 echo ""
 
 if assert_contains "$DEVICES" "$DEVICE_ID"; then
@@ -85,7 +85,7 @@ exec_in_pod cfgd --config /etc/cfgd/cfgd.yaml checkin \
 
 DEVICE=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}" 2>/dev/null || echo "{}")
 echo "  Device details (first 300 chars):"
-echo "$DEVICE" | head -c 300 | sed 's/^/    /'
+head -c 300 <<<"$DEVICE" | sed 's/^/    /'
 echo ""
 
 if assert_contains "$DEVICE" "healthy"; then
@@ -112,7 +112,7 @@ OUTPUT=$(exec_in_pod cfgd \
     --device-id "$DEVICE_ID" \
     --no-color 2>&1) || true
 echo "  Checkin with drift output:"
-echo "$OUTPUT" | head -10 | sed 's/^/    /'
+head -10 <<<"$OUTPUT" | sed 's/^/    /'
 
 # Restore sysctl
 exec_in_pod sysctl -w "net.ipv4.ip_forward=$ORIG_FWD" > /dev/null 2>&1 || true
@@ -132,7 +132,7 @@ fi
 begin_test "T34: Device gateway has drift events"
 DRIFT_EVENTS=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${DEVICE_ID}/drift" 2>/dev/null || echo "[]")
 echo "  Drift events:"
-echo "$DRIFT_EVENTS" | head -c 300 | sed 's/^/    /'
+head -c 300 <<<"$DRIFT_EVENTS" | sed 's/^/    /'
 echo ""
 
 # T33 left an event naming net.ipv4.ip_forward, and every event in the list is
@@ -140,7 +140,7 @@ echo ""
 if echo "$DRIFT_EVENTS" | jq -e --arg d "$DEVICE_ID" 'length >= 1 and all(.[]; .deviceId == $d and (.id // "") != "" and (.timestamp // "") != "") and any(.[]; .details | contains("net.ipv4.ip_forward"))' >/dev/null 2>&1; then
     pass_test "T34"
 else
-    fail_test "T34" "Expected this device's drift events, one naming net.ipv4.ip_forward: $(echo "$DRIFT_EVENTS" | head -c 300)"
+    fail_test "T34" "Expected this device's drift events, one naming net.ipv4.ip_forward: $(head -c 300 <<<"$DRIFT_EVENTS")"
 fi
 
 # =================================================================
@@ -231,7 +231,7 @@ OUTPUT=$(exec_in_pod cfgd \
     --no-color 2>&1) || RC=$?
 
 echo "  Compliance checkin output:"
-echo "$OUTPUT" | head -15 | sed 's/^/    /'
+head -15 <<<"$OUTPUT" | sed 's/^/    /'
 
 DEVICE_RESP=$(exec_in_pod curl -sf -H "Authorization: Bearer $GW_API_KEY" "${SERVER_URL}/api/v1/devices/${COMPLIANCE_DEVICE_ID}" 2>/dev/null || echo "{}")
 GOT=$(echo "$DEVICE_RESP" | jq -c '.complianceSummary' 2>/dev/null || echo "")

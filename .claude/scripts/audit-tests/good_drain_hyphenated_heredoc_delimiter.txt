@@ -1,0 +1,3 @@
+cat <<END-DATA
+echo "$output" | grep -q a
+END-DATA

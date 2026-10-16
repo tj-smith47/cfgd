@@ -1,0 +1,8 @@
+awk '
+    /<<?[/ { print }
+' "$file"
+(( mask << 1 ))
+(( mask << bits ))
+echo "w=$((1 << 2))"
+echo "w=$((1 << width))"
+grep x <<<"$o"

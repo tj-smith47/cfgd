@@ -31,9 +31,9 @@ else fail_test "RB03"; fi
 
 begin_test "RB04: rollback valid apply ID"
 # Get the most recent apply ID from the log
-APPLY_ID=$("$CFGD" "${C[@]}" log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+APPLY_ID=$("$CFGD" "${C[@]}" log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | sed -n '1p' | grep -oE '[0-9]+' || echo "")
 if [ -z "$APPLY_ID" ]; then
-    APPLY_ID=$("$CFGD" "${C[@]}" log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | head -1 || echo "")
+    APPLY_ID=$("$CFGD" "${C[@]}" log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | sed -n '1p' || echo "")
 fi
 if [ -n "$APPLY_ID" ]; then
     run "${C[@]}" rollback "$APPLY_ID" --yes
@@ -79,9 +79,9 @@ if [ "$RC" -ne 0 ]; then
     fail_test "RB05" "v1 apply failed (exit $RC)"
 else
     # Get v1 apply ID
-    RB05_V1_ID=$("$CFGD" "${RB05_C[@]}" log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+    RB05_V1_ID=$("$CFGD" "${RB05_C[@]}" log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | sed -n '1p' | grep -oE '[0-9]+' || echo "")
     if [ -z "$RB05_V1_ID" ]; then
-        RB05_V1_ID=$("$CFGD" "${RB05_C[@]}" log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | head -1 || echo "")
+        RB05_V1_ID=$("$CFGD" "${RB05_C[@]}" log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | sed -n '1p' || echo "")
     fi
     # Modify source to v2 and apply
     echo "version-two-content" > "$RB05_CFG/files/rb05-file"
@@ -96,7 +96,7 @@ else
         if assert_ok; then
             if [ -f "$RB05_TGT/rb05-file" ]; then
                 RB05_CONTENT=$(cat "$RB05_TGT/rb05-file")
-                if echo "$RB05_CONTENT" | grep -qF "version-one-content"; then
+                if grep -qF "version-one-content" <<<"$RB05_CONTENT"; then
                     pass_test "RB05"
                 else
                     fail_test "RB05" "expected version-one-content, got: $RB05_CONTENT"
@@ -143,9 +143,9 @@ run "${RB06_C[@]}" apply --yes
 if [ "$RC" -ne 0 ]; then
     fail_test "RB06" "initial apply failed (exit $RC)"
 else
-    RB06_ID=$("$CFGD" "${RB06_C[@]}" log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+    RB06_ID=$("$CFGD" "${RB06_C[@]}" log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | sed -n '1p' | grep -oE '[0-9]+' || echo "")
     if [ -z "$RB06_ID" ]; then
-        RB06_ID=$("$CFGD" "${RB06_C[@]}" log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | head -1 || echo "")
+        RB06_ID=$("$CFGD" "${RB06_C[@]}" log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | sed -n '1p' || echo "")
     fi
     # Manually change permissions to something else
     if [ -f "$RB06_TGT/rb06-file" ]; then
@@ -212,9 +212,9 @@ run "${RB07_C[@]}" apply --yes
 if [ "$RC" -ne 0 ]; then
     fail_test "RB07" "initial apply failed (exit $RC)"
 else
-    RB07_ID=$("$CFGD" "${RB07_C[@]}" log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+    RB07_ID=$("$CFGD" "${RB07_C[@]}" log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | sed -n '1p' | grep -oE '[0-9]+' || echo "")
     if [ -z "$RB07_ID" ]; then
-        RB07_ID=$("$CFGD" "${RB07_C[@]}" log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | head -1 || echo "")
+        RB07_ID=$("$CFGD" "${RB07_C[@]}" log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | sed -n '1p' || echo "")
     fi
     # Modify and re-apply
     echo "updated-symlink-content" > "$RB07_CFG/files/rb07-file"
@@ -237,15 +237,15 @@ fi
 
 begin_test "RB08: rollback log entry"
 # Use the main config dir: the check only verifies that rollback creates a log entry
-RB08_ID=$("$CFGD" "${C[@]}" log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+RB08_ID=$("$CFGD" "${C[@]}" log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | sed -n '1p' | grep -oE '[0-9]+' || echo "")
 if [ -z "$RB08_ID" ]; then
-    RB08_ID=$("$CFGD" "${C[@]}" log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | head -1 || echo "")
+    RB08_ID=$("$CFGD" "${C[@]}" log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | sed -n '1p' || echo "")
 fi
 if [ -n "$RB08_ID" ]; then
     run "${C[@]}" rollback "$RB08_ID" --yes
     if assert_ok; then
         run "${C[@]}" log -n 5
-        if assert_ok && echo "$OUTPUT" | grep -qi "rollback\|roll"; then
+        if assert_ok && grep -qi "rollback\|roll" <<<"$OUTPUT"; then
             pass_test "RB08"
         else
             fail_test "RB08" "rollback entry not found in log"
@@ -286,9 +286,9 @@ RB09_C=(--config "$RB09_CFG/cfgd.yaml" --state-dir "$RB09_STATE" --no-color)
 # v1
 echo "rb09-v1" > "$RB09_CFG/files/rb09-file"
 run "${RB09_C[@]}" apply --yes
-RB09_V1_ID=$("$CFGD" "${RB09_C[@]}" log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+RB09_V1_ID=$("$CFGD" "${RB09_C[@]}" log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | sed -n '1p' | grep -oE '[0-9]+' || echo "")
 if [ -z "$RB09_V1_ID" ]; then
-    RB09_V1_ID=$("$CFGD" "${RB09_C[@]}" log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | head -1 || echo "")
+    RB09_V1_ID=$("$CFGD" "${RB09_C[@]}" log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | sed -n '1p' || echo "")
 fi
 # v2
 echo "rb09-v2" > "$RB09_CFG/files/rb09-file"
@@ -304,7 +304,7 @@ else
     if assert_ok; then
         if [ -f "$RB09_TGT/rb09-file" ]; then
             RB09_CONTENT=$(cat "$RB09_TGT/rb09-file")
-            if echo "$RB09_CONTENT" | grep -qF "rb09-v1"; then
+            if grep -qF "rb09-v1" <<<"$RB09_CONTENT"; then
                 pass_test "RB09"
             else
                 fail_test "RB09" "expected rb09-v1, got: $RB09_CONTENT"
@@ -355,9 +355,9 @@ run "${RB10_C[@]}" apply --yes
 if [ "$RC" -ne 0 ]; then
     fail_test "RB10" "initial apply failed (exit $RC)"
 else
-    RB10_ID=$("$CFGD" "${RB10_C[@]}" log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | head -1 | grep -oE '[0-9]+' || echo "")
+    RB10_ID=$("$CFGD" "${RB10_C[@]}" log -n 1 --output json 2>/dev/null | grep -oE '"id":\s*[0-9]+' | sed -n '1p' | grep -oE '[0-9]+' || echo "")
     if [ -z "$RB10_ID" ]; then
-        RB10_ID=$("$CFGD" "${RB10_C[@]}" log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | head -1 || echo "")
+        RB10_ID=$("$CFGD" "${RB10_C[@]}" log -n 1 2>&1 | grep -E '^[0-9]' | awk '{print $1}' | sed -n '1p' || echo "")
     fi
     # Modify env and re-apply
     cat > "$RB10_CFG/profiles/base.yaml" << YAML

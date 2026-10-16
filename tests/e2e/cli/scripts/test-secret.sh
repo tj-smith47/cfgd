@@ -204,7 +204,7 @@ YAML
 # reconciler treats it as a SOPS file path. Apply may exit 0 but with error output,
 # or exit non-zero. Either way, the output should mention the failed decrypt.
 run --config "$SEC09_CFG/cfgd.yaml" --state-dir "$SEC09_STATE" --no-color apply --dry-run
-if echo "$OUTPUT" | grep -qiE "sops|decrypt|failed|error|non.existent|cannot operate"; then
+if grep -qiE "sops|decrypt|failed|error|non.existent|cannot operate" <<<"$OUTPUT"; then
     pass_test "SEC09"
 elif assert_fail; then
     pass_test "SEC09"
@@ -307,7 +307,7 @@ unset CFGD_OP_BIN
 
 if assert_fail && assert_contains "$OUTPUT" "could not find item" && [ ! -f "$SEC11_TGT/should-not-exist" ]; then
     pass_test "SEC11"
-elif assert_ok && echo "$OUTPUT" | grep -qi "could not find item\|unresolvable\|error"; then
+elif assert_ok && grep -qi "could not find item\|unresolvable\|error" <<<"$OUTPUT"; then
     pass_test "SEC11"
 else
     fail_test "SEC11" "expected error about missing item"

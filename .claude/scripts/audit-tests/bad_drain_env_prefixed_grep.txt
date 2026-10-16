@@ -1,0 +1,1 @@
+echo "$output" | LC_ALL=C grep -q a

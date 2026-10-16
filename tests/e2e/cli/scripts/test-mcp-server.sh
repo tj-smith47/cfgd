@@ -39,9 +39,9 @@ else fail_test "MCP01"; fi
 begin_test "MCP02: MCP server initialize"
 mcp_send "$INIT_REQ"
 if [ "$MCP_RC" -eq 0 ] \
-    && echo "$MCP_OUTPUT" | grep -q '"protocolVersion"' \
-    && echo "$MCP_OUTPUT" | grep -q '"serverInfo"' \
-    && echo "$MCP_OUTPUT" | grep -q '"cfgd"'; then
+    && grep -q '"protocolVersion"' <<<"$MCP_OUTPUT" \
+    && grep -q '"serverInfo"' <<<"$MCP_OUTPUT" \
+    && grep -q '"cfgd"' <<<"$MCP_OUTPUT"; then
     pass_test "MCP02"
 else
     fail_test "MCP02" "initialize response missing expected fields: $MCP_OUTPUT"
@@ -54,8 +54,8 @@ TOOLS_REQ='{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
 mcp_send "${INIT_REQ}
 ${TOOLS_REQ}"
 if [ "$MCP_RC" -eq 0 ] \
-    && echo "$MCP_OUTPUT" | grep -q '"tools"' \
-    && echo "$MCP_OUTPUT" | grep -q 'cfgd_'; then
+    && grep -q '"tools"' <<<"$MCP_OUTPUT" \
+    && grep -q 'cfgd_' <<<"$MCP_OUTPUT"; then
     pass_test "MCP03"
 else
     fail_test "MCP03" "tools/list response missing expected fields: $MCP_OUTPUT"
@@ -68,8 +68,8 @@ RES_REQ='{"jsonrpc":"2.0","id":2,"method":"resources/list","params":{}}'
 mcp_send "${INIT_REQ}
 ${RES_REQ}"
 if [ "$MCP_RC" -eq 0 ] \
-    && echo "$MCP_OUTPUT" | grep -q '"resources"' \
-    && echo "$MCP_OUTPUT" | grep -q 'cfgd://'; then
+    && grep -q '"resources"' <<<"$MCP_OUTPUT" \
+    && grep -q 'cfgd://' <<<"$MCP_OUTPUT"; then
     pass_test "MCP04"
 else
     fail_test "MCP04" "resources/list response missing expected fields: $MCP_OUTPUT"
@@ -82,8 +82,8 @@ PROMPTS_REQ='{"jsonrpc":"2.0","id":2,"method":"prompts/list","params":{}}'
 mcp_send "${INIT_REQ}
 ${PROMPTS_REQ}"
 if [ "$MCP_RC" -eq 0 ] \
-    && echo "$MCP_OUTPUT" | grep -q '"prompts"' \
-    && echo "$MCP_OUTPUT" | grep -q 'cfgd_generate'; then
+    && grep -q '"prompts"' <<<"$MCP_OUTPUT" \
+    && grep -q 'cfgd_generate' <<<"$MCP_OUTPUT"; then
     pass_test "MCP05"
 else
     fail_test "MCP05" "prompts/list response missing expected fields: $MCP_OUTPUT"
@@ -95,8 +95,8 @@ begin_test "MCP06: MCP server invalid request"
 BAD_REQ='{"not valid json at all'
 mcp_send "${INIT_REQ}
 ${BAD_REQ}"
-if echo "$MCP_OUTPUT" | grep -q '"Parse error"' \
-    || echo "$MCP_OUTPUT" | grep -q -- '-32700'; then
+if grep -q '"Parse error"' <<<"$MCP_OUTPUT" \
+    || grep -q -- '-32700' <<<"$MCP_OUTPUT"; then
     pass_test "MCP06"
 else
     fail_test "MCP06" "server did not return parse error (-32700)"

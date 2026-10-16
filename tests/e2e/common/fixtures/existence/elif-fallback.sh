@@ -7,6 +7,6 @@ elif k8s_exists module "m-$RUN"; then
     pass_test "E-13" # want-exist
 elif [ -n "$Y" ]; then
     pass_test "E-14" # want-exist
-elif kubectl get module "m-$RUN" -o yaml | grep -q 'verified: true'; then
+elif kubectl get module "m-$RUN" -o yaml | grep 'verified: true' >/dev/null; then
     pass_test "E-15"
 fi

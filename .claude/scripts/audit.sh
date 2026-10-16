@@ -439,9 +439,13 @@ _extract_test_blocks_uncached() {
 # variable; this makes the scoping mechanism one mechanism.
 # Extension-blind on purpose: fixtures are `.txt` so they sit outside the cargo
 # source tree.
+# A gate whose population is not the Rust sources names it as the arguments, a
+# command printing NUL-separated paths: `audit_scan_files git ls-files -z -- '*.sh'`.
 audit_scan_files() {
     if [[ -n "${CFGD_AUDIT_PATH:-}" ]]; then
         find "$CFGD_AUDIT_PATH" -type f -print0 2>/dev/null
+    elif (($#)); then
+        "$@"
     else
         find "${SRC_ROOTS[@]}" -name '*.rs' -print0 2>/dev/null
     fi
@@ -475,7 +479,7 @@ check_pattern() {
 
     # Apply exclude filter
     if [[ -n "$exclude_pattern" ]]; then
-        results=$(echo "$results" | grep -v -E "$exclude_pattern" || true)
+        results=$(grep -v -E "$exclude_pattern" <<<"$results" || true)
     fi
 
     # Remove blank lines
@@ -861,10 +865,10 @@ for errors_file in $(errors_file_candidates); do
     # auto-constructed). Digits are part of a variant name — `Sha256Mismatch`
     # matched neither regex below, so a digit-bearing variant could never be
     # reported dead however unreachable it became.
-    variants=$(echo "$errors_stripped" | grep -oP ':[0-9]+:\s+([A-Z][a-zA-Z0-9]+)\s*[\{(]' \
+    variants=$(grep -oP ':[0-9]+:\s+([A-Z][a-zA-Z0-9]+)\s*[\{(]' <<<"$errors_stripped" \
         | sed -E 's/^[^:]*:[0-9]+://' | sed 's/[[:space:]]*//g; s/[{(]$//' | sort -u || true)
     # Get list of #[from] variants — #[from] appears on the same line as the variant
-    from_variants=$(echo "$errors_stripped" | grep '#\[from\]' \
+    from_variants=$(grep '#\[from\]' <<<"$errors_stripped" \
         | grep -oP '([A-Z][a-zA-Z0-9]+)\s*\(' | sed 's/\s*($//' || true)
     for variant in $variants; do
         # Skip #[from] variants — they're constructed via the ? operator
@@ -1317,7 +1321,7 @@ if [ -f "$rule_file" ]; then
         row="${pair%%:*}"
         renderer="${pair##*:}"
         if [[ $'\n'$cmds_in_code$'\n' == *$'\n'"${renderer#cmd_}"$'\n'* ]]; then
-            stale=$(printf '%s\n' "$stale" | grep -vx "$row" || true)
+            stale=$(grep -vx "$row" <<<"$stale" || true)
         fi
     done
     stale=$(printf '%s' "$stale" | sed '/^$/d')
@@ -1352,8 +1356,7 @@ if [ -f "$rule_file" ]; then
         visited=""
         for _ in 1 2 3 4 5; do
             found=""
-            for helper in $(printf '%s\n' "$frontier" \
-                              | grep -oE '\bbuild_[a-z0-9_]+' | LC_ALL=C sort -u || true); do
+            for helper in $(grep -oE '\bbuild_[a-z0-9_]+' <<<"$frontier" | LC_ALL=C sort -u || true); do
                 if [[ $'\n'$visited$'\n' == *$'\n'"$helper"$'\n'* ]]; then
                     continue
                 fi
@@ -1790,12 +1793,12 @@ if [[ -f "$rel_wf" && -f "$pub_wf" ]]; then
     rel_keys=$(longest_secret_env_block "$rel_wf")
     pub_keys=$(longest_secret_env_block "$pub_wf")
     if [[ -z "$rel_keys" || -z "$pub_keys" ]]; then
-        log_error "Publisher-secret env block not found in one of the workflows (selector drifted): release=$(printf %s "$rel_keys" | grep -c .) publish-crate=$(printf %s "$pub_keys" | grep -c .) keys"
+        log_error "Publisher-secret env block not found in one of the workflows (selector drifted): release=$(grep -c . <<<"$rel_keys") publish-crate=$(grep -c . <<<"$pub_keys") keys"
     elif [[ "$rel_keys" != "$pub_keys" ]]; then
         log_error "Publisher-secret env blocks drifted between $rel_wf and $pub_wf:"
         diff <(printf '%s\n' "$rel_keys") <(printf '%s\n' "$pub_keys") | grep -E '^[<>]' || true
     else
-        log_ok "Publisher-secret env blocks identical ($(printf '%s\n' "$rel_keys" | grep -c .) keys)"
+        log_ok "Publisher-secret env blocks identical ($(grep -c . <<<"$rel_keys") keys)"
     fi
 else
     log_error "Publisher-secret lockstep gate could not run (missing $rel_wf or $pub_wf)"
@@ -1868,9 +1871,9 @@ else
             }
         }
     ' "${e2e_wfs[@]}")"
-    if [[ -n "$(printf '%s' "$e2e_missing" | grep . || true)" ]]; then
+    if [[ -n "$(grep . <<<"$e2e_missing" || true)" ]]; then
         log_error "e2e jobs that compile without the full compile-cache layering:"
-        printf '%s\n' "$e2e_missing" | grep . | first_lines 20
+        grep . <<<"$e2e_missing" | first_lines 20
     else
         log_ok "Every e2e job with a Rust toolchain carries sccache + rust-cache under its own key"
     fi
@@ -2400,6 +2403,241 @@ else
   else
     log_ok "e2e sysctl writes stay pod-private ($e2e_sysctl_canary fs.inotify raises exempted)"
   fi
+fi
+
+# A pipeline whose reader can stop before its producer finishes (`grep -q`,
+# `grep -m`, `head`, a `sed` that runs `q`, an `awk` that runs `exit`) races
+# that producer: once the reader has what it needs it closes the pipe, the
+# producer is killed by SIGPIPE while still writing, and under
+# `set -o pipefail` the pipeline reports failure. A match then reads as a
+# miss, and outside an `if` `set -e` ends the script. A large capture (a
+# completion script, a log, a JSON dump) makes it likely, and certain when the
+# match comes early.
+#
+# Two shapes fail here:
+# - a captured value (anything holding `$` or a go-task `{{...}}` value)
+#   echoed or printf-ed into a pipeline with a grep, head, `sed -n` or awk
+#   anywhere after it, whether or not that reader stops early: the value goes
+#   in through a here-string, `grep -qF "$want" <<<"$out"`, which no reader
+#   can cut short;
+# - any other command piped, through any filter stages, into a reader that
+#   can stop early: take the first lines with `sed -n '1p'`, or test with
+#   `grep ... >/dev/null`, both of which read their input to the end.
+# Lines continued with `\` or ending in `|`, `||` or `&&` are read as one
+# line, and so are the blank and comment-only lines that follow a trailing
+# `|`, `||` or `&&`, as bash reads them. A pipeline inside `$(...)`, `<(...)`
+# or `(...)` is read on its own. Env assignments, `command`, `env`,
+# `timeout N`, `nice` and `stdbuf` in front of a reader are skipped, so
+# `LC_ALL=C grep -q`, `timeout 5 grep -q`, `egrep -q` and `sed -En ... q` are
+# all readers, and so is a `read` that is not the condition of a `while` or
+# `until` loop, since it takes one line and leaves.
+# A pipeline whose producer is bounded carries `# drain-ok: <why>` in a
+# trailing comment on one of its own lines; the marker needs a reason, it
+# exempts every pipeline on the lines it sits on, and no pipeline on another
+# line joined to them, and inside a quoted string it is text.
+# Heredoc bodies are skipped. A heredoc opens only on an unquoted `<<` that
+# is not `<<<`, sits outside `((...))` and `$((...))`, and names a delimiter
+# that starts with a letter or `_` and holds only letters, digits, `_`, `.`
+# and `-`; one still open at the end of a file is an error at the line that
+# opened it, since every line after it went unread.
+# Not read: a pipeline inside a quoted string handed to another shell
+# (`bash -c '...'`, `ssh host "..."`, `exec_in_pod`), a backquoted command, a
+# reader reached through a shell function, alias or `xargs` (`xargs grep -q`
+# reads the files it names), a `while read` loop that leaves through `break`,
+# a `read` after the first command of a `{ ...; }` group, a shift inside
+# `let` or `$[...]`, which opens a heredoc here, and a heredoc whose opening
+# line ends in `|` or `&&` (`cat <<EOF |`), whose first body line is read
+# as part of that line. The lines of a multi-line quoted string are read as
+# code, one by one.
+log_section "Pipelines whose reader can exit before the producer is done (drain-ok:)"
+# shellcheck disable=SC2016  # an awk program; the $ in its regex and message belong to awk
+drain_hits=$(audit_scan_files git ls-files -z -- '*.sh' '*.tpl' Taskfile.yml \
+        '.github/workflows/*.yml' '.github/actions/*/action.yml' \
+    | xargs -0 -r awk "$AWK_LIB"'
+    function addc(str, pos) {
+        if (!SP[L] && str !~ /^[[:space:]]+$/) SP[L] = pos
+        ST[L] = ST[L] str
+    }
+    function push(ar) { L++; Q[L] = ""; ST[L] = ""; SP[L] = 0; NS[L] = 0; AR[L] = ar || AR[L - 1] }
+    function end_stage(   t) {
+        t = ST[L]
+        sub(/^[[:space:]]+/, "", t)
+        sub(/[[:space:]]+$/, "", t)
+        NS[L]++
+        SG[L, NS[L]] = t
+        SGP[L, NS[L]] = SP[L]
+        ST[L] = ""
+        SP[L] = 0
+    }
+    function strip_lead(t,   prev) {
+        do {
+            prev = t
+            sub(/^[[:space:]]+/, "", t)
+            sub(/^(if|elif|then|else|do|while|until|time|exec|!|[{]|-|sh:|run:|cmd:)([[:space:]]+|$)/, "", t)
+            sub(/^[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+/, "", t)
+            sub(/^(command|builtin)[[:space:]]+/, "", t)
+            sub(/^env([[:space:]]+(-[^[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*))*[[:space:]]+/, "", t)
+            sub(/^timeout([[:space:]]+-[^[:space:]]+)*[[:space:]]+[0-9.]+[smhd]?[[:space:]]+/, "", t)
+            sub(/^nice([[:space:]]+-n[[:space:]]*-?[0-9]+|[[:space:]]+-[0-9]+)?[[:space:]]+/, "", t)
+            sub(/^stdbuf([[:space:]]+-[ioe][^[:space:]]*)+[[:space:]]+/, "", t)
+        } while (t != prev)
+        return t
+    }
+    function is_grep(t) { return t ~ /^([ef]?grep|rg)([[:space:]]|$)/ }
+    function is_sed(t) { return t ~ /^sed([[:space:]]|$)/ }
+    function is_awk(t) { return t ~ /^[gm]?awk([[:space:]]|$)/ }
+    function any_reader(t) {
+        if (is_grep(t) || is_awk(t) || t ~ /^head([[:space:]]|$)/) return 1
+        return is_sed(t) && t ~ /[[:space:]](-[A-Za-z]*n[A-Za-z]*|--quiet|--silent)([[:space:]]|$)/
+    }
+    function early_reader(t, loop,   n, w, i) {
+        if (t ~ /^head([[:space:]]|$)/) return 1
+        if (!loop && t ~ /^read([[:space:]]|$)/) return 1
+        if (is_grep(t)) {
+            n = split(t, w, /[[:space:]]+/)
+            for (i = 2; i <= n; i++) {
+                if (w[i] == "--") break
+                if (w[i] ~ /^--(quiet|silent|max-count|files-with-matches|files-without-match)/) return 1
+                if (w[i] ~ /^-[A-Za-z0-9]+$/ && w[i] ~ /[qmlL]/) return 1
+            }
+            return 0
+        }
+        if (is_sed(t)) return t ~ /[;{}[:space:]\047"\/][0-9$]*[qQ]([;}[:space:]\047"]|$)/
+        if (is_awk(t)) return t ~ /(^|[^A-Za-z_])exit([^A-Za-z_]|$)/
+        return 0
+    }
+    function end_pipe(   k, t, loop, valued, first) {
+        end_stage()
+        valued = 0
+        for (k = 1; k <= NS[L]; k++) {
+            loop = SG[L, k] ~ /^(while|until)[[:space:]]/
+            t = strip_lead(SG[L, k])
+            if (k == 1) first = t
+            if (k > 1 && valued && (any_reader(t) || early_reader(t, loop))) {
+                HIT[++NH] = SGP[L, valued_at] SUBSEP CUR_I SUBSEP "a captured value is echoed into a reader; feed it through a here-string (<<<\"$var\")"
+                break
+            }
+            if (k > 1 && !valued && early_reader(t, loop) && first !~ /^(echo|printf)([[:space:]]|$)/) {
+                HIT[++NH] = SGP[L, 1] SUBSEP CUR_I SUBSEP "a command is piped into a reader that can exit before it finishes; read to the end with sed -n or grep >/dev/null"
+                break
+            }
+            if (!valued && t ~ /^(echo|printf)([[:space:]]|$)/ && t ~ /[$]|[{][{]/) { valued = 1; valued_at = k }
+        }
+        NS[L] = 0
+    }
+    function seg_at(pos,   k) {
+        for (k = NSEG; k > 1; k--) if (SEGS[k] <= pos) return k
+        return 1
+    }
+    function line_at(pos) { return SEGL[seg_at(pos)] }
+    function heredoc_open(s, j, at,   q, w, c) {
+        if (substr(s, j, 1) == "-") j++
+        while (substr(s, j, 1) ~ /[[:space:]]/) j++
+        w = ""
+        while (j <= length(s)) {
+            c = substr(s, j, 1)
+            if (c == "\047" || c == "\"") {
+                q = index(substr(s, j + 1), c)
+                if (q == 0) break
+                w = w substr(s, j + 1, q - 1)
+                j += q + 1
+                continue
+            }
+            if (c ~ /[[:space:];&|<>()]/) break
+            if (c != "\\") w = w c
+            j++
+        }
+        if (w ~ /^[A-Za-z_][A-Za-z0-9_.-]*$/) { HD = w; HDL = line_at(at) }
+    }
+    function scan(s,   i, n, c, d, k, h, x, ks, ke, hatched, parts) {
+        n = length(s)
+        L = 0; Q[0] = ""; ST[0] = ""; SP[0] = 0; NS[0] = 0; AR[0] = 0
+        NH = 0
+        split("", COMS)
+        for (i = 1; i <= n; i++) {
+            CUR_I = i
+            c = substr(s, i, 1)
+            d = substr(s, i + 1, 1)
+            if (Q[L] == "\047") { addc(c, i); if (c == "\047") Q[L] = ""; continue }
+            if (c == "\\") { addc(c d, i); i++; continue }
+            if (Q[L] == "\"") {
+                if (c == "\"") Q[L] = ""
+                else if (c == "$" && d == "(") { addc("$(", i); i++; push(substr(s, i + 1, 1) == "("); continue }
+                addc(c, i)
+                continue
+            }
+            if (c == "\047" || c == "\"") { Q[L] = c; addc(c, i); continue }
+            if (c == "#" && (i == 1 || substr(s, i - 1, 1) ~ /[[:space:];&|(]/)) {
+                for (k = 2; k <= NSEG && SEGS[k] <= i; k++) ;
+                if (k > NSEG) { COMS[NSEG] = COMS[NSEG] substr(s, i); break }
+                COMS[k - 1] = COMS[k - 1] substr(s, i, SEGS[k] - i)
+                i = SEGS[k] - 1
+                continue
+            }
+            if (c == "<" && d == "<" && !AR[L] && substr(s, i + 2, 1) != "<" && substr(s, i - 1, 1) != "<") {
+                heredoc_open(s, i + 2, i)
+                addc("<<", i)
+                i++
+                continue
+            }
+            if ((c == "$" || c == "<" || c == ">") && d == "(") { addc(c d, i); i++; push(c == "$" && substr(s, i + 1, 1) == "("); continue }
+            if (c == "(") { addc(c, i); push(d == "("); continue }
+            if (c == ")") {
+                if (L > 0) { end_pipe(); L--; addc(")", i) } else addc(c, i)
+                continue
+            }
+            if (c == "|") {
+                if (d == "|") { end_pipe(); i++ } else { end_stage(); if (d == "&") i++ }
+                continue
+            }
+            if (c == "&" && (d == ">" || substr(s, i - 1, 1) ~ /[<>]/)) { addc(c, i); continue }
+            if (c == ";" || c == "&") { end_pipe(); if (d == c) i++; continue }
+            addc(c, i)
+        }
+        CUR_I = n
+        while (L >= 0) { end_pipe(); L-- }
+        for (h = 1; h <= NH; h++) {
+            split(HIT[h], parts, SUBSEP)
+            ks = seg_at(parts[1] + 0)
+            ke = seg_at(parts[2] + 0)
+            hatched = 0
+            for (x = ks; x <= ke; x++) if (carries_marker(COMS[x], "drain-ok:")) hatched = 1
+            if (!hatched) print FILENAME ":" line_at(parts[1] + 0) " — " parts[3] ", or mark # drain-ok: <why>"
+        }
+    }
+    function flush() { if (NSEG) scan(BUF); NSEG = 0; BUF = ""; OPCONT = 0 }
+    function heredoc_unclosed() {
+        if (HD != "") print CURFILE ":" HDL " — a heredoc opened here never closes (<<" HD "), so the gate cannot read the rest of the file"
+        HD = ""
+    }
+    FNR == 1 { flush(); heredoc_unclosed(); CURFILE = FILENAME }
+    HD != "" {
+        t = $0
+        sub(/^[[:space:]]+/, "", t)
+        if (t == HD) HD = ""
+        next
+    }
+    {
+        NSEG++
+        SEGS[NSEG] = length(BUF) + 1
+        SEGL[NSEG] = FNR
+        if (OPCONT && $0 ~ /^[[:space:]]*(#.*)?$/) { BUF = BUF $0 " "; next }
+        OPCONT = 0
+        if ($0 ~ /(^|[^\\])(\\\\)*\\$/) { BUF = BUF substr($0, 1, length($0) - 1) " "; next }
+        if ($0 !~ /^[[:space:]]*#/ && $0 ~ /(\||&&)[[:space:]]*(#[^\047"]*)?$/ && $0 !~ /(:|^[[:space:]]*-)[[:space:]]*[|>][-+]?[[:space:]]*$/) {
+            BUF = BUF $0 " "
+            OPCONT = 1
+            next
+        }
+        BUF = BUF $0
+        flush()
+    }
+    END { flush(); heredoc_unclosed() }') || drain_hits="drain scan failed"
+if [[ -n "$drain_hits" ]]; then
+    log_error "A pipeline's reader can exit before its producer is done, and SIGPIPE turns that into a failed pipeline under pipefail:"
+    printf '%s\n' "$drain_hits"
+else
+    log_ok "No pipeline feeds a reader that can exit before its producer is done"
 fi
 
 # --- Summary ---

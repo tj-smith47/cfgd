@@ -4,7 +4,7 @@ if [ -z "$DS" ]; then
     pass_test "E-40" # want-absent
 fi
 MOUNTS=$(exec_in_pod mount 2>/dev/null | grep cfgd || echo "")
-if echo "$MOUNTS" | grep -q pod-a; then
+if grep -q pod-a <<<"$MOUNTS"; then
     fail_test "E-41" "mount left"
 else
     pass_test "E-41" # want-absent
@@ -14,7 +14,7 @@ ENV=$(kubectl get deploy -o jsonpath='{.items[0].spec}' \
 if [ "$ENV" = "" ]; then
     pass_test "E-42" # want-absent
 fi
-if ! echo "$DS" | grep -q cfgd; then
+if ! grep -q cfgd <<<"$DS"; then
     pass_test "E-43" # want-absent
 fi
 [ -z "$DS" ] && pass_test "E-44" # want-absent
@@ -41,7 +41,7 @@ fi
 C=$(kubectl get ds -o name 2>/dev/null || :)
 [ -z "$C" ] && pass_test "E-55" # want-absent
 P=$(kubectl get ds -o name 2>/dev/null || printf '')
-if ! echo "$P" | grep -q cfgd; then
+if ! grep -q cfgd <<<"$P"; then
     pass_test "E-56" # want-absent
 fi
 Q=$(kubectl get ds -o name 2>/dev/null || printf "")

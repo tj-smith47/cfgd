@@ -59,7 +59,7 @@ INNEREOF'
 
 PLAN=$(exec_in_pod cfgd --config /etc/cfgd/e2e-certs-cfgd.yaml apply --dry-run --no-color 2>&1) || true
 echo "  Plan before cert apply:"
-echo "$PLAN" | head -10 | sed 's/^/    /'
+head -10 <<<"$PLAN" | sed 's/^/    /'
 
 # Apply to fix permissions
 exec_in_pod cfgd --config /etc/cfgd/e2e-certs-cfgd.yaml apply --yes --no-color > /dev/null 2>&1 || true
