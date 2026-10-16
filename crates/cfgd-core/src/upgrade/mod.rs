@@ -173,7 +173,7 @@ pub fn parse_current_version(cfgd_version: &str) -> std::result::Result<Version,
 /// Query the GitHub Releases API for cfgd's latest stable release.
 ///
 /// Reads the releases list and picks the highest cfgd version that is neither
-/// a draft nor a prerelease; see [`fetch_release_list_from`].
+/// a draft nor a prerelease.
 pub fn fetch_latest_release(repo: &str, printer: Option<&Printer>) -> Result<ReleaseInfo> {
     fetch_release_list_from(&github_api_base(), repo, false, printer)
 }
