@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-10-16
+
+### Bug Fixes
+
+* 3b922eb0f919 pick the cfgd release when the repository's latest release belongs to another crate ([@tj-smith47](https://github.com/tj-smith47))
+* cbffbe1267d8 select the highest cfgd release by tag alone and report a failed release fetch ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.11.1] - 2026-10-15
 
 ### Bug Fixes
@@ -854,7 +861,8 @@
 * b3a2b1383c79 drop orphaned OciError::SignatureRequired variant (TJ Smith)
 * 1dc200e1e6d6 pin client to real release manifest (ground-truth contract test) (TJ Smith)
 
-[Unreleased]: https://github.com/tj-smith47/cfgd/compare/core-v0.11.1...HEAD
+[Unreleased]: https://github.com/tj-smith47/cfgd/compare/core-v0.11.2...HEAD
+[0.11.2]: https://github.com/tj-smith47/cfgd/compare/core-v0.11.1...core-v0.11.2
 [0.11.1]: https://github.com/tj-smith47/cfgd/compare/core-v0.11.0...core-v0.11.1
 [0.11.0]: https://github.com/tj-smith47/cfgd/compare/core-v0.10.0...core-v0.11.0
 [0.10.0]: https://github.com/tj-smith47/cfgd/compare/core-v0.9.0...core-v0.10.0
