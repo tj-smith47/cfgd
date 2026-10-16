@@ -163,26 +163,8 @@ upx:
       - x86_64-unknown-linux-gnu
       - x86_64-apple-darwin
       - x86_64-pc-windows-msvc
-  # --brute costs far more than --best: on the 50 MB x86_64 cfgd binary
-  # `--best --lzma` took 37.7 s while `--brute` was still running after 1000 s.
-  # The determinism shard packs every binary at least twice and the nightly
-  # linux shard has a 60-minute limit, so brute covers one binary on one
-  # target: cfgd on aarch64 Linux, the smallest of the four cfgd outputs
-  # (10.8 MB linux-arm64 archive in v0.12.0).
-  - id: brute
-    ids: [cfgd]
-    enabled: true
-    binary: upx
-    args:
-      - "--best"
-      - "--lzma"
-    compress: "9"
-    lzma: true
-    brute: true
-    targets:
-      - aarch64-unknown-linux-gnu
   - id: aarch64-linux
-    ids: [cfgd-operator, cfgd-csi]
+    ids: [cfgd, cfgd-operator, cfgd-csi]
     enabled: true
     binary: upx
     args:
