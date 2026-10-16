@@ -14,7 +14,9 @@ Each GIF here is recorded from the tape beside it by a `task demo*` target (`tas
     changelogs and the `cfgd-test-fixtures` crate (fixtures a crate embeds count). A
     dependency or chart change flags every GIF. The release bump commit
     (`chore(release): bump ...`) is passed over: it changes version numbers only, and the demo
-    builds everything from source;
+    builds everything from source. A Rust source whose changed lines are all blank, `//`
+    comments or `//!` module docs is passed over too: it compiles to the same binary. A `///`
+    doc comment counts, because help text and `cfgd explain` print it;
   - the GIF was not committed after its stamped commit, which means no take wrote the stamp
     (a hand edit of `recorded.txt`, or a re-encode that produced the same GIF).
 - The only way to clear a flag is to re-record that GIF and commit it.
