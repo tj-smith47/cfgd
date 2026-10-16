@@ -183,8 +183,12 @@ fi
 # another crate in the repository. fetch_stdout is stubbed to print a fixture
 # list, in GitHub's own pretty-printed and in a minified layout.
 printf '%s\n%s\n' "$(function_body error)" "$(function_body resolve_version)" > "$scratch/resolve-version.sh"
+# VERSION and REPO are passed on explicitly: an assignment prefixed to a
+# function call reaches the function's commands in bash but stays out of a
+# child's environment in FreeBSD sh.
 resolve_latest() {
-    sh -c '. "$1"; fixture="$2"; fetch_stdout() { cat "$fixture"; }; resolve_version; printf "%s\n" "$VERSION"' \
+    VERSION="$VERSION" REPO="$REPO" \
+        sh -c '. "$1"; fixture="$2"; fetch_stdout() { cat "$fixture"; }; resolve_version; printf "%s\n" "$VERSION"' \
         sh "$scratch/resolve-version.sh" "$1"
 }
 cat > "$scratch/releases.json" <<'JSON'
