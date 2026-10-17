@@ -33,6 +33,7 @@ jobs:
   fmt:
     name: Formatting
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -53,6 +54,7 @@ jobs:
   rustdoc:
     name: Rustdoc
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -68,6 +70,7 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -94,6 +97,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -150,6 +154,7 @@ jobs:
   test-freebsd:
     name: Tests (freebsd)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -216,6 +221,7 @@ jobs:
   audit:
     name: Code Audit
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -324,6 +330,7 @@ jobs:
   demo-sync:
     name: Demo GIFs in sync
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -338,6 +345,7 @@ jobs:
   msrv:
     name: MSRV check
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # The declared rust-version is only a promise until something compiles
     # with exactly that toolchain; this job keeps the Cargo.toml pin honest.
     env:
@@ -376,6 +384,7 @@ jobs:
   cargo-audit:
     name: cargo audit
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -399,6 +408,7 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       # publish-coverage.sh pushes the badge update to the badges branch.
       contents: write
@@ -453,6 +463,7 @@ jobs:
   package:
     name: Package (dry-run)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -472,6 +483,7 @@ jobs:
     name: Snapshot (dry-run)
     needs: [test]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v7

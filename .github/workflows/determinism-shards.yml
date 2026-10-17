@@ -55,6 +55,7 @@ jobs:
       matrix:
         label: ${{ fromJson(inputs.os-labels) }}
     runs-on: ${{ fromJson('{"linux":"ubuntu-latest","macos":"macos-latest","windows":"windows-latest"}')[matrix.label] }}
+    timeout-minutes: 90
     steps:
       - name: Check out release commit
         uses: actions/checkout@v7

@@ -2001,6 +2001,50 @@ else
     log_ok "README Distribution table and docs/installation.md match the enabled publishers"
 fi
 
+# A hosted runner has no bound of its own below GitHub's six-hour job limit,
+# and a step that pins every core until then reads to GitHub as mining: a
+# nightly running `upx --brute` to its 60-minute kill was followed by Actions
+# being disabled for the whole account. Two bounds, both held here: every
+# workflow job declares `timeout-minutes` (at most 120), and no compressor
+# block in .anodizer.yaml turns on `brute`, whose runtime has no ceiling.
+log_section "Runaway steps (every workflow job bounded, no upx brute)"
+
+runaway_gap="$(python3 - <<'PY'
+import glob, yaml
+
+gaps = []
+for path in sorted(glob.glob(".github/workflows/*.yml")):
+    doc = yaml.safe_load(open(path)) or {}
+    for name, job in (doc.get("jobs") or {}).items():
+        if "uses" in job:
+            continue
+        limit = job.get("timeout-minutes")
+        if limit is None:
+            gaps.append(f"{path}: job `{name}` declares no timeout-minutes")
+        elif not isinstance(limit, int) or limit < 1 or limit > 120:
+            gaps.append(f"{path}: job `{name}` timeout-minutes {limit!r} is outside 1..120")
+
+def walk(node, trail):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "brute" and value is True:
+                gaps.append(f".anodizer.yaml: {trail}.brute is true (unbounded upx runtime)")
+            walk(value, f"{trail}.{key}")
+    elif isinstance(node, list):
+        for i, item in enumerate(node):
+            walk(item, f"{trail}[{i}]")
+
+walk(yaml.safe_load(open(".anodizer.yaml")), "")
+print("\n".join(gaps))
+PY
+)"
+if [ -n "$runaway_gap" ]; then
+    log_error "Unbounded CI steps:"
+    printf '%s\n' "$runaway_gap"
+else
+    log_ok "Every workflow job carries timeout-minutes (≤120) and no upx block sets brute"
+fi
+
 # A Homebrew cask that generates completions runs the freshly installed binary,
 # which is quarantined and not notarized: Gatekeeper prompts and a headless
 # `brew install` never returns. Completions come from the release archive.

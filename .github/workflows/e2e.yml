@@ -349,6 +349,7 @@ jobs:
   e2e-summary:
     name: "E2E Summary"
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs:
       [
         setup,

@@ -28,6 +28,13 @@ single-source-of-truth wiring.
 
 ## Job wiring invariants
 
+- Every job that is not a `uses:` call declares `timeout-minutes`, at most 120, set to
+  about three times the job's measured duration (CI tests 60, release publish legs 20 to
+  60, determinism shards 90, nightly 60). GitHub's own limit is six hours, and a step that
+  pins every core until then reads to GitHub as mining: the 2026-10-16 nightly ran
+  `upx --brute` to its 60-minute kill and Actions was disabled for the whole account
+  afterwards. For the same reason no upx block in `.anodizer.yaml` sets `brute: true`.
+  The audit gate "Runaway steps" in `.claude/scripts/audit.sh` holds both.
 - crates.io publishing for ALL crates runs once, in the dispatched
   `publish-oidc.yml` (`--publishers cargo`, topo-ordered — see the OIDC bullet
   below); the schema/crd/core libraries have no other publish target, so they have no

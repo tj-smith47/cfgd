@@ -58,6 +58,7 @@ jobs:
        github.event.workflow_run.head_repository.full_name == github.repository &&
        !startsWith(github.event.workflow_run.head_commit.message, 'chore(release): bump'))
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       # The runtime injects ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN only into jobs
@@ -125,6 +126,7 @@ jobs:
     needs: preflight
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     outputs:
       crates: ${{ steps.t.outputs.crates }}
       versions: ${{ steps.t.outputs.versions }}
@@ -311,6 +313,7 @@ jobs:
       contents: write # roll back tags + the trio's GitHub releases on cargo failure
       actions: write # dispatch publish-oidc.yml via the Actions API
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out release commit
         uses: actions/checkout@v7
@@ -413,6 +416,7 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Check out release commit
         uses: actions/checkout@v7
@@ -456,6 +460,7 @@ jobs:
       contents: read
       packages: write
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out release commit
         uses: actions/checkout@v7
@@ -493,6 +498,7 @@ jobs:
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       matrix:
         arch: [amd64, arm64]
@@ -546,6 +552,7 @@ jobs:
       contents: read
       packages: write
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       # The checkout must precede the artifact download for two reasons:
       # setup-crossplane is a LOCAL composite action (only a checkout puts
@@ -595,6 +602,7 @@ jobs:
       contents: read
       packages: write
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out release commit
         uses: actions/checkout@v7
