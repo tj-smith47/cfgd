@@ -146,7 +146,7 @@ tar = "0.4"
 libc = "0.2"
 
 # Zip extraction (upgrade on Windows)
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [target.'cfg(not(windows))'.dependencies]
 # Force vendored OpenSSL for git2/libgit2 on all non-Windows targets (Linux,
